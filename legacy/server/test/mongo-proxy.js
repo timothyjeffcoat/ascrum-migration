@@ -28,7 +28,7 @@ mongoProxyFactory.__set__('https', {
 });
 
 // Create a proxy to test
-proxy = mongoProxyFactory('https://api.mongolab.com/api/1/databases','4fb51e55e4b02e56a67b0b66');
+proxy = mongoProxyFactory('https://api.mongolab.com/api/1/databases','REMOVED_DEAD_MONGOLAB_KEY');
 
 module.exports = {
   factory: {
@@ -42,30 +42,30 @@ module.exports = {
     testDatabasesUrl: function(test) {
       testMapUrl(test,
         '/',
-        'https://api.mongolab.com/api/1/databases/?apiKey=4fb51e55e4b02e56a67b0b66');
+        'https://api.mongolab.com/api/1/databases/?apiKey=REMOVED_DEAD_MONGOLAB_KEY');
     },
 
     testCollectionsUrl: function(test) {
       testMapUrl(test,
         '/ascrum/collections',
-        'https://api.mongolab.com/api/1/databases/ascrum/collections?apiKey=4fb51e55e4b02e56a67b0b66');
+        'https://api.mongolab.com/api/1/databases/ascrum/collections?apiKey=REMOVED_DEAD_MONGOLAB_KEY');
     },
 
     testUrlMapWithQuery: function(test) {
       testMapUrl(test,
         '/ascrum/collections/users?q=%7B%7D&c=true',
-        'https://api.mongolab.com/api/1/databases/ascrum/collections/users?q=%7B%7D&c=true&apiKey=4fb51e55e4b02e56a67b0b66');
+        'https://api.mongolab.com/api/1/databases/ascrum/collections/users?q=%7B%7D&c=true&apiKey=REMOVED_DEAD_MONGOLAB_KEY');
     },
 
     testUrlMapWithId: function(test) {
       testMapUrl(test,
         '/ascrum/collections/users/SOME_ID',
-        'https://api.mongolab.com/api/1/databases/ascrum/collections/users/SOME_ID?apiKey=4fb51e55e4b02e56a67b0b66');
+        'https://api.mongolab.com/api/1/databases/ascrum/collections/users/SOME_ID?apiKey=REMOVED_DEAD_MONGOLAB_KEY');
     },
     testUrlMapWithLocalPath: function(test) {
       testMapUrl(test,
         '/ascrum/collections/users/SOME_ID',
-        'https://api.mongolab.com/api/1/databases/ascrum/collections/users/SOME_ID?apiKey=4fb51e55e4b02e56a67b0b66');
+        'https://api.mongolab.com/api/1/databases/ascrum/collections/users/SOME_ID?apiKey=REMOVED_DEAD_MONGOLAB_KEY');
     }
 
   },
