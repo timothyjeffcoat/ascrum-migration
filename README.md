@@ -1,4 +1,30 @@
-[![Build Status](https://secure.travis-ci.org/angular-app/angular-app.png)](http://travis-ci.org/angular-app/angular-app)
+# ascrum-migration
+
+> **🚧 Work in progress:** migrating a 2013-era AngularJS 1.2 reference app to React 19, run as a **spec-driven, multi-agent [Claude Code](https://claude.com/claude-code) workflow**.
+>
+> AI agents do the conversion under human direction: discovery, spec, parallel workers in git worktrees, an independent reviewer agent, and CI gates. The deliverable is the *workflow* as much as the code, including an honest log of what the agents got wrong.
+
+**Where to start**
+| | |
+|---|---|
+| [`spec/inventory.md`](spec/inventory.md) | Discovery: everything the legacy app does, plus 21 defects found in it |
+| [`spec/questions.md`](spec/questions.md) | The 33 decisions put to the human owner, and the answers |
+| [`spec/conversion-spec.md`](spec/conversion-spec.md) | The contract the agents build against: stack, mapping, API stub, 76 acceptance criteria |
+| [`spec/reviews/spec-review-1.md`](spec/reviews/spec-review-1.md) | An independent agent's review of that spec: 25 findings, 9 blocking |
+| [`spec/journal.md`](spec/journal.md) | Running build log, with decisions, mistakes and measured metrics |
+| [`CLAUDE.md`](CLAUDE.md) | The rules every agent session follows |
+
+**Status:** Phase 0 (discovery) ✅ · Phase 1 (spec) ✅ awaiting owner sign-off · Phase 2 (harness) next · Phase 3 (parallel conversion) · Phase 4 (case study)
+
+**Credits:** the original app is [angular-app/angular-app](https://github.com/angular-app/angular-app) by Pawel Kozlowski & Peter Bacon Darwin (MIT, see [LICENSE](LICENSE)), written for their book [*Mastering Web Application Development with AngularJS*](http://goo.gl/gKEsIo).
+
+**Note on history:** the upstream history (and so this repo's) contains a long-dead MongoLab API key and a self-signed TLS private key committed by the original project. They are removed from the converted tree. History is not rewritten, so the link to upstream commits stays intact.
+
+---
+
+## Original README (historical)
+
+*Kept for reference. The setup below no longer works: MongoLab shut down in 2020, and the Grunt/Karma toolchain predates current Node.*
 
 # [AngularJS](http://www.angularjs.org/) CRUD application demo
 
