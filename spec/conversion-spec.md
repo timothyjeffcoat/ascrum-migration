@@ -1,6 +1,6 @@
 # Conversion Spec: AScrum, AngularJS 1.2 → React 19
 
-Status: **DRAFT rev 2, awaiting owner sign-off of §0.1 (Phase 1 gate)**. Workers must not start until this line reads APPROVED.
+Status: **APPROVED rev 2** (owner: "approve all" for §0.1 S1–S15, 2026-11-20). Workers start only after the Phase 2 exit gate (§13) and the wave gates (§8.1).
 Revision history: rev 1 (initial). Rev 2 incorporates independent team-lead review `spec/reviews/spec-review-1.md` (25 findings, all confirmed).
 Inputs: `spec/inventory.md` (facts) and `spec/questions.md` (owner answers, 2026-11-20).
 Authority: this spec is the contract for every worker and reviewer session. If code and spec disagree, the spec wins until it is amended. If the spec is silent, raise a question (§8.5) and do not guess.
@@ -48,8 +48,8 @@ Authority: this spec is the contract for every worker and reviewer session. If c
 | E6 | Keep the MIT LICENSE; the README credits Pawel Kozlowski & Peter Bacon Darwin and links the book. |
 | F1–F4 | One LinkedIn article at the end, aimed at managers, stating plainly that agents did the conversion. Measured numbers only. Drafts go in `docs/article/`. |
 
-### 0.1 Decisions made by the spec beyond the owner's answers: **owner sign-off required**
-Reply "approve all", or veto by number. Until then, workers must not start.
+### 0.1 Decisions made by the spec beyond the owner's answers: **signed off**
+Owner reply 2026-11-20: "approve all". No vetoes.
 
 | # | Decision | Why |
 |---|---|---|

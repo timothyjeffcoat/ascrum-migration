@@ -8,7 +8,7 @@ This repo (public: `ascrum-migration`) is a portfolio artifact. The product is t
    - Architecture, including composition, the `useCrudForm` contract and the route-file contract (§4).
    - Mapping (§5); defect dispositions (§6); stub (§7).
    - Clusters, ownership and workflow (§8); test porting (§9); acceptance criteria (§12); Phase 2 (§13).
-   - **If its status line doesn't read APPROVED, workers must not start.**
+   - **If its status line doesn't read APPROVED, workers must not start.** Also check `MIGRATION.md`: your cluster's wave gate (spec §8.1) must be open.
 2. `spec/inventory.md`: facts about the legacy app. `legacy/` is the reference source; never modify it.
 3. `spec/questions.md` (owner answers) and `spec/questions/<cluster>.md` (Phase 3 questions).
 4. `MIGRATION.md`: cluster status. Reviewers change it, and only through PRs (spec §8.2/§8.3).

@@ -14,7 +14,7 @@
 | [`spec/journal.md`](spec/journal.md) | Running build log, with decisions, mistakes and measured metrics |
 | [`CLAUDE.md`](CLAUDE.md) | The rules every agent session follows |
 
-**Status:** Phase 0 (discovery) ✅ · Phase 1 (spec) ✅ awaiting owner sign-off · Phase 2 (harness) next · Phase 3 (parallel conversion) · Phase 4 (case study)
+**Status:** Phase 0 (discovery) ✅ · Phase 1 (spec) ✅ signed off · Phase 2 (harness) in progress · Phase 3 (parallel conversion) · Phase 4 (case study)
 
 **Credits:** the original app is [angular-app/angular-app](https://github.com/angular-app/angular-app) by Pawel Kozlowski & Peter Bacon Darwin (MIT, see [LICENSE](LICENSE)), written for their book [*Mastering Web Application Development with AngularJS*](http://goo.gl/gKEsIo).
 
