@@ -1,0 +1,9 @@
+dist
+dist-pages
+coverage
+playwright-report
+test-results
+pnpm-lock.yaml
+public/mockServiceWorker.js
+# Vendored legacy styles stay byte-for-byte reviewable against legacy/ (only the commented patches differ).
+src/styles/**/*.less
