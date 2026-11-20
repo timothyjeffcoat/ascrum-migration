@@ -50,7 +50,8 @@ case "$event" in
     tool="$(jq -r '.tool_name // empty' <<<"$payload")"
     if [ "$tool" = "Bash" ]; then
       cmd="$(jq -r '.tool_input.command // empty' <<<"$payload")"
-      cat_="$(classify "$cmd")"
+      # Classify only the command itself, not heredoc bodies (docs written via `cat <<EOF` mention tool names).
+      cat_="$(classify "${cmd%%<<*}")"
       [ -z "$cat_" ] && exit 0
       status=pass; [ "$event" = "PostToolUseFailure" ] && status=fail
       record="$(jq -c --arg cat "$cat_" --arg status "$status" \
