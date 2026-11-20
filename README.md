@@ -13,12 +13,24 @@
 | [`spec/reviews/spec-review-1.md`](spec/reviews/spec-review-1.md) | An independent agent's review of that spec: 25 findings, 9 blocking |
 | [`spec/journal.md`](spec/journal.md) | Running build log, with decisions, mistakes and measured metrics |
 | [`CLAUDE.md`](CLAUDE.md) | The rules every agent session follows |
+| [`MIGRATION.md`](MIGRATION.md) | Live status of each conversion cluster and the gates between waves |
 
-**Status:** Phase 0 (discovery) ✅ · Phase 1 (spec) ✅ signed off · Phase 2 (harness) in progress · Phase 3 (parallel conversion) · Phase 4 (case study)
+**Status:** Phase 0 (discovery) ✅ · Phase 1 (spec) ✅ signed off · Phase 2 (harness) in review · Phase 3 (parallel conversion) · Phase 4 (case study)
+
+**Run it** (Node 24 and pnpm via corepack; everything lives in `web/`)
+```
+cd web && corepack enable && pnpm install
+pnpm dev          # http://localhost:5173, API stub on :3001 behind Vite's proxy
+pnpm dev:msw      # same, but the stub runs in the browser (what the public demo does)
+pnpm verify       # every gate CI runs: lint, typecheck, unit tests, build, e2e
+```
+There is no real backend: MongoLab, the original database host, shut down in 2020. A small stub reproduces the legacy server's contract, quirks included, with deterministic demo data. The in-browser demo will be published at **https://timothyjeffcoat.github.io/ascrum-migration/**; until cluster 0 lands it shows a placeholder.
+
+**Demo logins:** `admin@abc.com` / `changeme` (admin, as in the original). `po@ascrum.test`, `sm@ascrum.test`, `dev1@ascrum.test`, `dev2@ascrum.test`, `outsider@ascrum.test` (password `demo`) each have a different role on the demo projects.
 
 **Credits:** the original app is [angular-app/angular-app](https://github.com/angular-app/angular-app) by Pawel Kozlowski & Peter Bacon Darwin (MIT, see [LICENSE](LICENSE)), written for their book [*Mastering Web Application Development with AngularJS*](http://goo.gl/gKEsIo).
 
-**Note on history:** the upstream history (and so this repo's) contains a long-dead MongoLab API key and a self-signed TLS private key committed by the original project. They are removed from the converted tree. History is not rewritten, so the link to upstream commits stays intact.
+**Note on history:** the upstream history (and so this repo's) contains a long-dead MongoLab API key and a self-signed TLS private key committed by the original project. They are removed from the current tree (the legacy code now lives in `legacy/`, as reference only). History is not rewritten, so the link to upstream commits stays intact.
 
 ---
 

@@ -19,7 +19,7 @@ This repo (public: `ascrum-migration`) is a portfolio artifact. The product is t
 - **Stay inside your cluster's owned paths** (spec §8.1). Every cluster may also write its own `spec/worklogs/<cluster>.md` and `spec/questions/<cluster>.md`. Anything else outside the owned paths becomes a question, never an edit.
 - **Don't add dependencies** without an answered question.
 - **Don't change the wire contract.** Quirks live only in `api/` and `auth/` (spec §4).
-- **Never weaken a gate:** no skipped or `.only` tests, `eslint-disable`, `@ts-expect-error`, `as any`, or loosened configs. If a gate seems wrong, ask.
+- **Never weaken a gate:** no skipped or `.only` tests, `eslint-disable`, `@ts-expect-error`, `as any`, or loosened configs. If a gate seems wrong, ask. Most of these are enforced mechanically (inline eslint config is off, `.only/.skip/.todo` and `@ts-*` comments are lint errors), and editing the config to get around them is a blocking deviation.
 - **Honesty over polish.** Record mistakes, reverts and wrong turns in your worklog; they feed `spec/deviations.md` and the public case study.
 - **This repo is public.** Never write absolute local paths, usernames, emails or secrets into tracked files.
 
@@ -28,19 +28,24 @@ Node 24 LTS, pnpm, React 19, TypeScript strict, Vite, react-router v7 (data mode
 
 | Gate | Command |
 |---|---|
-| lint | `pnpm lint` (eslint + prettier --check) |
+| lint | `pnpm lint` (eslint with `--max-warnings 0` + prettier --check) |
 | typecheck | `pnpm typecheck` |
 | unit | `pnpm test` |
 | build | `pnpm build` |
-| e2e | `pnpm e2e` (Node stub, Chromium, serial) |
+| e2e | `pnpm e2e`: builds `dist/` and `dist-pages/` first, then Playwright (Chromium, serial), project `chromium` (Node stub + `vite preview`) and `pages` (Pages build + MSW) |
+| e2e, watching | `pnpm exec playwright test --headed`, `--ui` (time-travel UI) or `--debug` (step through); needs a display, so local only |
 | all gates, as CI runs them | `pnpm verify` |
 | dev | `pnpm dev` (Node stub via proxy) / `pnpm dev:msw` (in-browser stub) |
+| one-off stub | `pnpm stub` (port 3001); `POST /__stub/reset` reseeds |
+
+Node comes from `web/.nvmrc` (`nvm use`), pnpm from `packageManager` (`corepack enable`).
 
 ## Conventions
 **Layout and routes**
 - Feature code goes in `web/src/features/<feature>/`.
 - `routes.tsx` exports `export const routes: RouteObject[]` with **flat absolute paths**, built with `crudRoutes()` where it fits (spec §4.3).
 - Tests sit next to the code as `*.test.ts(x)`.
+- `stub/` and `scripts/` run directly under Node 24 (type stripping): relative imports there carry their `.ts` extension, and only erasable TypeScript syntax is allowed (no enums, no constructor parameter properties). `tsc` enforces this everywhere.
 
 **Naming**
 - Components and component files: `PascalCase.tsx`. Hooks: `useThing.ts`; anything that calls a hook *is* a hook and is named `use*`. Other modules: `camelCase.ts`.
@@ -84,6 +89,7 @@ Node 24 LTS, pnpm, React 19, TypeScript strict, Vite, react-router v7 (data mode
 - `spec/deviations.md` (reviewer): format and cluster-scoped ids in spec §8.4.
 - `spec/journal.md` (reviewer and orchestrator): written for a LinkedIn article aimed at engineering managers. Cover what happened, decisions and why, measured metrics only (cite `spec/metrics.jsonl`, `gh`, `deviations.md`), and "moments".
 - `spec/metrics.jsonl` is written by the `.claude/settings.json` hook into the main checkout. Never edit it by hand or disable the hook.
+- The hook records pass/fail from the command's **exit code**. Run gate commands unpiped, or start with `set -o pipefail`; `pnpm test | tail` always "passes" (this undercounted Phase 2's failures, see the journal).
 
 ## Reviewer role
 - You are not the worker. Review against the spec, not the worker's explanation.

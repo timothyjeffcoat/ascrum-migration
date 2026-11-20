@@ -137,3 +137,64 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 | Acceptance criteria (rev 1 → rev 2) | 69 → 76, plus 15 stub contract ACs | conversion-spec §12 |
 | Spec-made decisions awaiting sign-off | 15 | conversion-spec §0.1 |
 | Legacy tests pre-assigned n/a | 8 | conversion-spec §9 |
+
+## 2026-11-20 — Phase 2: the harness
+
+**What happened**
+- The owner signed off all 15 spec-made decisions ("approve all"). The spec status now reads APPROVED.
+- The orchestrator built the harness on branch `harness/phase-2`:
+  - the legacy app moved to `legacy/`, and the committed secrets were removed;
+  - a Vite + React 19 + TypeScript scaffold in `web/`;
+  - an API stub reproducing the dead backend's contract, with deterministic demo data;
+  - shared test helpers;
+  - Playwright running against two targets (the normal build, and the GitHub Pages build with the stub in the browser);
+  - CI with five separate gates, and a Pages deploy.
+- Every risk the spec flagged for Phase 2 now has a test that proves it, not a note that says it was checked.
+
+**What reality changed**
+- **"Latest stable" collided with the spec three times.** react-router is at v8, but the spec's architecture was written and reviewed against v7. TypeScript 7 is out, but the lint tooling only supports up to 6.0. MSW is at v3, which the spec doesn't pin.
+  - The orchestrator kept v7 and TypeScript 6.0, and took MSW 3 only after reading its API.
+  - Each choice is a question for the owner (`spec/questions/harness.md`), not a silent pick.
+- **The spec predicted one problem with the 2012 stylesheet; there were five.** Bootstrap 2.1.1's LESS was written for LESS 1.3:
+  - on LESS 4 it needed the predicted `math` setting;
+  - plus three commented syntax patches;
+  - and a setting so the new CSS minifier drops IE6 hacks instead of failing the build.
+
+  The patches touch only the vendored copy; `legacy/` is untouched.
+- **A spec risk answered itself both ways.** Do mocked cookies reach `document.cookie`? In a real browser, yes: MSW 3 does it. In the unit-test DOM, no. Both are now proven by tests, and the fallback is on only where it is needed.
+
+**Mistakes (kept, because they are the point)**
+- **A commit message that lied.** The commit "remove committed secrets" contained the folder move but not the edits. The `sed` ran after staging, and the commit had no `git add`.
+  - `git diff --stat` caught it before anything was pushed, and the commit was amended to match its message.
+  - Lesson: the message describes intent; only the diff describes the commit.
+- **The secret was in more places than the inventory said.** The dead MongoLab key also sat in three legacy server test files. The exit-criteria `grep` exists for exactly this.
+- **A test passed for the wrong reason.** To prove the LESS setting matters, the orchestrator removed it and reran the style test. The test passed. Without the setting the *build* fails; Playwright had served the previous build.
+  - Now `pnpm e2e` always builds first.
+  - Lesson: a mutation test is only valid if the mutation reaches what is tested.
+- **A safety net that wasn't on.** MSW 3 renamed `onUnhandledRequest` to `onUnhandledFrame`. The old name was silently ignored, so unit tests would *not* have failed on calls to unmocked endpoints.
+  - The type checker caught it.
+  - Once fixed, the stricter setting immediately failed a test that made real HTTP calls; that test now opts out explicitly.
+- **The metrics undercounted failures.** The hook reads exit codes, and the orchestrator piped most build and test runs through `tail`, which exits 0. The ledger shows 1 failed gate run out of 16; by hand, the stylesheet alone failed to compile 6 times (3 builds, 3 direct LESS runs) before it went green. CLAUDE.md now tells workers to run gates unpiped or with `pipefail`.
+
+**Making "never weaken a gate" mechanical**
+- CLAUDE.md always said "no `.only`, no skipped tests, no `eslint-disable`, no `@ts-expect-error`, no `any`". Now the tools refuse them:
+  - inline lint overrides are switched off, and lint fails on warnings;
+  - focused or skipped tests are lint errors;
+  - Vitest rejects `.only` and Playwright forbids it.
+- A probe file containing each forbidden pattern produced 4 errors and 1 warning; the warning is now fatal too. Every new test file was mutation-checked: break the behaviour, watch exactly the named test fail.
+
+**Moments (article candidates)**
+- "Phase 2's job is to make Phase 3's agents unable to cheat by accident. Rules in a prompt are requests; rules in the linter are walls."
+- "The commit said 'remove secrets'. The diff said otherwise. Trust the diff."
+- "Our metrics hook was honest about exit codes, and our own commands lied to it. Measurement needs the same discipline as code."
+
+**Metrics**
+| Metric | Value | Source |
+|---|---|---|
+| Stub contract ACs with a named, passing test | 15 / 15 (+2 seed and body-parsing tests) | `stub/handlers.test.ts` |
+| Mutations tried on the stub tests / caught by the named test | 3 / 3 | journal (this entry) |
+| Phase 2 risk proofs automated (§11-1, -2, -3, -6; -5 is the CI timing) | 4 Playwright tests + 1 jsdom test | `e2e/`, `stub/adapters.test.ts` |
+| `pnpm verify` locally (lint, typecheck, 21 unit, 2 builds, 8 e2e) | 7.4 s wall clock | local run |
+| Gate runs recorded by the hook / failures recorded | 16 / 1 (undercount, see above) | `spec/metrics.jsonl` |
+| Harness code (TS/TSX in `web/src`, `stub`, `scripts`, `e2e`) | 1,382 lines, of which stub tests 442 | `wc -l` |
+| Questions raised for the owner | 4 (Q-harness-1..4) | `spec/questions/harness.md` |
