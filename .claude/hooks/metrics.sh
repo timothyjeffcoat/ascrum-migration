@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Appends machine-recorded workflow events to spec/metrics.jsonl (one JSON object per line).
+# Wired up in .claude/settings.json. Reads the hook payload as JSON on stdin.
+#
+# Every worktree writes to the MAIN checkout's spec/metrics.jsonl (resolved via
+# git's common dir), so parallel workers share one log and never merge-conflict on it.
+# It must never break a session: all failures are swallowed.
+
+set -u
+payload="$(cat)"
+
+event="$(jq -r '.hook_event_name // empty' <<<"$payload" 2>/dev/null)"
+[ -z "$event" ] && exit 0
+
+cwd="$(jq -r '.cwd // empty' <<<"$payload")"
+cwd="${cwd:-$PWD}"
+
+common_dir="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || exit 0
+main_root="$(dirname "$common_dir")"
+log="$main_root/spec/metrics.jsonl"
+mkdir -p "$main_root/spec"
+
+branch="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+commit="$(git -C "$cwd" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+worktree="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")"
+
+# Classify a shell command into a gate category; empty = not a gate (not logged).
+classify() {
+  local c="$1" pm='(^|[;&|[:space:]])(npm|pnpm|yarn|bun|npx|pnpx|pnpm[[:space:]]+exec)[[:space:]]+(run[[:space:]]+)?'
+  # Order matters: git/gh first so commit messages like "fix build" aren't counted as builds.
+  if   grep -qE '(^|[;&|[:space:]])git[[:space:]]+commit' <<<"$c";                    then echo commit
+  elif grep -qE '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+(create|merge)' <<<"$c"; then echo pr
+  elif grep -qE '(^|[;&|[:space:]])gh[[:space:]]+run' <<<"$c";                          then echo ci
+  elif grep -qE "playwright|${pm}(test:)?e2e" <<<"$c";                                  then echo e2e
+  elif grep -qE "(^|[;&|[:space:]/])(vitest|jest|karma)([[:space:]]|$)|${pm}test" <<<"$c"; then echo test
+  elif grep -qE "(^|[;&|[:space:]/])(eslint|jshint)([[:space:]]|$)|prettier.*--check|${pm}lint" <<<"$c"; then echo lint
+  elif grep -qE "(^|[;&|[:space:]/])tsc([[:space:]]|$)|${pm}typecheck" <<<"$c";          then echo typecheck
+  elif grep -qE "vite[[:space:]]+build|(^|[;&|[:space:]])grunt([[:space:]]|$)|${pm}build" <<<"$c"; then echo build
+  else echo ""
+  fi
+}
+
+record=""
+case "$event" in
+  SessionStart)
+    record="$(jq -c '{source: (.source // null)}' <<<"$payload")" ;;
+  SessionEnd)
+    record="$(jq -c '{reason: (.reason // null)}' <<<"$payload")" ;;
+  PostToolUse|PostToolUseFailure)
+    tool="$(jq -r '.tool_name // empty' <<<"$payload")"
+    if [ "$tool" = "Bash" ]; then
+      cmd="$(jq -r '.tool_input.command // empty' <<<"$payload")"
+      cat_="$(classify "$cmd")"
+      [ -z "$cat_" ] && exit 0
+      status=pass; [ "$event" = "PostToolUseFailure" ] && status=fail
+      record="$(jq -c --arg cat "$cat_" --arg status "$status" \
+        '{tool:"Bash", category:$cat, status:$status, command:(.tool_input.command|.[0:300]),
+          error:(if .error then (.error|tostring|.[0:300]) else null end)}' <<<"$payload")"
+    elif [ "$tool" = "Agent" ]; then
+      status=pass; [ "$event" = "PostToolUseFailure" ] && status=fail
+      record="$(jq -c --arg status "$status" \
+        '{tool:"Agent", category:"subagent", status:$status,
+          subagent_type:(.tool_input.subagent_type // "general-purpose"),
+          description:(.tool_input.description // null)}' <<<"$payload")"
+    else
+      exit 0
+    fi ;;
+  *) exit 0 ;;
+esac
+
+line="$(jq -c \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg event "$event" \
+  --arg branch "$branch" --arg commit "$commit" --arg worktree "$worktree" \
+  --arg session "$(jq -r '.session_id // empty' <<<"$payload")" \
+  '{ts:$ts, event:$event, session:$session, branch:$branch, commit:$commit, worktree:$worktree} + .' \
+  <<<"$record")" || exit 0
+
+( flock -w 5 9 && printf '%s\n' "$line" >>"$log" ) 9>>"$log.lock"
+exit 0
