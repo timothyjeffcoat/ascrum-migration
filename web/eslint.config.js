@@ -7,6 +7,11 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
+const TEST_FNS = '/^(it|test|describe|suite)$/'
+const WEAKENERS = '/^(only|skip|skipIf|runIf|todo|fixme)$/'
+const GATE_MESSAGE =
+  'Focused, skipped, conditional or placeholder tests weaken the gate (CLAUDE.md). Ask a question instead.'
+
 export default tseslint.config(
   { ignores: ['dist', 'dist-pages', 'coverage', 'playwright-report', 'test-results', 'public/mockServiceWorker.js'] },
   {
@@ -27,10 +32,15 @@ export default tseslint.config(
       ],
       'no-restricted-syntax': [
         'error',
+        // it.skip, it.skipIf(c), test.fixme, describe.only, ...
         {
-          selector:
-            "CallExpression[callee.type='MemberExpression'][callee.object.name=/^(it|test|describe)$/][callee.property.name=/^(only|skip|todo|fixme)$/]",
-          message: 'Focused, skipped or placeholder tests weaken the gate (CLAUDE.md). Ask a question instead.',
+          selector: `MemberExpression[object.name=${TEST_FNS}][property.name=${WEAKENERS}]`,
+          message: GATE_MESSAGE,
+        },
+        // it.concurrent.skip, test.describe.skip, test.describe.fixme, ...
+        {
+          selector: `MemberExpression[object.type='MemberExpression'][object.object.name=${TEST_FNS}][property.name=${WEAKENERS}]`,
+          message: GATE_MESSAGE,
         },
       ],
     },

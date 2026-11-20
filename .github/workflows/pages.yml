@@ -1,8 +1,11 @@
 # Publishes the in-browser demo (MSW stub, base /ascrum-migration/) from `migration` (spec §13 item 7).
 name: Pages
 
+# Deploys only after CI passed on a push to `migration` (review finding R2-12), or by hand.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [migration]
   workflow_dispatch:
 
@@ -17,9 +20,12 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: ./.github/actions/setup-web
       - run: pnpm build:pages
         working-directory: web

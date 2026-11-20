@@ -14,6 +14,18 @@ test('§11-1: Bootstrap 2 LESS compiles with math:always (division is evaluated)
   expect(styles.closeOpacity).toBe('0.2') // mixins.less .opacity(20): opacity: @opacity / 100
 })
 
+test('Q-harness-3: the Less 4 patches to vendored Bootstrap produce Bootstrap 2.1.1 values', async ({ page }) => {
+  await bootApp(page, '/')
+  const styles = await probeStyles(page)
+  expect(styles.spanWidth).toBe('940px')
+  expect(styles.offsetMarginLeft).toBe('100px')
+  expect(styles.navbarContainerWidth).toBe('940px')
+  // Two shadows, comma-separated (the original mixin joined them with inline JavaScript).
+  expect(styles.buttonShadow).toBe(
+    'rgba(255, 255, 255, 0.2) 0px 1px 0px 0px inset, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px',
+  )
+})
+
 test('§11-6: the glyph sprite path resolves at base "/"', async ({ page, request }) => {
   await bootApp(page, '/')
   const { iconUrl } = await probeStyles(page)

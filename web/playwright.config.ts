@@ -1,6 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
 const CI = Boolean(process.env.CI)
+// Servers are never reused: a stub left running on :3001 (e.g. from `pnpm dev`) would carry stale
+// state into the run. If a port is busy, Playwright fails loudly instead (review finding R2-13).
 
 // Spec §2: Chromium only, serial (the stub is shared and stateful), every file starts with a reset.
 // `pnpm e2e` builds dist/ and dist-pages/ first; these servers only serve the builds.
@@ -27,12 +29,11 @@ export default defineConfig({
     },
   ],
   webServer: [
-    { command: 'node stub/server.ts', url: 'http://localhost:3001/current-user', reuseExistingServer: !CI },
-    { command: 'pnpm exec vite preview', url: 'http://localhost:4173', reuseExistingServer: !CI },
+    { command: 'node stub/server.ts', url: 'http://localhost:3001/current-user' },
+    { command: 'pnpm exec vite preview', url: 'http://localhost:4173' },
     {
       command: 'node scripts/pages-server.ts',
       url: 'http://localhost:4174/ascrum-migration/',
-      reuseExistingServer: !CI,
     },
   ],
 })

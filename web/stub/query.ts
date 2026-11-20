@@ -43,6 +43,9 @@ export function parseQuery(raw: string | undefined): QueryResult {
       const ids = parseIdIn(value)
       if (!ids) return { ok: false, message: 'only {_id: {$in: [{$oid}]}} is supported for _id' }
       checks.push((doc) => ids.includes(doc._id.$oid))
+    } else if (field === 'password') {
+      // Would let anyone test a guess against stored passwords (D7 hardening; no legacy code queries it).
+      return { ok: false, message: 'querying password is not allowed' }
     } else if (field.startsWith('$')) {
       return { ok: false, message: `operator ${field} is not supported` }
     } else if (isScalar(value)) {

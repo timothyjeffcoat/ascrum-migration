@@ -97,3 +97,20 @@ The two blocking items are both cheap and touch no product code:
 - **R2-02:** record the §11-5 measurement (22 s Chromium install, run 44821324380).
 
 I recommend resolving R2-03 (owner answers to Q-harness-1..4) before the Phase 2 exit gate opens, since workers will treat the amended spec as signed off. R2-04 to R2-07 should be fixed before cluster 0 starts, because they protect the gates Phase 3 depends on. After the blocking fixes, the remaining exit criterion is the live Pages deep link, which can only be checked after merge.
+
+## Author disposition (orchestrator, 2026-11-20)
+| Id | Disposition |
+|---|---|
+| R2-01 | **Partly fixed.** The hook now rewrites `$HOME` to `~` in every logged string (verified with a probe). Scrubbing the rows already written (plus one fake probe row the author added while testing) was blocked by Claude Code's permission system as audit-log tampering. **Awaiting the owner.** |
+| R2-02 | Fixed: the §11-5 timings are in the journal, and the "every risk" claim is reworded. |
+| R2-03 | **Awaiting the owner** (Q-harness-1..4). |
+| R2-04 | Fixed: `eslint.config.js` bans the skip/only/todo/fixme/skipIf/runIf forms, including chained ones; probe catches 7 of 7. |
+| R2-05 | Fixed: `errorRecovery` removed; a PostCSS plugin drops only `*`-prefixed declarations. |
+| R2-06 | Fixed: an empty or missing email or password fails login; AC-STUB-04 extended. |
+| R2-07 | Fixed: new e2e test `Q-harness-3` asserts `.span12`, `.offset1`, the navbar container width and the two-shadow `.btn`; mutation-checked. |
+| R2-08 | Fixed: every non-GET data request needs a session user, as legacy `server.js` does; AC-STUB-10 covers PATCH and HEAD. |
+| R2-09 | Fixed: `password` is rejected as a query field; AC-STUB-07 covers it. |
+| R2-10 | Fixed: numbers corrected in the journal, originals noted. |
+| R2-11 | Fixed: a comment in `pages.spec.ts` and a CLAUDE.md note. |
+| R2-12 | Fixed: Pages deploys on `workflow_run` after CI succeeds on a push to `migration`. |
+| R2-13 | Fixed: Playwright never reuses servers. |

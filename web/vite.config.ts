@@ -21,9 +21,10 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), pages && pagesSpaFallback()],
     css: {
       preprocessorOptions: { less: { math: 'always' } }, // Bootstrap 2 LESS needs it (spec §11-1)
-      // Bootstrap 2 carries IE6/7 star hacks (`*zoom: 1`). Every modern browser ignores them; the
-      // LightningCSS minifier rejects them unless told to drop them.
-      lightningcss: { errorRecovery: true },
+      // Bootstrap 2 carries IE6/7 star hacks (`*zoom: 1`). Every modern browser ignores them, and the
+      // LightningCSS minifier rejects them, so exactly those declarations are dropped. Any other CSS
+      // error still fails the build (review finding R2-05: no blanket errorRecovery).
+      postcss: { plugins: [dropIeStarHacks()] },
     },
     server: { port: 5173, strictPort: true, proxy },
     preview: { port: 4173, strictPort: true, proxy },
@@ -39,6 +40,16 @@ function pagesSpaFallback(): Plugin {
     async writeBundle(options) {
       const dir = options.dir ?? 'dist-pages'
       await copyFile(join(dir, 'index.html'), join(dir, '404.html'))
+    },
+  }
+}
+
+function dropIeStarHacks() {
+  return {
+    postcssPlugin: 'drop-ie-star-hacks',
+    // PostCSS parses `*zoom: 1` as prop "zoom" with the "*" kept in raws.before.
+    Declaration(decl: { raws: { before?: string }; remove(): void }) {
+      if (decl.raws.before?.trimStart().endsWith('*')) decl.remove()
     },
   }
 }

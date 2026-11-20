@@ -105,9 +105,12 @@ function route(method: string, req: StubRequest, session: Session, ctx: StubCont
 
   if (req.path === '/login' && method === 'POST') {
     const creds = isRecord(req.body) ? req.body : {}
-    const match = store.collections.users.find(
-      (u) => typeof creds.email === 'string' && u.email === creds.email && u.password === creds.password,
-    )
+    // passport-local (legacy) fails on a missing or empty email/password before it looks anyone up.
+    const valid = (v: unknown): v is string => typeof v === 'string' && v !== ''
+    const match =
+      valid(creds.email) && valid(creds.password)
+        ? store.collections.users.find((u) => u.email === creds.email && u.password === creds.password)
+        : undefined
     if (!match) return json(200, { user: null }) // legacy: bad credentials are 200, not 401
     session.userId = match._id.$oid
     return json(200, { user: currentUser(match) })
@@ -124,8 +127,9 @@ function route(method: string, req: StubRequest, session: Session, ctx: StubCont
   if (!data) return json(404, { message: 'Not found' })
   const [, db = '', collection = '', id] = data
 
-  // 2. Auth, for writes only (reads are public in legacy, D7; passwords are stripped below instead).
-  const isWrite = method === 'POST' || method === 'PUT' || method === 'DELETE'
+  // 2. Auth for every non-GET method, as legacy server.js does (reads are public, D7; passwords are
+  //    stripped below instead). Even HEAD and PATCH need a session user first.
+  const isWrite = method !== 'GET'
   if (isWrite) {
     if (!user) return json(401, { user: null })
     if ((collection === 'users' || collection === 'projects') && user.admin !== true) {

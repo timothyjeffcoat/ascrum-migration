@@ -73,7 +73,7 @@ Node comes from `web/.nvmrc` (`nvm use`), pnpm from `packageManager` (`corepack 
 
   Per-test `server.use()` overrides are allowed for error injection. Mocking `api/` is not.
 - Query by role, label or text, via Testing Library.
-- Each e2e file starts with `POST /__stub/reset`. Playwright runs serially.
+- Each e2e file starts with `POST /__stub/reset`, except `e2e/pages/` (no reset route in the Pages build; every page load is a fresh in-browser stub). Playwright runs serially and never reuses a running server, so stop `pnpm dev` before `pnpm e2e`.
 
 ## Definition of done (worker)
 1. All of the cluster's AC tests and named defect tests exist and pass.

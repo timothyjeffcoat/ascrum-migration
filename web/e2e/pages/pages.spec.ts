@@ -1,5 +1,7 @@
 // Phase 2 risk proofs for the GitHub Pages build (spec §11-2, §11-3, §11-6, AC-STUB-14), served by
 // scripts/pages-server.ts, which mimics Pages: /ascrum-migration/ base, 404.html for unknown paths.
+// No `POST /__stub/reset` here, unlike every other e2e file (CLAUDE.md): the Pages build has no
+// reset route (AC-STUB-14), and each test gets a fresh page, so a fresh in-browser stub.
 import { expect, test } from '@playwright/test'
 import { bootApp, probeStyles } from '../support.ts'
 

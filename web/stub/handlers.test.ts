@@ -111,6 +111,13 @@ describe('auth endpoints', () => {
     expect(body(bad)).toEqual({ user: null })
     expect(body(anon.call('POST', '/login', { email: 'nobody@x', password: 'demo' }))).toEqual({ user: null })
 
+    // passport-local rejects missing or empty credentials, even for a user whose stored password is empty.
+    const admin = new Client(ctx).login('admin')
+    admin.call('POST', coll('users'), { email: 'nopass@x', firstName: 'N', lastName: 'P', admin: false, password: '' })
+    for (const creds of [{ email: 'nopass@x', password: '' }, { email: 'nopass@x' }, {}, undefined]) {
+      expect(body(anon.call('POST', '/login', creds)), JSON.stringify(creds)).toEqual({ user: null })
+    }
+
     const ok = anon.call('POST', '/login', CREDENTIALS.admin)
     expect(ok.status).toBe(200)
     expect(body(ok)).toEqual({
@@ -161,6 +168,7 @@ describe('collections', () => {
       JSON.stringify({ _id: { $oid: BACKLOG.cart } }),
       JSON.stringify({ _id: { $in: [BACKLOG.cart] } }),
       JSON.stringify({ teamMembers: [USER.dev1] }),
+      JSON.stringify({ email: 'po@ascrum.test', password: 'demo' }), // would confirm a password guess
     ]) {
       const res = anon.call('GET', coll('productbacklog'), undefined, { q: bad })
       expect(res.status, bad).toBe(400)
@@ -203,6 +211,8 @@ describe('collections', () => {
       ['POST', coll('tasks')],
       ['PUT', coll('sprints', SPRINT.webshop1)],
       ['DELETE', coll('productbacklog', BACKLOG.cart)],
+      ['PATCH', coll('tasks', BACKLOG.cart)], // legacy server.js: any non-GET needs a session user
+      ['HEAD', coll('tasks')],
     ] as const) {
       const res = anon.call(method, path, {})
       expect(res.status, `${method} ${path}`).toBe(401)
