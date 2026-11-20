@@ -71,6 +71,9 @@ case "$event" in
   *) exit 0 ;;
 esac
 
+# The log is public: replace the home directory with "~" in every string field (commands, errors).
+record="$(jq -c --arg home "$HOME" 'walk(if type == "string" and $home != "" then gsub($home; "~") else . end)' <<<"$record")" || exit 0
+
 line="$(jq -c \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg event "$event" \
   --arg branch "$branch" --arg commit "$commit" --arg worktree "$worktree" \
