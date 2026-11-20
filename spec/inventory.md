@@ -2,7 +2,7 @@
 
 Source: `timothyjeffcoat/angular-app` (fork of `angular-app/angular-app`), `master` @ `92c579a`, last upstream commit 2016-04-11, 393 commits.
 Scope: everything under `client/src`, `client/test`, `client/gruntFile.js`, and `server/` (the server defines the API contract the client expects).
-Method: every non-vendor source file was read; counts are from `grep`, not estimates. Tests were **not executed** in this phase (see Q-T1 in questions.md).
+Method: every non-vendor source file was read; counts are from `grep`, not estimates. Tests were **not executed** in this phase, and per Q-A5 the legacy toolchain will not be revived, so there is no executed baseline.
 
 ---
 
@@ -261,7 +261,7 @@ Collections touched: `users`, `projects`, `productbacklog`, `sprints`, `tasks`.
 
 jshint options: `curly, eqeqeq, immed, latedef, newcap, noarg, sub, boss, eqnull`.
 Output `client/dist` is served by the Express server from `/static`.
-Toolchain age: grunt 0.4, karma 0.8 (old global-variable config format), recess (deprecated). This toolchain is very unlikely to install on a current Node without pinning an old Node; this has not been verified (see Q-T1).
+Toolchain age: grunt 0.4, karma 0.8 (old global-variable config format), recess (deprecated). This toolchain is very unlikely to install on a current Node without pinning an old Node; this has not been verified, and per Q-A5 it will not be.
 
 ---
 

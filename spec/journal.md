@@ -50,3 +50,35 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 
 **Moment**
 - "The journal is the story; the metrics log is the evidence. The agent writes the first, a hook writes the second."
+
+---
+
+## 2026-11-20 — Phase 1: Spec
+
+**What happened**
+- The owner answered all 33 questions: 29 with "follow recommendation" (two with a refinement: Node 24; "generate the data we need to demonstrate fully"), and 4 in their own words (fix bugs = option b; one article at the end; aimed at managers; disclose agent authorship = yes). One owner choice changed the governance model: **the reviewer agent, not the human, merges** once CI is green and no blocking deviations are open.
+- Wrote `spec/conversion-spec.md` (494 lines) and `CLAUDE.md` (83 lines).
+  - **Stack:** React 19 (pushback on the brief's React 18, accepted), React Router v7 loaders as the 1:1 mapping for AngularJS route resolves, Vite, TypeScript strict, pnpm/Node 24.
+  - **Acceptance criteria:** 69 numbered, plus a stub contract-test set. Each must be covered by a test that names its id.
+  - **Defects:** of the 21 found (20 in discovery, 1 found while writing the spec), 16 will be fixed and 5 deliberately preserved. Each fix must have a test named after its defect id.
+  - **Test parity:** 113 of the 133 legacy tests are portable; 20 test dead code.
+- Designed the parallel phase to avoid conflicts *by construction*. The foundation cluster pre-registers every feature's route file and message key, so parallel workers never touch a shared file. Only the reviewer edits the status table, which also stops agents grading their own work.
+- The spec lists 10 decisions it made **beyond** the owner's answers, for explicit sign-off, instead of slipping them in.
+
+**Mistakes caught**
+- Phase 0 docs referred twice to a question "Q-T1" that was never written: a dangling reference produced by the agent itself, caught while re-reading the answers. Fixed. The owner's answer to Q-A5 covered the intent (no executed legacy test baseline).
+- While writing the acceptance criteria, found a 21st legacy defect: removing a project shows "saved successfully", because the remove handler silently falls back to the save handler. Discovery had missed it.
+
+**Moments (article candidates)**
+- "29 of 33 answers were 'follow recommendation'. That's the point: a good discovery phase turns a migration into a short list of real decisions."
+- "The riskiest owner decision — letting an agent merge — is exactly what the gates exist for: green CI plus an independent reviewer that is not the author."
+- "We pushed back on the brief: React 18 in late 2026 would have dated the piece on day one."
+
+**Metrics**
+| Metric | Value | Source |
+|---|---|---|
+| Questions answered | 33 / 33 (29 accepted recommendations) | questions.md |
+| Acceptance criteria | 69 + stub contract set | conversion-spec §12 |
+| Defects: fix / preserve | 16 / 5 (21 total) | conversion-spec §6 |
+| Portable legacy test cases | 113 of 133 | conversion-spec §9 |
+| Decisions awaiting owner sign-off | 10 | conversion-spec §0.1 |
