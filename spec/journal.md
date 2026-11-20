@@ -164,7 +164,7 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - **A spec risk answered itself both ways.** Do mocked cookies reach `document.cookie`? In a real browser, yes: MSW 3 does it. In the unit-test DOM, no. Both are now proven by tests, and the fallback is on only where it is needed.
 
 **Mistakes (kept, because they are the point)**
-- **A commit message that lied.** The commit "remove committed secrets" contained the folder move but not the edits. The `sed` ran after staging, and the commit had no `git add`.
+- **A commit message that lied (and it happened again).** After the review, a fix commit also listed a file it did not contain, the hook change; a follow-up commit added it. The commit "remove committed secrets" contained the folder move but not the edits. The `sed` ran after staging, and the commit had no `git add`.
   - `git diff --stat` caught it before anything was pushed, and the commit was amended to match its message.
   - Lesson: the message describes intent; only the diff describes the commit.
 - **The secret was in more places than the inventory said.** The dead MongoLab key also sat in three legacy server test files. The exit-criteria `grep` exists for exactly this.
