@@ -82,3 +82,16 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 | Defects: fix / preserve | 16 / 5 (21 total) | conversion-spec §6 |
 | Portable legacy test cases | 113 of 133 | conversion-spec §9 |
 | Decisions awaiting owner sign-off | 10 | conversion-spec §0.1 |
+
+---
+
+## 2026-11-20 — Going public: `ascrum-migration`
+
+**What happened**
+- The owner decided to make the work public. The existing fork was already public but nothing had been pushed to it. Chose a **standalone** public repo, `ascrum-migration`, over the fork: a descriptive name and demo URL, and commits that count on the owner's profile. The full upstream history, MIT license and author credit are kept; the fork is left untouched.
+- **Pre-publication privacy pass:** the metrics hook had been recording absolute local paths (machine username and folder layout) into a file that is committed. The hook now records a worktree *label*; the logged lines and one path in `questions.md` were scrubbed.
+- The dead MongoLab key and TLS key already in upstream history stay visible (history is not rewritten, so the upstream lineage stays intact). The README will say so, per Q-A3.
+- `migration` becomes the default branch so visitors land on the spec; `master` stays as the untouched legacy snapshot.
+
+**Moment**
+- "Before going public, the first thing to audit was our own telemetry: the metrics log built for honesty was quietly leaking local paths."

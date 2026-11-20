@@ -22,7 +22,9 @@ mkdir -p "$main_root/spec"
 
 branch="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 commit="$(git -C "$cwd" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-worktree="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")"
+# Record a label, never an absolute path: the log is committed to a public repo.
+toplevel="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")"
+if [ "$toplevel" = "$main_root" ]; then worktree="main"; else worktree="$(basename "$toplevel")"; fi
 
 # Classify a shell command into a gate category; empty = not a gate (not logged).
 classify() {

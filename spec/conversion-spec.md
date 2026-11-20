@@ -75,7 +75,7 @@ Authority: this spec is the contract for every worker and reviewer session. If c
 | Concern | Choice | Notes |
 |---|---|---|
 | Runtime | Node 24 LTS, pnpm | `.nvmrc`/`engines`, and `packageManager` pinned |
-| Build/dev | Vite (latest stable at Phase 2) | `base` = `/` in dev, `/angular-app/` for GitHub Pages |
+| Build/dev | Vite (latest stable at Phase 2) | `base` = `/` in dev, `/ascrum-migration/` for GitHub Pages |
 | UI | React 19 + TypeScript (`strict: true`) | no `any`; `unknown` + narrowing at the API boundary |
 | Routing | react-router v7, data mode | `createBrowserRouter`, `basename = import.meta.env.BASE_URL` |
 | Styles | Vendored Bootstrap 2.1.1 LESS via Vite's `less` support | Needs `less` with `math: 'always'`, because Bootstrap 2 uses bare `/` division (see §11) |
@@ -376,7 +376,7 @@ Source of truth: `spec/metrics.jsonl` (written by a hook) and `gh` data. The jou
 ## 11. Risks to verify in Phase 2 (before any worker starts)
 1. **Bootstrap 2 LESS on modern `less`.** Less 4 defaults to `math: 'parens-division'`, while Bootstrap 2 uses bare division (e.g. `@gridGutterWidth / 2`). Needs `math: 'always'`; verify that the compiled CSS matches the legacy classes.
 2. **MSW and cookies.** Whether the `XSRF-TOKEN`/`sid` Set-Cookie headers on mocked responses reach `document.cookie` in the browser worker; otherwise use the fallback from §7.4.
-3. **GitHub Pages deep links.** The 404.html SPA fallback, the `/angular-app/` basename, and the MSW worker scope under that base.
+3. **GitHub Pages deep links.** The 404.html SPA fallback, the `/ascrum-migration/` basename, and the MSW worker scope under that base.
 4. **Router v7 data mode** + the notification rotation on navigation (no direct `$routeChangeSuccess` equivalent). Prove it with a test before cluster 0 closes.
 5. **Playwright in CI** (browser install time). Chromium only.
 

@@ -144,7 +144,7 @@ follow recommendation
 
 ## E. Process, workflow & repo
 
-**Q-E1. Repo layout.** The working dir `/home/deeplearner/code/consultnet` was empty; I cloned your fork into it (remotes: `origin` = your fork, `upstream` = angular-app). Is this the intended home? Should the React app live in a new top-level `web/`, with the AngularJS code moved to `legacy/client`, on a long-lived `migration` branch?
+**Q-E1. Repo layout.** The local working directory was empty; I cloned your fork into it (remotes: `origin` = your fork, `upstream` = angular-app). Is this the intended home? Should the React app live in a new top-level `web/`, with the AngularJS code moved to `legacy/client`, on a long-lived `migration` branch?
 **Answer:**
 follow recommendation. 
 
