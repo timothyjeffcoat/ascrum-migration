@@ -18,7 +18,7 @@ Method: every non-vendor source file was read; counts are from `grep`, not estim
 | Build | Grunt 0.4 (jshint, html2js, concat, uglify, recess/LESS, copy) |
 | Tests | Jasmine 1.x via Karma 0.8; 23 spec files, **133 `it` blocks** (3 spec files empty) |
 | CI | Travis, Node 0.10, Firefox under xvfb, `grunt release` |
-| App source size | 1,849 LOC across 40 JS files + 17 `.tpl.html` files (excluding vendor) |
+| App source size | 2,290 lines: 40 JS files (1,849) + 17 `.tpl.html` files (441), excluding vendor; `wc -l` |
 
 **Hard external fact:** MongoLab (mLab) shut down in 2020 after it was acquired by MongoDB Atlas. The backend **cannot run as written**: `server/lib/mongo-proxy.js` and `mongo-strategy.js` both call `https://api.mongolab.com/api/1`. Any runnable target needs a replacement for the API (the planned stub).
 

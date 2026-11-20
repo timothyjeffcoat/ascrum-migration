@@ -95,3 +95,45 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 
 **Moment**
 - "Before going public, the first thing to audit was our own telemetry: the metrics log built for honesty was quietly leaking local paths."
+
+---
+
+## 2026-11-20 — Independent review of the spec (AI reviews AI)
+
+**What happened**
+- At the owner's request, a **fresh sub-agent** reviewed the spec as a team lead about to hand it to three parallel workers. It had none of the authoring session's context: it was told *where* to look (spec, CLAUDE.md, inventory, answers, legacy source), not what the author thought. It was read-only and not allowed to reopen owner decisions. Effort: 29 tool calls, about 9 minutes (from the agent's completion notice).
+- It returned **25 findings: 9 blocking, 11 important, 5 minor**, plus 19 groups of claims it had checked and found correct. The full report with a disposition per finding is in `spec/reviews/spec-review-1.md`.
+- The authoring session re-verified every factual claim against the legacy source before acting. **All 25 held; none were rejected.** Spec rev 2 (710 lines) and CLAUDE.md rev 2 fix all of them.
+
+**What it caught**
+- **Mostly coordination, not React:**
+  - files every worker must write that no cluster owned;
+  - a single shared questions file that can't work across isolated worktrees;
+  - reviewer bookkeeping that contradicts the branch protection the owner asked for;
+  - no owner for shared test infrastructure.
+- **An architecture deadlock:** with the login modal inside the router, reloading an admin URL while logged out would wait forever for a modal that never mounts.
+- **Three places where the author misread the legacy code:**
+  - "fetch all" actually sends `q={}`;
+  - validation errors show without any "touched" state;
+  - the current-user check repeats while anonymous.
+
+  In each case the spec was written from memory of the code rather than the code itself.
+- **A metric quietly redefined:** the owner agreed to "N of 133 tests carried over", but the spec had switched to N/113. Rev 2 restores 133 as the headline and pre-assigns 8 cases that test deliberately dropped behaviour.
+- **The author's own line count was wrong:** 1,849 was JavaScript only; with templates it is 2,290.
+
+**Decisions**
+- Rev 2 adds 5 more spec-made decisions (S11–S15) to the 10 already awaiting owner sign-off. The spec status now says workers **must not start** until the owner approves §0.1. Before, it only said "awaiting review".
+
+**Moments (article candidates)**
+- "The spec's author called it ready. A second agent with a clean context found nine ways it would have failed, and most were about how agents coordinate, not about code."
+- "Every factual finding was checked against the source before it was accepted. Trust the reviewer's direction, verify its evidence."
+- "The review cost about nine minutes of agent time. Finding the modal deadlock after three workers had built on it would have cost a wave."
+
+**Metrics**
+| Metric | Value | Source |
+|---|---|---|
+| Review findings (blocking / important / minor) | 9 / 11 / 5 | spec-review-1.md |
+| Findings confirmed / rejected | 25 / 0 | spec-review-1.md |
+| Acceptance criteria (rev 1 → rev 2) | 69 → 76, plus 15 stub contract ACs | conversion-spec §12 |
+| Spec-made decisions awaiting sign-off | 15 | conversion-spec §0.1 |
+| Legacy tests pre-assigned n/a | 8 | conversion-spec §9 |
