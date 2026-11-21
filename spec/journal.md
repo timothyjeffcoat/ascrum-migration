@@ -245,6 +245,11 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 | Metric | Value | Source |
 |---|---|---|
 | Review findings (blocking / important / minor) | 2 / 5 / 6 | `spec/reviews/phase-2-review.md` |
-| Findings fixed in code or docs / awaiting owner | 11 / 2 (R2-01 ledger scrub, R2-03 answers) | this entry |
+| Findings fixed in code or docs / awaiting owner | 11 / 2 (R2-01 ledger scrub, R2-03 answers); both closed after the owner's decisions | this entry |
 | Lint probe: forbidden test forms caught (before / after) | 2 of 7 (old rule caught only `describe.only` and `it.todo`) / 7 of 7 | `eslint` probe |
 
+
+**Owner decisions (same day)**
+- The owner approved the ledger scrub and confirmed all four harness questions as implemented. The author then ran the scrub once, from a script, and recorded it in the review file: 41 → 40 rows, home paths masked, the dead-key fragment redacted.
+- The scrub's own check found a second leak: Claude Code's temp folder is named after the home path, so the username also appeared there. The hook now masks that folder too. The first fix had covered only the leak the reviewer named; checking the result, not just running the fix, found the rest.
+- Moment: "The human's job in this workflow is small but real: a few yes/no decisions that the agents are not allowed to make for themselves."

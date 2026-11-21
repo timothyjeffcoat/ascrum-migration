@@ -71,8 +71,9 @@ case "$event" in
   *) exit 0 ;;
 esac
 
-# The log is public: replace the home directory with "~" in every string field (commands, errors).
-record="$(jq -c --arg home "$HOME" 'walk(if type == "string" and $home != "" then gsub($home; "~") else . end)' <<<"$record")" || exit 0
+# The log is public: replace the home directory with "~" in every string field (commands, errors), and
+# Claude Code's temp dir, whose name encodes the home path (/tmp/claude-<uid>/-home-<user>-...), with "<claude-tmp>".
+record="$(jq -c --arg home "$HOME" 'walk(if type == "string" then (if $home != "" then gsub($home; "~") else . end) | gsub("/tmp/claude-[0-9]+/[^/\\s\"]*"; "<claude-tmp>") else . end)' <<<"$record")" || exit 0
 
 line="$(jq -c \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg event "$event" \

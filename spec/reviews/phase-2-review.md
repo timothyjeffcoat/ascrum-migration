@@ -101,9 +101,9 @@ I recommend resolving R2-03 (owner answers to Q-harness-1..4) before the Phase 2
 ## Author disposition (orchestrator, 2026-11-20)
 | Id | Disposition |
 |---|---|
-| R2-01 | **Partly fixed.** The hook now rewrites `$HOME` to `~` in every logged string (verified with a probe). Scrubbing the rows already written (plus one fake probe row the author added while testing) was blocked by Claude Code's permission system as audit-log tampering. **Awaiting the owner.** |
+| R2-01 | **Fixed.** The hook rewrites `$HOME` to `~` in every logged string and, since the scrub, also masks Claude Code's temp dir as `<claude-tmp>` (its name encodes the home path, so the username leaked a second way). With the owner's approval (2026-11-20) the existing rows were scrubbed once by a script: home paths and temp dirs masked, the dead-key fragment replaced by `<redacted>`, and the fake probe row dropped (41 → 40 rows). The earlier PR commits still hold the old rows; the squash merge keeps them out of `migration`. |
 | R2-02 | Fixed: the §11-5 timings are in the journal, and the "every risk" claim is reworded. |
-| R2-03 | **Awaiting the owner** (Q-harness-1..4). |
+| R2-03 | **Fixed.** Owner confirmed Q-harness-1..4 as implemented (2026-11-20). The stale `errorRecovery` sentence in Q-harness-3 now describes the PostCSS plugin. |
 | R2-04 | Fixed: `eslint.config.js` bans the skip/only/todo/fixme/skipIf/runIf forms, including chained ones; probe catches 7 of 7. |
 | R2-05 | Fixed: `errorRecovery` removed; a PostCSS plugin drops only `*`-prefixed declarations. |
 | R2-06 | Fixed: an empty or missing email or password fails login; AC-STUB-04 extended. |
