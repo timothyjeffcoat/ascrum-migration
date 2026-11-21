@@ -15,6 +15,7 @@ import { login, requestCurrentUser, resetCurrentUser } from '../auth/currentUser
 import { resetLoginDialog } from '../auth/loginDialog.ts'
 import { retryQueue } from '../auth/retryQueue.ts'
 import { removeAll } from '../notifications/store.ts'
+import { server } from './server.ts'
 
 export type Persona = keyof typeof CREDENTIALS | 'anonymous'
 
@@ -51,4 +52,45 @@ export async function renderRoute(path: string, options: RenderRouteOptions = {}
   onTestFinished(() => router.dispose())
   const user = userEvent.setup()
   return { ...render(app), router, user }
+}
+
+export type RecordedRequest = {
+  method: string
+  pathname: string
+  /** The `?q=` query, parsed; undefined when absent. */
+  q: unknown
+  headers: Headers
+  credentials: RequestCredentials
+  /** The parsed JSON body; undefined when empty. */
+  body: unknown
+}
+
+/**
+ * Records every request that reaches the stub from now until the end of the test. An observer, not an
+ * override: the stub still answers, so this never stands in for api/ (CLAUDE.md).
+ */
+export function recordRequests(): RecordedRequest[] {
+  const recorded: RecordedRequest[] = []
+  const listener = ({ request }: { request: Request }) => {
+    const url = new URL(request.url)
+    const q = url.searchParams.get('q')
+    const entry: RecordedRequest = {
+      method: request.method,
+      pathname: url.pathname,
+      q: q === null ? undefined : (JSON.parse(q) as unknown),
+      headers: request.headers,
+      credentials: request.credentials,
+      body: undefined,
+    }
+    recorded.push(entry)
+    void request
+      .clone()
+      .text()
+      .then((text) => {
+        entry.body = text === '' ? undefined : (JSON.parse(text) as unknown)
+      })
+  }
+  server.events.on('request:start', listener)
+  onTestFinished(() => server.events.removeListener('request:start', listener))
+  return recorded
 }
