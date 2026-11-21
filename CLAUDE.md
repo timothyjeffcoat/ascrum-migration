@@ -8,7 +8,7 @@ This repo (public: `ascrum-migration`) is a portfolio artifact. The product is t
    - Architecture, including composition, the `useCrudForm` contract and the route-file contract (§4).
    - Mapping (§5); defect dispositions (§6); stub (§7).
    - Clusters, ownership and workflow (§8); test porting (§9); acceptance criteria (§12); Phase 2 (§13).
-   - **If its status line doesn't read APPROVED, workers must not start.**
+   - **If its status line doesn't read APPROVED, workers must not start.** Also check `MIGRATION.md`: your cluster's wave gate (spec §8.1) must be open.
 2. `spec/inventory.md`: facts about the legacy app. `legacy/` is the reference source; never modify it.
 3. `spec/questions.md` (owner answers) and `spec/questions/<cluster>.md` (Phase 3 questions).
 4. `MIGRATION.md`: cluster status. Reviewers change it, and only through PRs (spec §8.2/§8.3).
@@ -19,7 +19,7 @@ This repo (public: `ascrum-migration`) is a portfolio artifact. The product is t
 - **Stay inside your cluster's owned paths** (spec §8.1). Every cluster may also write its own `spec/worklogs/<cluster>.md` and `spec/questions/<cluster>.md`. Anything else outside the owned paths becomes a question, never an edit.
 - **Don't add dependencies** without an answered question.
 - **Don't change the wire contract.** Quirks live only in `api/` and `auth/` (spec §4).
-- **Never weaken a gate:** no skipped or `.only` tests, `eslint-disable`, `@ts-expect-error`, `as any`, or loosened configs. If a gate seems wrong, ask.
+- **Never weaken a gate:** no skipped or `.only` tests, `eslint-disable`, `@ts-expect-error`, `as any`, or loosened configs. If a gate seems wrong, ask. Most of these are enforced mechanically (inline eslint config is off, `.only/.skip/.todo` and `@ts-*` comments are lint errors), and editing the config to get around them is a blocking deviation.
 - **Honesty over polish.** Record mistakes, reverts and wrong turns in your worklog; they feed `spec/deviations.md` and the public case study.
 - **This repo is public.** Never write absolute local paths, usernames, emails or secrets into tracked files.
 
@@ -28,19 +28,24 @@ Node 24 LTS, pnpm, React 19, TypeScript strict, Vite, react-router v7 (data mode
 
 | Gate | Command |
 |---|---|
-| lint | `pnpm lint` (eslint + prettier --check) |
+| lint | `pnpm lint` (eslint with `--max-warnings 0` + prettier --check) |
 | typecheck | `pnpm typecheck` |
 | unit | `pnpm test` |
 | build | `pnpm build` |
-| e2e | `pnpm e2e` (Node stub, Chromium, serial) |
+| e2e | `pnpm e2e`: builds `dist/` and `dist-pages/` first, then Playwright (Chromium, serial), project `chromium` (Node stub + `vite preview`) and `pages` (Pages build + MSW) |
+| e2e, watching | `pnpm exec playwright test --headed`, `--ui` (time-travel UI) or `--debug` (step through); needs a display, so local only |
 | all gates, as CI runs them | `pnpm verify` |
 | dev | `pnpm dev` (Node stub via proxy) / `pnpm dev:msw` (in-browser stub) |
+| one-off stub | `pnpm stub` (port 3001); `POST /__stub/reset` reseeds |
+
+Node comes from `web/.nvmrc` (`nvm use`), pnpm from `packageManager` (`corepack enable`).
 
 ## Conventions
 **Layout and routes**
 - Feature code goes in `web/src/features/<feature>/`.
 - `routes.tsx` exports `export const routes: RouteObject[]` with **flat absolute paths**, built with `crudRoutes()` where it fits (spec §4.3).
 - Tests sit next to the code as `*.test.ts(x)`.
+- `stub/` and `scripts/` run directly under Node 24 (type stripping): relative imports there carry their `.ts` extension, and only erasable TypeScript syntax is allowed (no enums, no constructor parameter properties). `tsc` enforces this everywhere.
 
 **Naming**
 - Components and component files: `PascalCase.tsx`. Hooks: `useThing.ts`; anything that calls a hook *is* a hook and is named `use*`. Other modules: `camelCase.ts`.
@@ -68,7 +73,7 @@ Node 24 LTS, pnpm, React 19, TypeScript strict, Vite, react-router v7 (data mode
 
   Per-test `server.use()` overrides are allowed for error injection. Mocking `api/` is not.
 - Query by role, label or text, via Testing Library.
-- Each e2e file starts with `POST /__stub/reset`. Playwright runs serially.
+- Each e2e file starts with `POST /__stub/reset`, except `e2e/pages/` (no reset route in the Pages build; every page load is a fresh in-browser stub). Playwright runs serially and never reuses a running server, so stop `pnpm dev` before `pnpm e2e`.
 
 ## Definition of done (worker)
 1. All of the cluster's AC tests and named defect tests exist and pass.
@@ -84,6 +89,7 @@ Node 24 LTS, pnpm, React 19, TypeScript strict, Vite, react-router v7 (data mode
 - `spec/deviations.md` (reviewer): format and cluster-scoped ids in spec §8.4.
 - `spec/journal.md` (reviewer and orchestrator): written for a LinkedIn article aimed at engineering managers. Cover what happened, decisions and why, measured metrics only (cite `spec/metrics.jsonl`, `gh`, `deviations.md`), and "moments".
 - `spec/metrics.jsonl` is written by the `.claude/settings.json` hook into the main checkout. Never edit it by hand or disable the hook.
+- The hook records pass/fail from the command's **exit code**. Run gate commands unpiped, or start with `set -o pipefail`; `pnpm test | tail` always "passes" (this undercounted Phase 2's failures, see the journal).
 
 ## Reviewer role
 - You are not the worker. Review against the spec, not the worker's explanation.
@@ -92,7 +98,7 @@ Node 24 LTS, pnpm, React 19, TypeScript strict, Vite, react-router v7 (data mode
   - for each AC, check the code **and** that a named test asserts it, and post a pass/fail PR checklist;
   - diff against §5/§6;
   - check the owned paths;
-  - check that no gate was weakened;
+  - check that no gate was weakened, including the forms lint can't catch: `rg -n "\.(skip|only|todo|fixme|fails)\b|\['(skip|only)'\]|\.extend\(| as [a-z]+ \}" web/src web/e2e` and any run-time `skip()` (review R2-15);
   - check the §9 table against the pre-assigned statuses.
 - Log findings in `spec/deviations.md` on the PR branch. Blocking = an AC failing, a contract change, a weakened gate, an edit outside the owned paths, or a §9 status contradicting a pre-assignment.
 - **Blocking findings:** stop and report them to the orchestrator; don't fix the worker's code yourself.

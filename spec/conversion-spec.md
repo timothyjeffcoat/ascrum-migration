@@ -1,6 +1,6 @@
 # Conversion Spec: AScrum, AngularJS 1.2 → React 19
 
-Status: **DRAFT rev 2, awaiting owner sign-off of §0.1 (Phase 1 gate)**. Workers must not start until this line reads APPROVED.
+Status: **APPROVED rev 2** (owner: "approve all" for §0.1 S1–S15, 2026-11-20). Workers start only after the Phase 2 exit gate (§13) and the wave gates (§8.1).
 Revision history: rev 1 (initial). Rev 2 incorporates independent team-lead review `spec/reviews/spec-review-1.md` (25 findings, all confirmed).
 Inputs: `spec/inventory.md` (facts) and `spec/questions.md` (owner answers, 2026-11-20).
 Authority: this spec is the contract for every worker and reviewer session. If code and spec disagree, the spec wins until it is amended. If the spec is silent, raise a question (§8.5) and do not guess.
@@ -48,8 +48,8 @@ Authority: this spec is the contract for every worker and reviewer session. If c
 | E6 | Keep the MIT LICENSE; the README credits Pawel Kozlowski & Peter Bacon Darwin and links the book. |
 | F1–F4 | One LinkedIn article at the end, aimed at managers, stating plainly that agents did the conversion. Measured numbers only. Drafts go in `docs/article/`. |
 
-### 0.1 Decisions made by the spec beyond the owner's answers: **owner sign-off required**
-Reply "approve all", or veto by number. Until then, workers must not start.
+### 0.1 Decisions made by the spec beyond the owner's answers: **signed off**
+Owner reply 2026-11-20: "approve all". No vetoes.
 
 | # | Decision | Why |
 |---|---|---|
@@ -98,7 +98,7 @@ Reply "approve all", or veto by number. Until then, workers must not start.
 | Unit tests | Vitest (jsdom), @testing-library/react + user-event, MSW node | shared helpers in `src/test/` (§13) |
 | E2E | Playwright, Chromium, **`workers: 1`, `fullyParallel: false`** | each spec file starts with `POST /__stub/reset`; runs against the Node stub + `vite preview` |
 | Lint/format | ESLint flat config + typescript-eslint + eslint-plugin-react-hooks; Prettier `--check` | |
-| Versions | Latest stable of each at Phase 2, recorded in `pnpm-lock.yaml` | new dependencies after Phase 2 need an answered question |
+| Versions | Latest stable of each at Phase 2, recorded in `pnpm-lock.yaml`, except react-router pinned to v7 and TypeScript to 6.0 (Q-harness-1/-2) | new dependencies after Phase 2 need an answered question |
 
 ---
 
@@ -367,7 +367,7 @@ Loaded docs for edit routes: a missing `sprintBacklog`/`teamMembers` is set to `
 | POST | `/databases/ascrum/collections/:c` | 200 created Doc with new `_id.$oid` |
 | PUT | `/databases/ascrum/collections/:c/:id` | replace (users: keep stored password if absent, S8) → 200 Doc / 404 |
 | DELETE | `/databases/ascrum/collections/:c/:id` | 200 deleted Doc / 404 |
-| POST | `/__stub/reset` | dev/test only; reseed and clear sessions → 204 |
+| POST | `/__stub/reset` | dev/test only; reseed and clear sessions → 204. Skips sessions and XSRF (Q-harness-4) |
 
 - `:db` must be `ascrum`; `:c` must be one of `users, projects, productbacklog, sprints, tasks`. Anything else → 404.
 - Writes need a session user, otherwise **401** `{user:null}`. Writes to `users`/`projects` also need admin, otherwise **401** `{user}` (D15).
@@ -522,8 +522,8 @@ Source of truth: `spec/metrics.jsonl` (hook) and `gh` data. The journal cites th
 ---
 
 ## 11. Risks to verify in Phase 2
-1. **Bootstrap 2 LESS on less 4:** needs `math: 'always'`. Verify with a Playwright computed-style check (AC-SHELL-07).
-2. **MSW cookies:** whether a mocked `Set-Cookie` reaches `document.cookie` in the browser worker; if not, the §7.4 fallback.
+1. **Bootstrap 2 LESS on less 4:** needs `math: 'always'`. Verify with a Playwright computed-style check (AC-SHELL-07). *Phase 2 result: proven, but it also needed three commented syntax patches in the vendored copy and LightningCSS `errorRecovery` for IE star hacks (`spec/questions/harness.md` Q-harness-3).*
+2. **MSW cookies:** whether a mocked `Set-Cookie` reaches `document.cookie` in the browser worker; if not, the §7.4 fallback. *Phase 2 result: in Chromium, MSW 3 does it itself (fallback off); in jsdom it does not (fallback on in `src/test/server.ts`).*
 3. **GitHub Pages:** 404.html SPA fallback, `/ascrum-migration/` basename, MSW worker scope.
 4. **Router v7 data mode:** the §4.1 composition, guard → modal on a deep-link reload, and `router.subscribe` rotation ordering. Prove these with tests before wave A (gate in §8.1).
 5. **Playwright in CI:** browser install time; Chromium only.
