@@ -57,8 +57,8 @@ case "$event" in
       [ -z "$cat_" ] && exit 0
       status=pass; [ "$event" = "PostToolUseFailure" ] && status=fail
       record="$(jq -c --arg cat "$cat_" --arg status "$status" \
-        '{tool:"Bash", category:$cat, status:$status, command:(.tool_input.command|.[0:300]),
-          error:(if .error then (.error|tostring|.[0:300]) else null end)}' <<<"$payload")"
+        '{tool:"Bash", category:$cat, status:$status, command:.tool_input.command,
+          error:(if .error then (.error|tostring) else null end)}' <<<"$payload")"
     elif [ "$tool" = "Agent" ]; then
       status=pass; [ "$event" = "PostToolUseFailure" ] && status=fail
       record="$(jq -c --arg status "$status" \
@@ -73,7 +73,18 @@ esac
 
 # The log is public: replace the home directory with "~" in every string field (commands, errors), and
 # Claude Code's temp dir, whose name encodes the home path (/tmp/claude-<uid>/-home-<user>-...), with "<claude-tmp>".
-record="$(jq -c --arg home "$HOME" 'walk(if type == "string" then (if $home != "" then gsub($home; "~") else . end) | gsub("/tmp/claude-[0-9]+/[^/\\s\"]*"; "<claude-tmp>") else . end)' <<<"$record")" || exit 0
+# Redact before truncating (R2-14): a path cut at character 300 no longer matches $HOME.
+# Masks: the home dir; any other /home/<name>; Claude's temp dir; and "-home-<user>-..." segments,
+# which is how Claude Code encodes a project path in folder names (~/.claude/projects/-home-...).
+record="$(jq -c --arg home "$HOME" '
+  walk(if type == "string" then
+         (if $home != "" then gsub($home; "~") else . end)
+         | gsub("/tmp/claude-[0-9]+/[^/\\s\"]*"; "<claude-tmp>")
+         | gsub("/home/[^/\\s\"]+"; "/home/<user>")
+         | gsub("-home-[^/\\s\"]*"; "<project-dir>")
+       else . end)
+  | if .command then .command |= .[0:300] else . end
+  | if .error then .error |= .[0:300] else . end' <<<"$record")" || exit 0
 
 line="$(jq -c \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg event "$event" \

@@ -159,3 +159,9 @@ Hygiene: `git grep` at HEAD finds no home paths, local username, Claude temp dir
 Items 1–8 still pass. Item 9 now passes (§11-5 recorded). The remaining exit criteria are unchanged: the live Pages deep link can only be checked after the merge, and branch protection is the owner's step (E4).
 
 **Verdict: signed off.** R2-01..R2-13 are verified fixed. R2-14 and R2-15 do not block the merge; R2-14 should be fixed before cluster 0 starts.
+
+### Author disposition (after sign-off)
+| Id | Disposition |
+|---|---|
+| R2-14 | **Fixed before merge.** The hook now redacts first and cuts to 300 characters afterwards. Besides `$HOME` and `/tmp/claude-<uid>/…`, it also masks any `/home/<name>` and any `-home-<user>-…` folder segment (`<project-dir>`). Tested on synthetic strings, including a home path that crosses character 300; a live `pnpm lint` then wrote a clean row. |
+| R2-15 | **Accepted as a review step, not a lint rule.** Banning every alias, bracket access and run-time `skip()` with AST selectors would be brittle. CLAUDE.md's reviewer checklist now asks for a grep for these forms. |

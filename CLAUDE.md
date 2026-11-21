@@ -98,7 +98,7 @@ Node comes from `web/.nvmrc` (`nvm use`), pnpm from `packageManager` (`corepack 
   - for each AC, check the code **and** that a named test asserts it, and post a pass/fail PR checklist;
   - diff against §5/§6;
   - check the owned paths;
-  - check that no gate was weakened;
+  - check that no gate was weakened, including the forms lint can't catch: `rg -n "\.(skip|only|todo|fixme|fails)\b|\['(skip|only)'\]|\.extend\(| as [a-z]+ \}" web/src web/e2e` and any run-time `skip()` (review R2-15);
   - check the §9 table against the pre-assigned statuses.
 - Log findings in `spec/deviations.md` on the PR branch. Blocking = an AC failing, a contract change, a weakened gate, an edit outside the owned paths, or a §9 status contradicting a pre-assignment.
 - **Blocking findings:** stop and report them to the orchestrator; don't fix the worker's code yourself.
