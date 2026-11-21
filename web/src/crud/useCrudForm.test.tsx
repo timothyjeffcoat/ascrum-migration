@@ -39,6 +39,13 @@ const requiredSomeVal = { someVal: [required] }
 // Legacy common/directives/crud/edit.spec.js
 describe('legacy crud-edit directive cases', () => {
   describe('scope initialization', () => {
+    it('requires a valid resource object', () => {
+      // Adapted: legacy threw at link time when the resource lacked $saveOrUpdate/$id/$remove. The
+      // types require `save`; a saved document without a `remove` option throws when removed.
+      const { result } = setup({ initial: { id: 'd1' }, remove: undefined })
+      expect(() => result.current.remove()).toThrow('a saved document needs the `remove` option')
+    })
+
     it('should attach methods to the scope', () => {
       // Adapted: the hook returns the API; the getCssClasses assertion is dropped (§5.9, §9).
       const { result } = setup()
