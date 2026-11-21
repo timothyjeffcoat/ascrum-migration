@@ -254,3 +254,9 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - The scrub's own check found a second leak: Claude Code's temp folder is named after the home path, so the username also appeared there. The hook now masks that folder too. The first fix had covered only the leak the reviewer named; checking the result, not just running the fix, found the rest.
 - Moment: "The human's job in this workflow is small but real: a few yes/no decisions that the agents are not allowed to make for themselves."
 - The re-review signed off and found one more leak path in the hook (R2-14): it cut commands to 300 characters *before* redacting, so a path split at the cut slipped through. It also missed the `-home-<user>-` form Claude Code uses in folder names. Fixed before the merge rather than left for later.
+
+## 2026-11-21 — Phase 2 exit
+- PR #1 was squash-merged into `migration` (`29e69b4`) after the reviewer's sign-off and green CI. Pages then deployed automatically, triggered by CI passing on `migration`.
+- Live check in headless Chromium: a deep link (`/ascrum-migration/projects/123/sprints`) comes back as GitHub's 404 page, which is our copy of the app, and the app renders. The in-browser stub answers `/current-user` with the legacy `)]}',` prefix.
+- A small wrong turn: the first live probe called the stub under the Pages base path and got a 404. The app calls the legacy root paths, as the spec says. The e2e suite already knew that; the author's one-off probe didn't.
+- Gates: Phase 2 exit and "cluster 0 may start" are now open. One owner step remains: making the five CI checks required on `migration`.

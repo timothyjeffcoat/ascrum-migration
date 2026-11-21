@@ -6,8 +6,8 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 ## Gates
 | Gate | Opens when | State |
 |---|---|---|
-| Phase 2 exit (spec §13) | harness PR merged, CI green, Pages demo live, no secrets in the tree, reviewer sign-off | closed: harness PR in review |
-| Cluster 0 may start | Phase 2 exit | closed |
+| Phase 2 exit (spec §13) | harness PR merged, CI green, Pages demo live, no secrets in the tree, reviewer sign-off | **open** (2026-11-21): PR #1 squash-merged as `29e69b4`, CI green on `migration`, Pages deep link verified live, reviewer signed off (`spec/reviews/phase-2-review.md`) |
+| Cluster 0 may start | Phase 2 exit | **open** (owner still to make the 5 CI checks required on `migration`, E4) |
 | Wave A (clusters 1, 2, 3) | cluster 0 `merged` **and** spec §11-4 proven by cluster 0's tests | closed |
 | Wave B (clusters 4, 5) | clusters 1, 2, 3 all `merged` | closed |
 
