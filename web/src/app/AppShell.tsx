@@ -3,10 +3,15 @@ import { Outlet } from 'react-router'
 import { Header } from './Header.tsx'
 import { NotificationsOutlet } from './NotificationsOutlet.tsx'
 
-export function AppShell() {
+type AppShellProps = {
+  /** True while the router's first navigation is still loading (the root route's HydrateFallback). */
+  firstLoad?: boolean
+}
+
+export function AppShell({ firstLoad = false }: AppShellProps) {
   return (
     <>
-      <Header />
+      <Header firstLoad={firstLoad} />
       <NotificationsOutlet />
       <div className="container-fluid">
         <Outlet />

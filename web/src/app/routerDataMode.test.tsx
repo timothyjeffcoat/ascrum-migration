@@ -57,8 +57,10 @@ describe('§11-4 router v7 data mode', () => {
     const modal = (await screen.findByRole('heading', { name: 'Sign in' })).closest('.modal') as HTMLElement
     expect(within(modal).getByText(NOT_AUTHENTICATED)).toHaveClass('alert alert-warning')
     expect(router.state.initialized).toBe(false)
-    // The shell is already there around an empty content area (legacy header + empty ng-view).
+    // The shell is already there around an empty content area (legacy header + empty ng-view), with no
+    // breadcrumbs until the navigation completes (AC-SHELL-04).
     expect(screen.getByText('AScrum')).toHaveClass('brand')
+    expect(breadcrumbNames()).toEqual([])
 
     await user.type(within(modal).getByLabelText('E-mail'), 'admin@abc.com')
     await user.type(within(modal).getByLabelText('Password'), 'changeme')

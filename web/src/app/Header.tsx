@@ -12,10 +12,16 @@ import { Breadcrumbs } from './Breadcrumbs.tsx'
 /** §11-6: the legacy `/static/img/spinner.gif` becomes base-relative, so it works under any basename. */
 const SPINNER_SRC = `${import.meta.env.BASE_URL}img/spinner.gif`
 
-export function Header() {
+type HeaderProps = {
+  /** No breadcrumbs (and so no active nav item) before the first navigation has completed. */
+  firstLoad: boolean
+}
+
+export function Header({ firstLoad }: HeaderProps) {
   const { isAuthenticated, isAdmin } = useAuth()
   const navigate = useNavigate()
-  const breadcrumbs = breadcrumbsFor(useLocation().pathname)
+  const pathname = useLocation().pathname
+  const breadcrumbs = firstLoad ? [] : breadcrumbsFor(pathname)
   const hasPendingRequests = usePendingRequests()
   const [isAdminOpen, setAdminOpen] = useState(false)
 

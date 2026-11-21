@@ -25,10 +25,11 @@ export const featureRoutes: RouteObject[] = [
 
 /**
  * While the first navigation's loaders run (for example a guard waiting for the login dialog), the
- * shell renders with an empty content area, as legacy showed the header around an empty ng-view.
+ * shell renders around an empty content area, as legacy showed the header around an empty ng-view.
+ * No breadcrumbs yet: legacy built them on the first `$routeChangeSuccess` (AC-SHELL-04).
  */
-function EmptyContent() {
-  return null
+function ShellDuringFirstLoad() {
+  return <AppShell firstLoad />
 }
 
 function toProjectsInfo() {
@@ -41,10 +42,10 @@ export function buildRoutes(extraRoutes: RouteObject[] = []): RouteObject[] {
     {
       path: '/',
       element: <AppShell />,
+      HydrateFallback: ShellDuringFirstLoad,
       children: [
         {
           errorElement: <RouteError />,
-          HydrateFallback: EmptyContent,
           // Legacy `otherwise({redirectTo:'/projectsinfo'})` (AC-SHELL-06). It also caught '/', where
           // cancel and logout land; '*' doesn't match '/' here, so the index route covers it.
           children: [

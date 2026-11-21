@@ -79,8 +79,10 @@ describe('legacy security service cases', () => {
 
     it('AC-AUTH-07 (legacy: redirects to / by default): Log out POSTs /logout, clears the user and navigates to /', async () => {
       const { router, user } = await renderRoute('/projects', { as: 'po' })
+      // Wait for the first load first: the shell is re-mounted when it completes (root HydrateFallback).
+      await waitFor(() => expect(router.state.initialized).toBe(true))
+      expect(router.state.location.pathname).toBe('/projects')
       const logoutButton = await screen.findByRole('button', { name: 'Log out' })
-      await waitFor(() => expect(router.state.location.pathname).toBe('/projects'))
       const seen = recordRequests()
 
       await user.click(logoutButton)
