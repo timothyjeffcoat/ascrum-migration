@@ -1,10 +1,11 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { request } from '../api/http.ts'
+import type { RouteObject } from 'react-router'
 import { renderRoute, type Persona } from '../test/renderRoute.tsx'
 
-async function renderShell(path: string, as: Persona = 'anonymous') {
-  const rendered = await renderRoute(path, { as })
+async function renderShell(path: string, as: Persona = 'anonymous', routes: RouteObject[] = []) {
+  const rendered = await renderRoute(path, { as, routes })
   await waitFor(() => expect(rendered.router.state.initialized).toBe(true))
   if (as !== 'anonymous') await screen.findByRole('button', { name: 'Log out' })
   const navbar = document.querySelector('.navbar')
@@ -28,8 +29,13 @@ describe('Header', () => {
   })
 
   it('AC-SHELL-01: the brand goes to /projectsinfo when anonymous', async () => {
-    const { router, user } = await renderShell('/projectsinfo')
-    await router.navigate('/admin') // anywhere else first; unknown → /projectsinfo
+    // Start on a test-only public route: every real route an anonymous user can stay on is
+    // /projectsinfo itself (others redirect or open the login), so starting there could not fail
+    // (DEV-foundation-01).
+    const { router, user } = await renderShell('/elsewhere', 'anonymous', [
+      { path: '/elsewhere', element: <p>elsewhere</p> },
+    ])
+    expect(router.state.location.pathname).toBe('/elsewhere')
     await user.click(screen.getByText('AScrum'))
     await waitFor(() => expect(router.state.location.pathname).toBe('/projectsinfo'))
   })

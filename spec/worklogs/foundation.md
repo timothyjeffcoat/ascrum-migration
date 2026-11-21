@@ -221,3 +221,37 @@ Out of scope for this table (spec §9): `crud.spec` crudEditMethods (17, dead) a
   placeholder component, and add data to the loader after the `await require…()` line.
 - `recordRequests()` in `src/test/renderRoute.tsx` records what reached the stub (method, path,
   parsed `q`, headers, body) without overriding anything.
+
+## 2026-11-20 (local; 2026-11-21 UTC): session 2, fix for DEV-foundation-01
+
+### What was done
+- **Finding (reviewer, blocking):** "AC-SHELL-01: the brand goes to /projectsinfo when anonymous"
+  could not fail. It started at `/projectsinfo`, navigated to `/admin` (unknown path, which redirects
+  back to `/projectsinfo`), then clicked the brand and waited for `/projectsinfo`, the location it
+  was already at. With `home()` mutated so that an anonymous click does nothing, all 181 unit tests
+  still passed.
+- **Fix:** the test now starts on a test-only public route `/elsewhere`, passed through
+  `renderRoute`'s `routes` option (`renderShell` gained an optional `routes` argument for this). It
+  asserts the start location is `/elsewhere`, clicks the brand, and waits for `/projectsinfo`. Only
+  `web/src/app/Header.test.tsx` changed; no source change.
+
+### Mutation check (run this session)
+- Mutated `home()` in `web/src/app/Header.tsx` to `if (isAuthenticated) void navigate('/dashboard')`.
+- `pnpm exec vitest run src/app/Header.test.tsx`: 1 failed, 10 passed.
+  `× AC-SHELL-01: the brand goes to /projectsinfo when anonymous`,
+  `AssertionError: expected '/elsewhere' to be '/projectsinfo'`.
+- Reverted with `git checkout -- web/src/app/Header.tsx`; `git diff --stat` then showed only
+  `web/src/app/Header.test.tsx`.
+
+### Mistakes and wrong turns
+- The original test was mine (session 1): I added the `/admin` hop to get "somewhere else" without
+  checking that the unknown-path redirect lands on the very target the test asserts. Lesson: an
+  assertion on a final location needs a precondition proving the start location differs.
+
+### Gate results (this session)
+`pnpm verify` (exit 0):
+- lint: `All matched files use Prettier code style!` (eslint `--max-warnings 0` clean)
+- typecheck: `tsc --noEmit` clean
+- unit: `Test Files  23 passed (23)`, `Tests  181 passed (181)`
+- build: `✓ built in 337ms` (dist), `✓ built in 358ms` (dist-pages)
+- e2e: `18 passed (4.2s)`
