@@ -15,7 +15,7 @@
 | [`CLAUDE.md`](CLAUDE.md) | The rules every agent session follows |
 | [`MIGRATION.md`](MIGRATION.md) | Live status of each conversion cluster and the gates between waves |
 
-**Status:** Phase 0 (discovery) ✅ · Phase 1 (spec) ✅ signed off · Phase 2 (harness) in review · Phase 3 (parallel conversion) · Phase 4 (case study)
+**Status:** Phase 0 (discovery) ✅ · Phase 1 (spec) ✅ signed off · Phase 2 (harness) ✅ merged, [live demo](https://timothyjeffcoat.github.io/ascrum-migration/) · Phase 3 (parallel conversion) · Phase 4 (case study)
 
 **Run it** (Node 24 and pnpm via corepack; everything lives in `web/`)
 ```
