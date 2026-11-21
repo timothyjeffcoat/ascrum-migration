@@ -1,7 +1,7 @@
-// Phase 2 placeholder entry. Cluster 0 replaces the render with the spec §4.1 composition and keeps
-// the in-browser stub bootstrap below.
-import { StrictMode } from 'react'
+// Entry point: the in-browser stub when configured, then the spec §4.1 composition (app/bootApp.tsx).
 import { createRoot } from 'react-dom/client'
+import { createBrowserRouter } from 'react-router'
+import { bootApp } from './app/bootApp.tsx'
 import './styles/stylesheet.less'
 
 /** `pnpm dev:msw` and the Pages build run the API stub in the browser (spec §7.4). */
@@ -23,23 +23,11 @@ async function startInBrowserStub(): Promise<void> {
   })
 }
 
-function Placeholder() {
-  return (
-    <div className="container-fluid">
-      <div className="hero-unit">
-        <h1>AScrum</h1>
-        <p>The React conversion is in progress. The application shell arrives with cluster 0.</p>
-      </div>
-    </div>
-  )
-}
-
 const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('index.html has no #root element')
 
+// The stub must answer before the first request (the start-up `/current-user`) goes out.
 await startInBrowserStub()
-createRoot(rootElement).render(
-  <StrictMode>
-    <Placeholder />
-  </StrictMode>,
-)
+// D6: identical URLs relative to the basename ('/' or '/ascrum-migration/'), HTML5 history.
+const { app } = bootApp((routes) => createBrowserRouter(routes, { basename: import.meta.env.BASE_URL }))
+createRoot(rootElement).render(app)
