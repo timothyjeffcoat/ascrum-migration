@@ -260,3 +260,44 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - Live check in headless Chromium: a deep link (`/ascrum-migration/projects/123/sprints`) comes back as GitHub's 404 page, which is our copy of the app, and the app renders. The in-browser stub answers `/current-user` with the legacy `)]}',` prefix.
 - A small wrong turn: the first live probe called the stub under the Pages base path and got a 404. The app calls the legacy root paths, as the spec says. The e2e suite already knew that; the author's one-off probe didn't.
 - Gates: Phase 2 exit and "cluster 0 may start" are now open. One owner step remains: making the five CI checks required on `migration`.
+
+## 2026-11-21 — Cluster 0 (foundation): built, reviewed, one blocking finding, fixed, verified
+
+**What was built**
+- The layer every later cluster stands on (PR [#4](https://github.com/timothyjeffcoat/ascrum-migration/pull/4), 74 files, +4528 / −20):
+  - the HTTP client that keeps the legacy wire quirks (`api/`);
+  - login, guards and the 401 retry queue (`auth/`);
+  - notifications, the `useCrudForm` hook and CRUD buttons, role logic (`domain/`);
+  - the app shell (header, breadcrumbs, error handling) and placeholder routes with final paths and guards for all 8 features.
+- It also proves the spec §11-4 risk (a route guard opening a login modal during the very first page load, then completing the original navigation). That proof is the gate for wave A.
+
+**Size of the evidence**
+| Metric | Value | Source |
+|---|---|---|
+| Acceptance criteria owned (§12.0) | 46, each with a test named after its id | worklog, PR checklist |
+| Unit tests | 181 in the suite, 160 of them this cluster's (21 files) | worklog, `pnpm verify` |
+| E2E tests | 18 in the suite, 9 of them this cluster's `shell.spec.ts` | worklog, `pnpm verify` |
+| Legacy test cases (§9) | 83: 48 ported, 27 adapted, 8 n/a | worklog |
+| Review: ACs passing on first review | 45 of 46 | PR comment |
+| Hand mutations run by the reviewer | 20; the original suite caught 19 | PR comment, `deviations.md` |
+
+**The blocking finding and the fix loop**
+- The reviewer did not take the tests' names at face value. It broke the code on purpose (20 small mutations) and checked that some test failed each time.
+- 19 of 20 were caught. The 20th made a logged-out click on the "AScrum" brand do nothing, and all 181 unit tests stayed green.
+  - The test for that behaviour started on `/projectsinfo`, took a detour that redirected back to `/projectsinfo`, then asserted it ended on `/projectsinfo`. It could not fail.
+  - The code itself was correct; only the evidence was missing. Under the rules, an AC without a test that can fail is a failing AC, so this was **blocking** (DEV-foundation-01).
+- A worker was relaunched with the finding. Commit `c31036b` changed one test file and the worklog: the test now starts on a test-only route, asserts where it starts, and then asserts where the click lands. The worker logged its own mistake ("an assertion on a final location needs a precondition proving the start location differs").
+- A re-review reran the same mutation independently: `Tests 1 failed | 180 passed (181)`, the failure being the AC-SHELL-01 test. Reverted; `pnpm verify` exit 0; all 5 CI checks green. Status: **verified**, 46 of 46.
+
+**Still open (for the owner)**
+- Q-foundation-1: the login form's labels gained `for`/`id` so the fields have accessible names, a small addition to the "keep legacy markup verbatim" rule (logged as DEV-foundation-04). Implemented as recommended; awaiting a yes/no.
+- Q-foundation-2: CLAUDE.md's test example should show `await renderRoute(...)`. Outside the cluster's paths, so it was raised as a question rather than edited.
+- DEV-foundation-02 (non-blocking): after a failed navigation, the breadcrumbs show the failed path, where legacy kept the previous crumbs. The spec is silent; the owner is asked to confirm it or amend the spec.
+
+**A departure from the process (recorded on purpose)**
+- Spec §8.2 says that a reviewer with no blocking findings merges once CI is green. Here the orchestrator **held the merge** until the owner answers the open questions, because wave A (three clusters) builds on this code and on the conventions those answers settle. The review itself is complete; only the merge waits on the human.
+
+**Moments (article candidates)**
+- "Every test passed, and one of them could not have failed. Mutation testing by the reviewer is what turned 'tests exist' into 'tests bite'."
+- "The fix was a one-file test change (+10 / −4 lines). The value was in the loop: finding, relaunch, fix, an independent re-check of the same mutation."
+- "We broke our own process rule on purpose, and wrote it down: the agents could merge, but a foundation with open questions waits for a human."
