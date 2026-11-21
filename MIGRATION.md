@@ -14,7 +14,7 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 ## Clusters
 | # | Cluster | Wave | Status | PR | Reviewer notes |
 |---|---|---|---|---|---|
-| 0 | foundation | first | pending | | |
+| 0 | foundation | first | converted | [#4](https://github.com/timothyjeffcoat/ascrum-migration/pull/4) | review in progress |
 | 1 | admin-users | A | pending | | |
 | 2 | admin-projects | A | pending | | |
 | 3 | projects + productbacklog | A | pending | | |
