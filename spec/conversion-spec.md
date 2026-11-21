@@ -522,7 +522,7 @@ Source of truth: `spec/metrics.jsonl` (hook) and `gh` data. The journal cites th
 ---
 
 ## 11. Risks to verify in Phase 2
-1. **Bootstrap 2 LESS on less 4:** needs `math: 'always'`. Verify with a Playwright computed-style check (AC-SHELL-07). *Phase 2 result: proven, but it also needed three commented syntax patches in the vendored copy and LightningCSS `errorRecovery` for IE star hacks (`spec/questions/harness.md` Q-harness-3).*
+1. **Bootstrap 2 LESS on less 4:** needs `math: 'always'`. Verify with a Playwright computed-style check (AC-SHELL-07). *Phase 2 result: proven, but it also needed three commented syntax patches in the vendored copy and a small PostCSS plugin that drops only the IE star hacks LightningCSS rejects (`spec/questions/harness.md` Q-harness-3; it replaced `errorRecovery`, review R2-05).*
 2. **MSW cookies:** whether a mocked `Set-Cookie` reaches `document.cookie` in the browser worker; if not, the §7.4 fallback. *Phase 2 result: in Chromium, MSW 3 does it itself (fallback off); in jsdom it does not (fallback on in `src/test/server.ts`).*
 3. **GitHub Pages:** 404.html SPA fallback, `/ascrum-migration/` basename, MSW worker scope.
 4. **Router v7 data mode:** the §4.1 composition, guard → modal on a deep-link reload, and `router.subscribe` rotation ordering. Prove these with tests before wave A (gate in §8.1).
