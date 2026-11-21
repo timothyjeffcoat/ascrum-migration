@@ -114,3 +114,48 @@ I recommend resolving R2-03 (owner answers to Q-harness-1..4) before the Phase 2
 | R2-11 | Fixed: a comment in `pages.spec.ts` and a CLAUDE.md note. |
 | R2-12 | Fixed: Pages deploys on `workflow_run` after CI succeeds on a push to `migration`. |
 | R2-13 | Fixed: Playwright never reuses servers. |
+
+## Re-review (sign-off), 2026-11-20
+- **Reviewer:** a second independent reviewer session (did not write the code or the first review).
+- **Reviewed commit:** `98fcf89` (PR head). Each disposition above was checked against the code, docs and commands, not against its description.
+
+| Id | Status | Evidence |
+|---|---|---|
+| R2-01 | verified fixed | Committed `spec/metrics.jsonl` (40 rows): 0 hits for the home prefix, the local username, `-home-`, any ≥6-char substring of the old key, or `session:"probe"`; every row parses as JSON. `.claude/hooks/metrics.sh:76` was run on synthetic strings (not through the hook): `$HOME/...` → `~/...`, `/tmp/claude-<uid>/-home-<user>-…/x` → `<claude-tmp>/x`, nested strings included. Residual gaps: R2-14. |
+| R2-02 | verified fixed | `spec/journal.md` metrics row "§11-5 … 22 s / 5 s / 40 s, CI run 44821324380" matches `gh run view` (Install Chromium 21:33:21→21:33:43). The "every risk" sentence now excludes §11-5. |
+| R2-03 | verified fixed | `spec/questions/harness.md`: all four **Answer:** lines filled (owner, 2026-11-20); the Q-harness-3 text describes the PostCSS plugin. |
+| R2-04 | verified fixed | Throwaway lint probe (deleted): `it.only`, `it.skip`, `it.todo`, `describe.skip/only/skipIf`, `test.skipIf`, `test.runIf`, `it.concurrent.only/skip`, `describe.concurrent.skip`, `suite.skip` all error. Residual gaps: R2-15. |
+| R2-05 | verified fixed | `vite.config.ts` has no `errorRecovery`; `dropIeStarHacks()` removes only `*`-prefixed declarations. This verify run: 0 `Unexpected token` messages, 0 star hacks in `dist/assets/*.css`. |
+| R2-06 | verified fixed | `stub/handlers.ts:108-113` requires non-empty string email and password; `handlers.test.ts:114-119` covers `''`, a missing password, `{}` and no body for a blank-password user. |
+| R2-07 | verified fixed | `e2e/harness.spec.ts:17` asserts `.span12` 940px, `.offset1` 100px, navbar container 940px and the two-shadow `.btn`; passes in this run. |
+| R2-08 | verified fixed | `handlers.ts:132` `isWrite = method !== 'GET'`; AC-STUB-10 adds PATCH and HEAD → 401. |
+| R2-09 | verified fixed | `stub/query.ts:46-48` rejects `password` for every collection; AC-STUB-07 bad list includes it. |
+| R2-10 | verified fixed | Journal: 1,431 lines (`wc -l` over tracked TS/TSX in those dirs = 1431); 6 Playwright risk tests (matches the list below); 15 / 1 gate rows, original value noted. |
+| R2-11 | verified fixed | Comment at `e2e/pages/pages.spec.ts:4-5`; CLAUDE.md e2e rule names the `e2e/pages/` exception. |
+| R2-12 | verified fixed | `pages.yml` triggers on `workflow_run` of `CI` (the name in `ci.yml`), branch `migration`, and the job runs only for `conclusion == success` and `event == push` (or manual dispatch), checking out `head_sha`. The repo default branch is `migration`, so `workflow_run` will fire. |
+| R2-13 | verified fixed | `playwright.config.ts`: no `reuseExistingServer` on any of the three servers (default false). |
+
+### New findings (non-blocking)
+| Id | Severity | Finding | Suggested fix |
+|---|---|---|---|
+| R2-14 | important | The hook's redaction misses two username paths. (1) `~/.claude/projects/-home-<user>-<project>/…`: after `$HOME` → `~`, the encoded `-home-<user>-` segment survives (synthetic test). (2) The command is cut to 300 characters *before* redaction, so a home path straddling character 300 leaves a partial path that no longer matches `$HOME`. No row in the ledger is affected today. | Redact before truncating, and also mask any `-home-[^/\s"]*` and `/home/[^/\s"]+` segment. Fix before cluster 0 starts. |
+| R2-15 | minor | The lint ban is still bypassable: chains 3 deep (`test.describe.serial.skip`, `it.sequential.concurrent.skip`), computed access (`it['skip']`), aliases and fixtures (`const t = test.extend({}); t.skip`, `import {test as pw}`), runtime skips (`ctx.skip()`, `testInfo.skip()`), and `it.fails`. CLAUDE.md already says "most of these", so the claim is accurate. | Optional: match any member chain rooted at a test function, at any depth. Meanwhile, cluster reviewers should grep for these forms (§8.2 "no gate weakened"). |
+
+### Gates (this session)
+Ports 3001/4173/4174/5173 were free. Node v24.22.3, pnpm 12.21.0, `pnpm verify` unpiped, exit 0:
+```
+All matched files use Prettier code style!
+ Test Files  2 passed (2)
+      Tests  21 passed (21)
+✓ built in 296ms            (vite build)
+✓ built in 338ms            (vite build --mode pages)
+  9 passed (2.5s)           (playwright: 5 chromium + 4 pages)
+verify exit=0
+```
+CI on `98fcf89` (`gh pr checks 1`): build, e2e, lint, test, typecheck all pass (run 44867860934).
+Hygiene: `git grep` at HEAD finds no home paths, local username, Claude temp dirs (apart from the hook's own pattern), private keys, tokens or key fragments. The only emails are the legacy demo credentials (`admin@abc.com`) and the seed's `*.test` addresses.
+
+### §13 checklist
+Items 1–8 still pass. Item 9 now passes (§11-5 recorded). The remaining exit criteria are unchanged: the live Pages deep link can only be checked after the merge, and branch protection is the owner's step (E4).
+
+**Verdict: signed off.** R2-01..R2-13 are verified fixed. R2-14 and R2-15 do not block the merge; R2-14 should be fixed before cluster 0 starts.
