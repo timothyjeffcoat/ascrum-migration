@@ -111,3 +111,39 @@ AC, including screens the legacy suite never covered).
 | Legacy file | Case | Status | New test | Note |
 |---|---|---|---|---|
 | dashboard/dashboard.spec.js | (none: empty file) | — | — | 0 cases |
+
+## 2026-11-21: review follow-ups (DEV-dashboard-01/02, Q-dashboard-1)
+
+Owner-approved follow-ups from the review on #18. Test-only changes; `Dashboard.tsx` is unchanged.
+
+### Changes
+- **DEV-dashboard-01** (`Dashboard.test.tsx`, "class parity: both dashboard tables carry the legacy table
+  classes and column spans"): the old check `projectsTable.parentElement.tagName === 'DIV'` could not fail,
+  because without the wrapper the table's parent is the shell's `div.container-fluid`. The test now asserts
+  the parent is a `div` with no `class` attribute whose previous element sibling is the "My projects" `<h4>`
+  (legacy's `ng-include` wrapper). My original check was a vacuous assertion that my own mutation round
+  did not catch; the reviewer's R16 did.
+- **DEV-dashboard-02** (renamed to "AC-DSH-01 / D2: "My projects" lists ALL projects and "My tasks" ALL
+  tasks in storage order, both fetched with q={}"): asserts the full list of the 12 task names in
+  `stub/seed.ts` order (legacy rendered `Tasks.all()` unsorted, as does the port).
+- **Q-dashboard-1:** recorded the owner's answer, (a), accepted as implemented.
+
+### Mutations (each run with `vitest run src/features/dashboard`, then reverted; `git diff` afterwards
+showed only the test file)
+| # | Mutation | Result |
+|---|---|---|
+| M14 | `Dashboard.tsx`: drop the wrapper `<div>` around `ProjectsTable` | 1 failed: class parity ("Expected the element not to have attribute" — the parent is now `div.container-fluid`) |
+| M15 | `Dashboard.tsx`: render `[...tasks].reverse()` | 1 failed: `AC-DSH-01 / D2 … in storage order` |
+
+### Gate results (this session)
+`pnpm verify` with `STUB_PORT=3501 PREVIEW_PORT=4673 PAGES_PORT=4674`, output redirected to a file
+(not piped), exit code 0:
+```
+All matched files use Prettier code style!          (eslint --max-warnings 0 clean)
+$ tsc --noEmit -p tsconfig.json                     (clean)
+ Test Files  36 passed (36)
+      Tests  304 passed (304)
+✓ built in 341ms                                    (vite build)
+✓ built in 375ms                                    (vite build --mode pages)
+  28 passed (8.3s)                                  (Playwright)
+```

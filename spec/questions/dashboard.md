@@ -12,3 +12,5 @@ there is something to assert (changes the legacy markup, against B4); (c) exempt
 *Recommended and implemented: (a)*, in `ProjectsInfo.test.tsx` ("class parity: the legacy template is a
 bare <h3> (no classes) and nothing else"). Mutation M13 (adding a class) turns it red. Cheap to reverse:
 test-only.
+
+**Answer (owner, 2026-11-21): (a), accepted as implemented.**

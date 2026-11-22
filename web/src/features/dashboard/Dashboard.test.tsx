@@ -80,12 +80,18 @@ describe('/dashboard (Dashboard)', () => {
         .map((th) => th.className),
     ).toEqual(['span8', 'span1', 'span1', 'span2'])
     // The headings are legacy's <h4>s, and the projects table sits in the ng-include wrapper <div>.
-    expect(screen.getByRole('heading', { name: 'My projects', level: 4 })).toBeVisible()
+    const myProjects = screen.getByRole('heading', { name: 'My projects', level: 4 })
+    expect(myProjects).toBeVisible()
     expect(screen.getByRole('heading', { name: 'My tasks', level: 4 })).toBeVisible()
-    expect(projectsTable.parentElement?.tagName).toBe('DIV')
+    // DEV-dashboard-01: checking only for a DIV parent could not fail (without the wrapper the parent is
+    // the shell's div.container-fluid). The wrapper is a class-less <div> right after the "My projects" <h4>.
+    const wrapper = projectsTable.parentElement
+    expect(wrapper?.tagName).toBe('DIV')
+    expect(wrapper).not.toHaveAttribute('class')
+    expect(wrapper?.previousElementSibling).toBe(myProjects)
   })
 
-  it('AC-DSH-01 / D2: "My projects" lists ALL projects and "My tasks" ALL tasks, both fetched with q={}', async () => {
+  it('AC-DSH-01 / D2: "My projects" lists ALL projects and "My tasks" ALL tasks in storage order, both fetched with q={}', async () => {
     const requests = recordRequests()
     const { projectsTable, tasksTable } = await renderDashboard('dev2')
 
@@ -97,6 +103,21 @@ describe('/dashboard (Dashboard)', () => {
     ).toEqual(['Name', 'Estimation', 'Remaining', 'Tools'])
     const rows = bodyRows(tasksTable)
     expect(rows).toHaveLength(SEEDED_TASKS)
+    // DEV-dashboard-02: legacy rendered Tasks.all() in store order, unsorted; so does the port (stub/seed.ts order).
+    expect(rows.map((row) => cellsOf(row)[0])).toEqual([
+      'Design catalogue page',
+      'Category API endpoint',
+      'Product image thumbnails',
+      'Cart data model',
+      'Cart UI',
+      'Cart persistence',
+      'Price rounding bug',
+      'Address form',
+      'Payment provider spike',
+      'Shipping options',
+      'Order history list',
+      'Order details page',
+    ])
     // Tasks assigned to dev1 and unassigned ones are listed too (D2: not filtered by user).
     expect(cellsOf(rowOf(tasksTable, 'Design catalogue page'))).toEqual(['Design catalogue page', '3', '0', ''])
     expect(cellsOf(rowOf(tasksTable, 'Cart UI'))).toEqual(['Cart UI', '5', '5', ''])
