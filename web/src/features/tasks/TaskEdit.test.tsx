@@ -1,8 +1,10 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { BACKLOG, PROJECT, SPRINT, USER } from '../../../stub/seed.ts'
+import { findById } from '../../../stub/store.ts'
 import { TASK_STATES } from '../../domain/tasks.ts'
 import { recordRequests, renderRoute, type RenderRouteResult } from '../../test/renderRoute.tsx'
+import { stubContext } from '../../test/server.ts'
 import { failNext } from '../../test/stubControl.ts'
 import { newTaskDraft } from './TaskEdit.tsx'
 
@@ -41,6 +43,13 @@ const NEW_TASK = {
 async function fillNew({ user }: RenderRouteResult) {
   for (const [label, text] of Object.entries(NEW_TASK)) await user.type(screen.getByLabelText(label), text)
   await user.selectOptions(select('Product Backlog item'), 'Shopping cart')
+}
+
+/** Change a seeded document in the stub after resetStub() (P5 scenarios that the seed reaches in two clicks). */
+function patchStub(collection: 'projects' | 'sprints' | 'tasks', id: string, fields: Record<string, unknown>) {
+  const doc = findById(stubContext.store, collection, id)
+  if (!doc) throw new Error(`no ${collection} ${id}`)
+  Object.assign(doc, fields)
 }
 
 /** P4: `defaultPrevented` of every submit event that reaches window (after React's onSubmit ran). */
@@ -227,6 +236,63 @@ describe('task edit (TaskEdit)', () => {
     const put = requests.find((r) => r.method === 'PUT')
     expect(put?.body).toMatchObject({ name: 'Design catalogue page', state: 'DONE' })
     expect(put?.body).not.toHaveProperty('assignedUserId')
+  })
+
+  it('AC-TSK-02 / P5: a task whose backlog item left the sprint must be re-chosen before Save', async () => {
+    // "Product catalogue" removed from Sprint 1: tasks 1–3 now point at an item the select does not offer.
+    patchStub('sprints', SPRINT.webshop1, { sprintBacklog: [BACKLOG.cart] })
+    const requests = recordRequests()
+    const { user, router } = await renderEdit(designPath)
+    expect(selectedLabel('Product Backlog item')).toBe('-- choose --')
+    expect(select('Product Backlog item')).toBeInvalid() // the form's required error (no message in legacy markup)
+
+    await user.type(screen.getByLabelText('Name'), '!')
+    expect(button('Save')).toBeDisabled()
+    await user.click(button('Save'))
+    expect(requests.filter((r) => r.method === 'PUT')).toEqual([])
+
+    await user.selectOptions(select('Product Backlog item'), 'Shopping cart')
+    expect(select('Product Backlog item')).toBeValid()
+    expect(button('Save')).toBeEnabled()
+    await user.click(button('Save'))
+    await waitFor(() => expect(router.state.location.pathname).toBe(listPath))
+    expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({
+      name: 'Design catalogue page!',
+      productBacklogItemId: BACKLOG.cart,
+    })
+  })
+
+  it('AC-TSK-02 / P5: a task whose assignee left the team shows unassigned and saving unassigns', async () => {
+    // dev1 removed from Webshop's team: task 1 is still assigned to dev1 in the store.
+    patchStub('projects', PROJECT.webshop, { teamMembers: [USER.dev2] })
+    const requests = recordRequests()
+    const { user, router } = await renderEdit(designPath)
+    expect(selectedLabel('Assigned to')).toBe('-- unassigned --')
+
+    await user.type(screen.getByLabelText('Name'), '!')
+    await user.click(button('Save'))
+    await waitFor(() => expect(router.state.location.pathname).toBe(listPath))
+    const put = requests.find((r) => r.method === 'PUT')
+    expect(put?.body).toMatchObject({ name: 'Design catalogue page!', productBacklogItemId: BACKLOG.catalogue })
+    // S13 payload convention: unassigned = no assignedUserId field.
+    expect(put?.body).not.toHaveProperty('assignedUserId')
+  })
+
+  it('AC-TSK-02 / P5: a task with a malformed state must have a state chosen before Save', async () => {
+    patchStub('tasks', taskId(1), { state: 'WAITING' })
+    const requests = recordRequests()
+    const { user, router } = await renderEdit(designPath)
+
+    await user.type(screen.getByLabelText('Name'), '!')
+    expect(button('Save')).toBeDisabled()
+    await user.click(button('Save'))
+    expect(requests.filter((r) => r.method === 'PUT')).toEqual([])
+
+    await user.selectOptions(select('State'), 'IN_DEV')
+    expect(button('Save')).toBeEnabled()
+    await user.click(button('Save'))
+    await waitFor(() => expect(router.state.location.pathname).toBe(listPath))
+    expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({ state: 'IN_DEV' })
   })
 
   it('AC-TSK-03 / D6: removing a task DELETEs it and returns to the sprint task list', async () => {

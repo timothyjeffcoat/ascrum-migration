@@ -19,6 +19,32 @@ export function newTaskDraft(projectId: string, sprintId: string): Draft<Task> {
   return { projectId, sprintId, name: '', desc: '', state: 'TODO' }
 }
 
+/**
+ * §0.2 P5 (DEV-sprints-tasks-01): a select whose stored value is not among its current options starts
+ * unset. The option lists are the ones the selects render, so the form never holds an id the user cannot
+ * see. Legacy kept the stale id behind a blank `?` option and saved it again; here:
+ * - Product Backlog item (required): an item no longer in the sprint must be chosen again before Save;
+ * - Assigned to (optional): a user no longer on the team shows `-- unassigned --` and saves as unassigned
+ *   (S13: no `assignedUserId`);
+ * - State (required): a value outside TASK_STATES must be chosen again before Save.
+ */
+export function taskFormInitial(
+  task: Task,
+  sprintBacklogItems: readonly BacklogItem[],
+  teamMembers: readonly User[],
+): Draft<Task> {
+  const { productBacklogItemId, assignedUserId, state, ...rest } = task
+  const initial: Draft<Task> = { ...rest }
+  if (sprintBacklogItems.some((item) => item.id === productBacklogItemId)) {
+    initial.productBacklogItemId = productBacklogItemId
+  }
+  if (TASK_STATES.includes(state)) initial.state = state
+  if (assignedUserId !== undefined && teamMembers.some((member) => member.id === assignedUserId)) {
+    initial.assignedUserId = assignedUserId
+  }
+  return initial
+}
+
 /** The route component for both `…/tasks/new` and `…/tasks/:itemId`. */
 export function TaskEditPage() {
   const { projectId, sprintId, task, sprintBacklogItems, teamMembers } = useLoaderData<TaskData>()
@@ -28,7 +54,7 @@ export function TaskEditPage() {
       key={task?.id ?? 'new'}
       projectId={projectId}
       sprintId={sprintId}
-      initial={task ?? newTaskDraft(projectId, sprintId)}
+      initial={task ? taskFormInitial(task, sprintBacklogItems, teamMembers) : newTaskDraft(projectId, sprintId)}
       sprintBacklogItems={sprintBacklogItems}
       teamMembers={teamMembers}
     />
@@ -141,7 +167,7 @@ function TaskEdit({ projectId, sprintId, initial, sprintBacklogItems, teamMember
             />
             <label htmlFor="state">State</label>
             {/* Every route starts with a state (the draft's TODO or the loaded one), so, as in legacy,
-                there is no blank option. */}
+                there is no blank option. A malformed stored state starts unset (P5, taskFormInitial). */}
             <select
               id="state"
               name="state"

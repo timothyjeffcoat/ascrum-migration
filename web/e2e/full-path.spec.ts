@@ -96,6 +96,12 @@ test('AC-E2E-FULL: admin login → project with team → backlog item → sprint
   await page.locator('button.save').click()
   await expect(page).toHaveURL(tasksPath) // D6
   await expect(page.locator('tr', { hasText: 'Sign-up form' }).locator('td')).toHaveText(['Sign-up form', '3', '3', ''])
+  // DEV-sprints-tasks-02: reopen the task to prove the assignee (and backlog item) were saved, not only picked.
+  await page.getByRole('cell', { name: 'Sign-up form', exact: true }).click()
+  await expect(page).toHaveURL(new RegExp(`^[^?]*${tasksPath}/${ID}$`))
+  await expect(page.getByLabel('Name')).toHaveValue('Sign-up form')
+  await expect(page.getByLabel('Product Backlog item').locator('option:checked')).toHaveText('Sign-up page')
+  await expect(page.getByLabel('Assigned to').locator('option:checked')).toHaveText(DEV1)
 
   // 5. Logout.
   await page.getByRole('button', { name: 'Log out' }).click()
