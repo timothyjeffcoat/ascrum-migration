@@ -21,4 +21,4 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 | 2 | admin-projects | A | merged | [#8](https://github.com/timothyjeffcoat/ascrum-migration/pull/8) | 6/6 ACs; DEV-admin-projects-01 fixed (guard tests); Q-admin-projects-1 answered (b), spec P3, DEV-admin-projects-06; Q-admin-projects-2 accepted; re-reviewed; merged as bdc4150 |
 | 3 | projects + productbacklog | A | merged | [#7](https://github.com/timothyjeffcoat/ascrum-migration/pull/7) | 5/5 ACs; 14/14 reviewer mutations caught; DEV-projects-01 (Q-projects-1, answered (a)) and -02 (CI flake, fixed in #10) non-blocking; merged as a66bf3f |
 | 4 | sprints + tasks | B | pending | | |
-| 5 | dashboard + projectsinfo | B | converted | [#18](https://github.com/timothyjeffcoat/ascrum-migration/pull/18) | review in progress |
+| 5 | dashboard + projectsinfo | B | verified | [#18](https://github.com/timothyjeffcoat/ascrum-migration/pull/18) | 2/2 ACs; 25/27 reviewer mutations caught (DEV-dashboard-01/02, test gaps, non-blocking); Q-dashboard-1 awaits the owner (reviewer recommends (a)); merge held by the orchestrator |
