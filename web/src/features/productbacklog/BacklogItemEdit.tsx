@@ -60,7 +60,7 @@ function BacklogItemEdit({ projectId, initial }: BacklogItemEditProps) {
     <div className="well">
       <h4>Product backlog item</h4>
       <hr />
-      {/* AngularJS's form directive prevented the native submit; so does this. */}
+      {/* AngularJS's form directive prevented the native submit; so does this (P4). */}
       <form name="form" onSubmit={(event: FormEvent) => event.preventDefault()}>
         {/* Labels gained htmlFor/id, as in the login modal (Q-foundation-1, Q-projects-1). The
             priority and estimation inputs keep their legacy quirk of having no `name`. */}
