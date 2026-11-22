@@ -1,15 +1,14 @@
-// PLACEHOLDER from cluster 0 (spec §8.1): the route and guard are final (R3, requireAuthenticatedUser);
-// cluster 3 replaces the loader's data and the component.
+// Port of the `projects` module's route (projects/projects.js, R3): `/projects`, guarded by
+// requireAuthenticatedUser, resolving all projects.
 import type { RouteObject } from 'react-router'
+import { projects } from '../../api/collections.ts'
+import type { Project } from '../../api/types.ts'
 import { requireAuthenticatedUser } from '../../auth/guards.ts'
+import { ProjectsPage } from './ProjectsPage.tsx'
 
-async function loader() {
+async function loader(): Promise<Project[]> {
   await requireAuthenticatedUser()
-  return null
+  return projects.all()
 }
 
-function ProjectsPlaceholder() {
-  return <p>My projects: converted by cluster 3.</p>
-}
-
-export const routes: RouteObject[] = [{ path: '/projects', loader, Component: ProjectsPlaceholder }]
+export const routes: RouteObject[] = [{ path: '/projects', loader, Component: ProjectsPage }]
