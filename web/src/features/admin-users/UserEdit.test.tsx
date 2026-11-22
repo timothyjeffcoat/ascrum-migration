@@ -427,6 +427,15 @@ describe('UserEdit: trimming (P6)', () => {
     })
   })
 
+  it('P6 / DSC-B-1: every text field shows inner spaces as they are typed (DEV-audit-08)', async () => {
+    const { user } = await openEdit(USER.dev1)
+    for (const label of ['Last name', 'First name', 'Password', 'Password (repeat)']) {
+      await user.clear(field(label))
+      await user.type(field(label), 'Mary Ann')
+      expect(field(label)).toHaveValue('Mary Ann')
+    }
+  })
+
   it('P6 / DSC-B-1: on edit a spaces-only password counts as blank, so it is optional and left out of the PUT', async () => {
     const requests = recordRequests()
     const { user } = await openEdit(USER.dev1)
