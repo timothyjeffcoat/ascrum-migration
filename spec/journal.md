@@ -475,3 +475,34 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 - The owner approved six recommendations in one reply. Most were "accept as built". Two got follow-up test fixes. One became a new spec rule, P5: a task whose backlog item or assignee is no longer a valid choice showed "-- unassigned --" while Save quietly kept the old value. It is the wave A stale-team-pick problem (P3) in a new place, and both were found by a reviewer probing data that goes stale.
 - Briefing wave B workers with wave A's lessons paid off: both covered the guards on every route, the Enter-key rule and labels from the start, and neither PR had a finding in those areas.
 - The cluster 4 reviewer, reading the old sprint template, found one more legacy bug the inventory missed: Enter in the sprint form silently added or removed a backlog item. The P4 rule, added after the wave A audit, already prevents it in the port.
+
+## 2026-11-21 — Cluster 5 (dashboard + projectsinfo): reviewed, verified, merge held
+- Scope: the signed-in dashboard (`/dashboard`: all projects through cluster 3's `ProjectsTable`, all tasks) and the public landing page (`/projectsinfo`, which in the old app loads the projects and shows only a heading). PR [#18](https://github.com/timothyjeffcoat/ascrum-migration/pull/18). First wave B review.
+
+| Metric | Value | Source |
+|---|---|---|
+| Worker diff | 9 files, +514 / −14, all inside the cluster's owned paths | `git diff --stat origin/migration...HEAD` |
+| New tests | 15 unit (2 files), 3 e2e | worklog, `pnpm verify` |
+| Legacy test cases (§9) | 0 assigned (the old `dashboard.spec.js` is an empty template) | §9, inventory, worklog |
+| ACs passing on first review | 2 of 2 (AC-DSH-01, AC-PIN-01); named tests for D3 and D4 | PR comment |
+| Reviewer mutations | 27; 25 caught, 2 survived (test gaps, not code bugs) | PR comment, `deviations.md` |
+| Blocking findings | 0 | `deviations.md` |
+| `pnpm verify` (reviewer) | exit 0; 304/304 unit, 28/28 e2e | reviewer session |
+| CI runs on the PR | 2, both green | `gh run list` |
+
+**What the review did**
+- The reviewer wrote its own 27 one-line breakages rather than rerunning the worker's 13: a guard swapped for the admin guard, removed, or run after the fetch; roles computed from the e-mail instead of the id; links built from the project name; the wrong task field in a column; the landing page showing its data; the empty state always or never shown; tasks filtered to "mine" (which would quietly finish an unfinished feature the spec says to leave alone).
+- It then read the two old templates line by line against the port. They match: headings, classes, column widths, the "No tasks for you!" row, the empty Tools cell.
+
+**Findings (all non-blocking)**
+- DEV-dashboard-01: one assertion could never fail. It checked that the projects table sits in a wrapper `div`, but the page area around it is also a `div`, so removing the wrapper kept it green.
+- DEV-dashboard-02: the order of the task rows is not checked; reversing it passed every test. The spec says nothing about order; the old app used storage order, as the port does.
+- DEV-dashboard-03 (Q-dashboard-1): the "every screen asserts its legacy classes" rule meets a screen with no classes. The worker asserted the bare markup instead; the reviewer agrees and the owner confirms.
+- DEV-dashboard-04: the old empty-state row was hidden rather than absent when tasks existed. Not visible; accepted.
+
+**Process note**
+- The PR branch is one commit behind `migration` (#17, the Enter-key fix for forms; this cluster has no forms). The orchestrator holds the merge and will update the branch first.
+
+**Moments (article candidates)**
+- "A test that checks a table is inside a `div` will always pass on a web page. Twenty-five breakages were caught; the two that weren't were tests that looked like checks but could not fail."
+- "The tempting bug here was a fix: showing each user only their own tasks. The spec says leave unfinished features unfinished, and a test fails if anyone 'helps'."
