@@ -1,6 +1,6 @@
 // Legacy common/security/login/login-toolbar.spec.js, rendered inside the real shell, plus AC-AUTH-08.
 import { screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import { recordRequests, renderRoute, waitForShell, type Persona } from '../test/renderRoute.tsx'
 
 async function renderToolbar(as: Persona = 'anonymous') {
@@ -63,5 +63,42 @@ describe('LoginToolbar', () => {
     expect(within(toolbar).getByRole('link', { name: 'Sam Master' })).toHaveAttribute('href', '#')
     expect(within(toolbar).getByRole('button', { name: 'Log out' }).closest('li')).toHaveClass('logout')
     expect(within(toolbar).getByRole('button', { name: 'Log out' }).closest('form')).toHaveClass('navbar-form')
+  })
+})
+
+/** Records `defaultPrevented` for each submit reaching window (after React's onSubmit), as in PR #17. */
+function watchSubmits(): boolean[] {
+  const prevented: boolean[] = []
+  const listener = (event: Event) => prevented.push(event.defaultPrevented)
+  window.addEventListener('submit', listener)
+  onTestFinished(() => window.removeEventListener('submit', listener))
+  return prevented
+}
+
+function formOf(toolbar: HTMLElement, name: string): HTMLFormElement {
+  const form = within(toolbar).getByRole('button', { name }).closest('form')
+  if (!form) throw new Error(`"${name}" is not in a form`)
+  return form
+}
+
+describe('LoginToolbar: native submission (P4)', () => {
+  it('P4: the login toolbar forms cancel native submission', async () => {
+    // Button-only forms: no browser trigger submits them today, so submit directly, the way any other
+    // trigger would (Q-fix-forms-1). jsdom never navigates; a cancelled submit event is the proof.
+    const anonymous = await renderToolbar()
+    const loginSubmits = watchSubmits()
+    const loginRequests = recordRequests()
+    formOf(anonymous.toolbar, 'Log in').requestSubmit()
+    expect(loginSubmits).toEqual([true])
+    expect(loginRequests).toEqual([])
+    anonymous.unmount()
+
+    const signedIn = await renderToolbar('po')
+    const logoutSubmits = watchSubmits()
+    const logoutRequests = recordRequests()
+    formOf(signedIn.toolbar, 'Log out').requestSubmit()
+    expect(logoutSubmits).toEqual([true])
+    expect(logoutRequests).toEqual([])
+    expect(within(signedIn.toolbar).getByRole('button', { name: 'Log out' })).toBeInTheDocument()
   })
 })

@@ -470,6 +470,12 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 **Moment (article candidate)**
 - "Every gate was green and two bugs were live. Gates check what the spec says; only someone reading the original without the spec in hand can notice what the spec forgot."
 
+## 2026-11-21 — Wave B reviewed; owner decisions
+- Both wave B PRs passed review with nothing blocking: #18 (dashboard + Current Projects) and #19 (sprints + tasks). The reviewers ran their own deliberate breakages: 27 on cluster 5, of which tests caught 25, and 34 on cluster 4's unit tests, all caught. Each survivor was a test gap, not a code bug.
+- The owner approved six recommendations in one reply. Most were "accept as built". Two got follow-up test fixes. One became a new spec rule, P5: a task whose backlog item or assignee is no longer a valid choice showed "-- unassigned --" while Save quietly kept the old value. It is the wave A stale-team-pick problem (P3) in a new place, and both were found by a reviewer probing data that goes stale.
+- Briefing wave B workers with wave A's lessons paid off: both covered the guards on every route, the Enter-key rule and labels from the start, and neither PR had a finding in those areas.
+- The cluster 4 reviewer, reading the old sprint template, found one more legacy bug the inventory missed: Enter in the sprint form silently added or removed a backlog item. The P4 rule, added after the wave A audit, already prevents it in the port.
+
 ## 2026-11-21 — Cluster 5 (dashboard + projectsinfo): reviewed, verified, merge held
 - Scope: the signed-in dashboard (`/dashboard`: all projects through cluster 3's `ProjectsTable`, all tasks) and the public landing page (`/projectsinfo`, which in the old app loads the projects and shows only a heading). PR [#18](https://github.com/timothyjeffcoat/ascrum-migration/pull/18). First wave B review.
 
