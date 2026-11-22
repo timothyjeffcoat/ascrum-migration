@@ -525,3 +525,12 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 - Cluster 5's follow-up was test-only, so the orchestrator checked it directly: it read the diff and re-ran one deliberate breakage (task order reversed), which turned the test red. It did not spend a full reviewer on it. Cluster 4's follow-up changed app code, so it got a fresh reviewer: 9 of 10 new breakages caught, and the tenth could not change behaviour.
 - Still open, and small: Q-sprints-tasks-3. A task holding a corrupted state value shows "TODO" while the form holds no state. Only bad stored data reaches it. The reviewer found the spec doesn't require a fix but recommends one. It goes to the owner with the Phase 4 questions.
 - Next: Phase 4, the case-study README and the final `deviations.md` summary.
+
+## 2026-11-22: Q-sprints-tasks-3 answered and reviewed (PR #22)
+- **What changed.** The owner chose (b): while a task's stored state is corrupted, the State dropdown shows "-- choose --" instead of a state the form doesn't hold. Once a state is picked the option goes away, so the normal form looks exactly like the old app. The code change is one line in `TaskEdit.tsx`. There are 3 new unit tests and 1 browser test, and the diff is 6 files, +131/−2 (`git diff --stat`). The spec, the question and the worklog date were orchestrator commits.
+- **How it was checked.** A fresh reviewer ran 7 mutations on the unit tests, and every one turned a test red. Examples: delete the option, always show it, flip the condition, change its value or its label, move it to the end. It ran 3 of them in the browser test as well, and all 3 failed it. The browser test creates the bad data through the stub's own API with the signed-in session, and the reset before each test keeps it from leaking.
+- **Gates.** The reviewer's `pnpm verify` exited 0: 389/389 unit tests in 41 files, both builds, 36/36 Playwright. CI was green on all five jobs (`gh pr checks 22`).
+- **Findings.** None blocking. DEV-sprints-tasks-04 records that this closes the last item from DEV-sprints-tasks-01.
+
+**Moment (article candidate)**
+- "Deleting the new option makes the browser test fail with `Received: \"TODO\"`. That's the original bug, reproduced on demand: the screen showed a value the data didn't hold."
