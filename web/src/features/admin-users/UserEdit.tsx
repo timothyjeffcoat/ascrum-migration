@@ -96,7 +96,7 @@ export function UserEdit({ user }: UserEditProps) {
       else pushForCurrentRoute('crud.user.remove.error', 'error', { id: user.id })
     },
   })
-  const { values, extra, showError } = form
+  const { values, showError } = form
 
   return (
     <div className="well">
@@ -111,7 +111,7 @@ export function UserEdit({ user }: UserEditProps) {
           type="email"
           id="email"
           name="email"
-          value={values.email ?? ''}
+          value={form.viewValue('email')}
           onChange={(event) => form.setField('email', event.target.value)}
           required
         />
@@ -126,7 +126,7 @@ export function UserEdit({ user }: UserEditProps) {
           type="text"
           id="lastName"
           name="lastName"
-          value={values.lastName ?? ''}
+          value={form.viewValue('lastName')}
           onChange={(event) => form.setField('lastName', event.target.value)}
           required
         />
@@ -137,7 +137,7 @@ export function UserEdit({ user }: UserEditProps) {
           type="text"
           id="firstName"
           name="firstName"
-          value={values.firstName ?? ''}
+          value={form.viewValue('firstName')}
           onChange={(event) => form.setField('firstName', event.target.value)}
           required
         />
@@ -148,7 +148,7 @@ export function UserEdit({ user }: UserEditProps) {
           type="password"
           id="password"
           name="password"
-          value={values.password ?? ''}
+          value={form.viewValue('password')}
           onChange={(event) => form.setField('password', event.target.value)}
           required
         />
@@ -160,7 +160,7 @@ export function UserEdit({ user }: UserEditProps) {
           type="password"
           id="passwordRepeat"
           name="passwordRepeat"
-          value={extra.passwordRepeat}
+          value={form.viewValue('passwordRepeat')}
           onChange={(event) => form.setExtra('passwordRepeat', event.target.value)}
           required
         />

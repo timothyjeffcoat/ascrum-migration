@@ -534,3 +534,12 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "Deleting the new option makes the browser test fail with `Received: \"TODO\"`. That's the original bug, reproduced on demand: the screen showed a value the data didn't hold."
+
+## 2026-11-22: Text trimming (P6) reviewed (PR #24)
+- **What changed.** An independent audit (DSC-B-1) found that the old app silently trimmed every text field, because AngularJS does this by default, and the port did not. A sprint named with three spaces was accepted and saved. The owner chose to restore the old behaviour (spec P6), and the orchestrator added one helper to the shared form contract: `viewValue`, which gives the input the text as typed while the form keeps the trimmed text. The fix touches the shared form hook, the login modal and all five forms: 18 files, +446/−27 (`git diff --stat`).
+- **How it was checked.** A fresh reviewer read the AngularJS 1.2 source for the input listener, the model watch and `validate-equals`, and checked the port against it rather than against the worker's notes. It ran 26 of its own breakages on the unit tests. 19 turned a test red. Two of the survivors were real gaps: binding the user form's First name or Password (repeat) to the trimmed value, which would make "Mary Ann" impossible to type. The other five could not change behaviour: three only touched e-mail inputs, where the browser already strips surrounding spaces, and two touched a path no current field uses (an async check on an `extra` field).
+- **Gates.** The reviewer's `pnpm verify` exited 0: 401/401 unit tests in 41 files, both builds, 37/37 Playwright. CI green on all five jobs (`gh pr checks 24`).
+- **Findings.** None blocking. DEV-audit-05 is now fixed. DEV-audit-08 (new, non-blocking) records the two missing tests.
+
+**Moment (article candidate)**
+- "Three of the breakages that 'survived' were not test gaps at all: the browser itself trims an e-mail field. Before calling a test weak, the reviewer wrote a probe to check whether the breakage could be seen by anyone."

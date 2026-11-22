@@ -407,3 +407,28 @@ describe('task edit (TaskEdit)', () => {
     expect(submits).toEqual([true])
   })
 })
+
+describe('task edit: trimming (P6)', () => {
+  it('P6 / DSC-B-1: a spaces-only Name or Description keeps Save disabled; padded text is saved trimmed', async () => {
+    const requests = recordRequests()
+    const { user, router } = await renderEdit(cartUiPath)
+    const name = screen.getByLabelText('Name')
+    const desc = screen.getByLabelText('Description')
+    await user.clear(name)
+    await user.type(name, '  ')
+    expect(button('Save')).toBeDisabled()
+    await user.type(name, 'Cart  UI v2  ')
+    expect(name).toHaveValue('  Cart  UI v2  ')
+    await user.clear(desc)
+    await user.type(desc, '   {Enter}  ')
+    expect(button('Save')).toBeDisabled()
+    await user.type(desc, 'Build it ')
+    await user.click(button('Save'))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(listPath))
+    expect(requests.find((r) => r.method === 'PUT' && r.pathname === `${TASKS}/${taskId(5)}`)?.body).toMatchObject({
+      name: 'Cart  UI v2',
+      desc: 'Build it',
+    })
+  })
+})

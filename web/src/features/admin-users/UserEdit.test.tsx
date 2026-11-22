@@ -399,3 +399,52 @@ describe('UserEdit: Enter in the form (P4)', () => {
     expect(router.state.location).toMatchObject({ pathname, search })
   })
 })
+
+describe('UserEdit: trimming (P6)', () => {
+  it('P6 / DSC-B-1: a spaces-only Last name keeps Save disabled; padded fields and passwords are saved trimmed', async () => {
+    const requests = recordRequests()
+    const { user } = await openEdit(USER.dev1)
+    await user.clear(field('Last name'))
+    await user.type(field('Last name'), '   ')
+    expect(field('Last name')).toHaveValue('   ')
+    expect(errorsAfter('Last name')).toEqual([REQUIRED])
+    expect(saveButton()).toBeDisabled()
+
+    await user.type(field('Last name'), 'Dev ')
+    // Legacy validate-equals compared the trimmed model values, so these two match.
+    await user.type(field('Password'), '  pw  ')
+    await user.type(field('Password (repeat)'), 'pw')
+    expect(errorsAfter('Password (repeat)')).toEqual([])
+    await user.click(saveButton())
+    await screen.findByText(`A user with id '${USER.dev1}' was saved successfully.`)
+
+    expect(requests.find((r) => r.method === 'PUT')?.body).toEqual({
+      email: 'dev1@ascrum.test',
+      firstName: 'Dana',
+      lastName: 'Dev',
+      admin: false,
+      password: 'pw',
+    })
+  })
+
+  it('P6 / DSC-B-1: every text field shows inner spaces as they are typed (DEV-audit-08)', async () => {
+    const { user } = await openEdit(USER.dev1)
+    for (const label of ['Last name', 'First name', 'Password', 'Password (repeat)']) {
+      await user.clear(field(label))
+      await user.type(field(label), 'Mary Ann')
+      expect(field(label)).toHaveValue('Mary Ann')
+    }
+  })
+
+  it('P6 / DSC-B-1: on edit a spaces-only password counts as blank, so it is optional and left out of the PUT', async () => {
+    const requests = recordRequests()
+    const { user } = await openEdit(USER.dev1)
+    await user.type(field('Password'), '   ')
+    await user.type(field('Password (repeat)'), ' ')
+    expect(saveButton()).toBeDisabled() // nothing changed: the trimmed password is still ''
+    await user.type(field('First name'), 'x')
+    await user.click(saveButton())
+    await screen.findByText(`A user with id '${USER.dev1}' was saved successfully.`)
+    expect(requests.find((r) => r.method === 'PUT')?.body).not.toHaveProperty('password')
+  })
+})

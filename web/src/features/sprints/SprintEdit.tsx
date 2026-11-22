@@ -84,7 +84,7 @@ function SprintEdit({ projectId, initial, productBacklog }: SprintEditProps) {
               className="span10"
               required
               autoFocus
-              value={values.name ?? ''}
+              value={form.viewValue('name')}
               onChange={(event) => setField('name', event.target.value)}
             />
             <label htmlFor="capacity">Capacity</label>
@@ -106,7 +106,7 @@ function SprintEdit({ projectId, initial, productBacklog }: SprintEditProps) {
               name="name"
               className="span5"
               required
-              value={values.start ?? ''}
+              value={form.viewValue('start')}
               onChange={(event) => setField('start', event.target.value)}
             />
             <label htmlFor="end">End date</label>
@@ -116,7 +116,7 @@ function SprintEdit({ projectId, initial, productBacklog }: SprintEditProps) {
               name="name"
               className="span5"
               required
-              value={values.end ?? ''}
+              value={form.viewValue('end')}
               onChange={(event) => setField('end', event.target.value)}
             />
           </div>

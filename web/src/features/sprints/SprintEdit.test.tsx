@@ -383,3 +383,29 @@ describe('sprint edit (SprintEdit, SprintBacklogPicker)', () => {
     expect(submits).toEqual([true])
   })
 })
+
+describe('sprint edit: trimming (P6)', () => {
+  it('P6 / DSC-B-1: a new sprint with a spaces-only Name keeps Save disabled; padded text is saved trimmed', async () => {
+    const requests = recordRequests()
+    const rendered = await renderEdit(newPath)
+    const { user } = rendered
+    await user.type(screen.getByLabelText('Name'), '   ')
+    await user.type(screen.getByLabelText('Capacity'), '5')
+    await user.type(screen.getByLabelText('Start date'), '  2026-01-05  ')
+    await user.type(screen.getByLabelText('End date'), ' 2026-01-16')
+    expect(screen.getByLabelText('Name')).toHaveValue('   ')
+    expect(button('Save')).toBeDisabled()
+
+    await user.type(screen.getByLabelText('Name'), 'Sprint 3 ')
+    await user.click(button('Save'))
+    await waitFor(() => expect(rendered.router.state.location.pathname).toBe(listPath))
+    expect(requests.find((r) => r.method === 'POST' && r.pathname === SPRINTS)?.body).toEqual({
+      projectId: PROJECT.webshop,
+      name: 'Sprint 3',
+      capacity: 5,
+      start: '2026-01-05',
+      end: '2026-01-16',
+      sprintBacklog: [],
+    })
+  })
+})

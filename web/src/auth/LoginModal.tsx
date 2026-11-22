@@ -23,8 +23,13 @@ function LoginForm() {
     return getMessage(isAuthenticated ? 'login.reason.notAuthorized' : 'login.reason.notAuthenticated')
   })
   const [authError, setAuthError] = useState<string | null>(null)
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  // P6 / DSC-B-1: the inputs show the text as typed; the form works with the trimmed text, as
+  // AngularJS's ngTrim did for legacy's `user.email` and `user.password` (password included: ngTrim
+  // applies to every text-like input). Deriving it keeps both, and "Sign in" sends the trimmed values.
+  const [emailText, setEmailText] = useState('')
+  const [passwordText, setPasswordText] = useState('')
+  const email = emailText.trim()
+  const password = passwordText.trim()
   // The legacy form's `required` + `type="email"` validity (AC-AUTH-04).
   const formInvalid = !isEmail(email) || password === ''
 
@@ -62,8 +67,8 @@ function LoginForm() {
   }
 
   function onClear() {
-    setEmail('')
-    setPassword('')
+    setEmailText('')
+    setPasswordText('')
   }
 
   return (
@@ -83,8 +88,8 @@ function LoginForm() {
               id="login-email"
               name="login"
               type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              value={emailText}
+              onChange={(event) => setEmailText(event.target.value)}
               required
               autoFocus
             />
@@ -93,8 +98,8 @@ function LoginForm() {
               id="login-pass"
               name="pass"
               type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              value={passwordText}
+              onChange={(event) => setPasswordText(event.target.value)}
               required
             />
           </div>

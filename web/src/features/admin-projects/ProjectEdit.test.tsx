@@ -395,3 +395,25 @@ describe('ProjectEdit: Enter in the form (P4)', () => {
     expect(teamRows()).toEqual(team)
   })
 })
+
+describe('ProjectEdit: trimming (P6)', () => {
+  it('P6 / DSC-B-1: a spaces-only Name keeps Save disabled; a padded Name and description are saved trimmed', async () => {
+    const requests = recordRequests()
+    const { user, router } = await openEdit(`/admin/projects/${PROJECT.mobileApp}`)
+    const name = screen.getByLabelText('Name')
+    await user.clear(name)
+    await user.type(name, '   ')
+    expect(name).toHaveValue('   ')
+    expect(crudButton('Save')).toBeDisabled()
+
+    await user.type(name, 'Mobile  App 2 ')
+    await user.clear(screen.getByLabelText('Description'))
+    await user.type(screen.getByLabelText('Description'), '  New desc  ')
+    expect(name).toHaveValue('   Mobile  App 2 ')
+    await user.click(crudButton('Save'))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/admin/projects'))
+    const put = requests.find((r) => r.method === 'PUT' && r.pathname.startsWith(PROJECTS))
+    expect(put?.body).toMatchObject({ name: 'Mobile  App 2', desc: 'New desc' })
+  })
+})

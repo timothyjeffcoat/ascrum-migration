@@ -49,7 +49,6 @@ export function ProjectEdit({ initial, users }: ProjectEditProps) {
       else pushForCurrentRoute('crud.project.remove.error', 'error', { id: form.values.id })
     },
   })
-  const { values } = form
 
   return (
     <div className="well">
@@ -66,7 +65,7 @@ export function ProjectEdit({ initial, users }: ProjectEditProps) {
               id="project-name"
               type="text"
               name="name"
-              value={values.name ?? ''}
+              value={form.viewValue('name')}
               onChange={(event) => form.setField('name', event.target.value)}
               className="span10"
               required
@@ -77,7 +76,7 @@ export function ProjectEdit({ initial, users }: ProjectEditProps) {
               id="project-desc"
               rows={10}
               cols={10}
-              value={values.desc ?? ''}
+              value={form.viewValue('desc')}
               onChange={(event) => form.setField('desc', event.target.value)}
               className="span10"
             />
