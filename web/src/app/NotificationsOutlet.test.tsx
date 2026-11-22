@@ -1,12 +1,12 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { pushForCurrentRoute } from '../notifications/store.ts'
-import { renderRoute } from '../test/renderRoute.tsx'
+import { renderRoute, waitForShell } from '../test/renderRoute.tsx'
 
 describe('NotificationsOutlet', () => {
   it('AC-NOT-03: one "alert alert-<type>" per notification, each with an x close button; not rendered when empty', async () => {
     const { router, user } = await renderRoute('/projectsinfo')
-    await waitFor(() => expect(router.state.initialized).toBe(true))
+    await waitForShell(router) // the outlet lives in the shell, which re-mounts after the first load
     expect(document.querySelector('.alert')).toBeNull()
     const containersBefore = document.querySelectorAll('.container-fluid').length
 

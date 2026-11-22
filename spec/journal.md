@@ -446,3 +446,12 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "A rerun turned it green. The work was in refusing to call it fixed: one theory tested and ruled out, the test changed so the next failure would say where it stuck, and the open item written down."
+
+## 2026-11-21 — The flaky logout test, found and fixed
+- After wave A merged, AC-AUTH-07 failed on `migration` itself, making three CI failures in one day. Locally it had passed 18 of 18 runs, and the first theory looked ruled out.
+- The orchestrator stopped guessing locally and ran the experiment where the failure lived: a throwaway draft PR (#13, closed unmerged) ran the logout flow 40 times on a CI runner, with diagnostics. 1 of 40 stalled, and the diagnostics named the cause: no request sent, user still signed in, clicked button detached. The test had clicked the first-load copy of the header just before React replaced it. The "ruled out" theory was right; a fast laptop simply never loses that race.
+- Fix: a shared `waitForShell()` test helper (wait for the real header's breadcrumbs, not only the router's `initialized` flag), used by the four tests that touch the header, and a CLAUDE.md rule so wave B workers use it. With the fix: 240 of 240 probe runs on CI (3 runs × 80).
+- The app was never wrong; the tests were. That still mattered: a test that fails one time in 40 teaches people to press "rerun", and a rerun is how real failures get waved through.
+
+**Moment (article candidate)**
+- "We couldn't reproduce it on our machine, so we stopped trying. Forty runs on the machine where it failed found it in one CI job."

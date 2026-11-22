@@ -2,11 +2,11 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { request } from '../api/http.ts'
 import type { RouteObject } from 'react-router'
-import { renderRoute, type Persona } from '../test/renderRoute.tsx'
+import { renderRoute, waitForShell, type Persona } from '../test/renderRoute.tsx'
 
 async function renderShell(path: string, as: Persona = 'anonymous', routes: RouteObject[] = []) {
   const rendered = await renderRoute(path, { as, routes })
-  await waitFor(() => expect(rendered.router.state.initialized).toBe(true))
+  await waitForShell(rendered.router) // the real header, not the first-load copy (DEV-foundation-06)
   if (as !== 'anonymous') await screen.findByRole('button', { name: 'Log out' })
   const navbar = document.querySelector('.navbar')
   if (!(navbar instanceof HTMLElement)) throw new Error('no navbar')

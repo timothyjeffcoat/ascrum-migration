@@ -4,12 +4,13 @@
 //
 //   const { user, router } = await renderRoute('/admin/users', { as: 'admin' })
 //   expect(await screen.findByRole(...)).toBeVisible()
-import { render, type RenderResult } from '@testing-library/react'
+import { render, waitFor, type RenderResult } from '@testing-library/react'
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { createMemoryRouter, type DataRouter, type RouteObject } from 'react-router'
-import { onTestFinished } from 'vitest'
+import { expect, onTestFinished } from 'vitest'
 import { CREDENTIALS } from '../../stub/seed.ts'
 import { bootApp } from '../app/bootApp.tsx'
+import { breadcrumbsFor } from '../app/breadcrumbs.ts'
 import { buildRoutes } from '../app/router.tsx'
 import { login, requestCurrentUser, resetCurrentUser } from '../auth/currentUser.ts'
 import { resetLoginDialog } from '../auth/loginDialog.ts'
@@ -93,4 +94,18 @@ export function recordRequests(): RecordedRequest[] {
   server.events.on('request:start', listener)
   onTestFinished(() => server.events.removeListener('request:start', listener))
   return recorded
+}
+
+/**
+ * Waits until the first load has finished AND the real shell has replaced the first-load shell
+ * (the root HydrateFallback, DEV-foundation-03). Call it before clicking anything in the header.
+ * `router.state.initialized` alone is not enough: it flips before React commits the new shell, so a
+ * header control found right after it can be the first-load copy, which is then unmounted and the
+ * click is lost (DEV-foundation-06, caught by a CI probe). The first-load header has no breadcrumbs
+ * and the real one always has at least one, so the crumb count tells the two apart.
+ */
+export async function waitForShell(router: DataRouter): Promise<void> {
+  await waitFor(() => expect(router.state.initialized).toBe(true))
+  const expected = breadcrumbsFor(router.state.location.pathname).length
+  await waitFor(() => expect(document.querySelectorAll('ul.breadcrumb > li')).toHaveLength(expected))
 }
