@@ -301,3 +301,13 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - "Every test passed, and one of them could not have failed. Mutation testing by the reviewer is what turned 'tests exist' into 'tests bite'."
 - "The fix was a one-file test change (+10 / −4 lines). The value was in the loop: finding, relaunch, fix, an independent re-check of the same mutation."
 - "We broke our own process rule on purpose, and wrote it down: the agents could merge, but a foundation with open questions waits for a human."
+
+## 2026-11-21 — Cluster 0 merged; wave A opens
+- The owner answered the cluster's three open items in one message: keep the accessible login labels (Q-foundation-1), fix the CLAUDE.md example (Q-foundation-2), and accept the breadcrumb difference after a failed load (DEV-foundation-02). The orchestrator recorded the answers on the PR branch, CI passed again, and PR #4 was squash-merged (`b04ff4d`).
+- What the human did for cluster 0: three yes/no decisions, after plain-language explanations. Everything else (build, review, fix, re-review) ran without them.
+- Orchestration slips, kept:
+  - The original worker session could not be resumed for the fix, so a fresh worker got the finding in writing. That is what spec §8.2 asks for anyway.
+  - Stashing the metrics ledger across a branch switch collided with the hook, which kept appending rows. The rows were merged back by hand from the stash, with none lost or duplicated (104 + 1 rows).
+  - Running Prettier over the root Markdown tables padded them into unreadable dash rows. That was reverted; Prettier only gates `web/`.
+- The CLAUDE.md fix also passes on the reviewer's notes for wave A: wait for `router.state.initialized` before clicking shell controls; use `recordRequests()` instead of mocking `api/`; and leave the login-modal composition alone, because a single test guards it.
+- Gates: wave A (clusters 1, 2, 3) is open. Cluster 0 is merged, and §11-4 is proven by reviewer-verified tests.
