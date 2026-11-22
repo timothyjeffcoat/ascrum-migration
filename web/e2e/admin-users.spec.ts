@@ -44,7 +44,7 @@ test.describe('admin users', () => {
       /^https:\/\/www\.gravatar\.com\/avatar\/[0-9a-f]{32}\?s=50&d=monsterid$/,
     )
 
-    await po.getByText('Owner').click()
+    await po.getByText('Owner', { exact: true }).click()
     await expect(page).toHaveURL(/\/admin\/users\/[0-9a-f]{24}$/)
     await expect(page.locator('.well legend')).toHaveText('User')
     await expect(page.getByLabel('E-mail')).toHaveValue('po@ascrum.test')
@@ -80,7 +80,7 @@ test.describe('admin users', () => {
     await expect(erin.locator('td').nth(2)).toHaveText('Example')
 
     // Edit: blank passwords mean "unchanged" (AC-USR-06), so only the name changes.
-    await erin.getByText('Example').click()
+    await erin.getByText('Example', { exact: true }).click()
     await page.getByLabel('Last name').fill('Sample')
     await page.getByRole('button', { name: 'Save' }).click()
     await expect(page).toHaveURL('/admin/users')
@@ -88,7 +88,11 @@ test.describe('admin users', () => {
 
     // Remove from the list: no row navigation, the row goes, a notification shows.
     await rowFor(page, 'erin@ascrum.test').getByRole('button', { name: 'Remove' }).click()
-    await expect(page.locator('.alert-success')).toHaveText(/A user with id '[0-9a-f]{24}' was removed successfully\./)
+    // The edit's "saved" notice is still there (current route); the removal adds its own.
+    await expect(page.locator('.alert-success')).toHaveText([
+      /A user with id '[0-9a-f]{24}' was saved successfully\./,
+      /A user with id '[0-9a-f]{24}' was removed successfully\./,
+    ])
     await expect(rowFor(page, 'erin@ascrum.test')).toHaveCount(0)
     await expect(page).toHaveURL('/admin/users')
   })
@@ -97,7 +101,7 @@ test.describe('admin users', () => {
     page,
   }) => {
     await openUsersAsAdmin(page)
-    await rowFor(page, 'outsider@ascrum.test').getByText('Outsider').click()
+    await rowFor(page, 'outsider@ascrum.test').getByText('Outsider', { exact: true }).click()
     await page.getByLabel('E-mail').fill('outsider@ascrum.tes')
     await page.getByLabel('E-mail').fill('outsider@ascrum.test')
     await page.getByLabel('First name').fill('Ottilie')
