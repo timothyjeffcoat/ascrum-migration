@@ -1,6 +1,6 @@
 // AC-USR-04..07, D8, D9, and the legacy admin-users-edit.spec / uniqueEmail.spec form-level cases,
 // through the real app (renderRoute + MSW stub).
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, getDefaultNormalizer, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { failNext } from '../../test/stubControl.ts'
 import { recordRequests, renderRoute, type RecordedRequest } from '../../test/renderRoute.tsx'
@@ -50,6 +50,34 @@ async function openEdit(id: string) {
   await waitFor(() => expect(rendered.router.state.initialized).toBe(true))
   return rendered
 }
+
+describe('UserEdit: route guards (AC-USR-01, §5.3 R17/R18)', () => {
+  const NOT_AUTHENTICATED = 'You must be logged in to access this part of the application.'
+  const NOT_AUTHORIZED = 'You do not have the necessary access permissions.  Do you want to login as someone else?'
+  // The legacy message has two spaces; keep them when matching.
+  const EXACT = { normalizer: getDefaultNormalizer({ collapseWhitespace: false }) }
+  const cases = [
+    { persona: 'anonymous', message: NOT_AUTHENTICATED },
+    { persona: 'dev1', message: NOT_AUTHORIZED },
+  ] as const
+  const paths = [
+    { route: 'R17', path: '/admin/users/new' },
+    { route: 'R18', path: `/admin/users/${USER.po}` },
+  ] as const
+
+  for (const { route, path } of paths) {
+    for (const { persona, message } of cases) {
+      it(`AC-USR-01 / §5.3 ${route}: a deep link to ${path} as ${persona} gets the login modal and fetches no user`, async () => {
+        const requests = recordRequests()
+        const { router } = await renderRoute(path, { as: persona })
+        expect(await screen.findByText(message, EXACT)).toHaveClass('alert alert-warning')
+        expect(router.state.initialized).toBe(false)
+        expect(screen.queryByLabelText('Last name')).not.toBeInTheDocument() // the login modal has its own E-mail
+        expect(requests.filter((r) => r.pathname.includes('/collections/users'))).toEqual([])
+      })
+    }
+  }
+})
 
 describe('UserEdit: the form', () => {
   it('AC-USR-04: legacy markup: a well around the form, legend "User", span6 inputs, a 200px gravatar', async () => {
