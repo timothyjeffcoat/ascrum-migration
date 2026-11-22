@@ -1,5 +1,5 @@
 import { screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import { PROJECT, USER } from '../../../stub/seed.ts'
 import { users as usersApi } from '../../api/collections.ts'
 import { productOwnerCandidates, scrumMasterCandidates, teamMemberCandidates } from '../../domain/projects.ts'
@@ -353,5 +353,45 @@ describe('ProjectEdit (/admin/projects/new, /admin/projects/:itemId)', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/admin/projects'))
     const post = requests.find((r) => r.method === 'POST' && r.pathname === PROJECTS)
     expect(post?.body).toMatchObject({ productOwner: USER.dev1, teamMembers: [] })
+  })
+})
+
+/**
+ * P4: records `defaultPrevented` for every submit event that reaches window. The listener sits outside
+ * React's root, so it sees each event after the form's onSubmit has run. jsdom never navigates on a
+ * native submission, so a cancelled submit event is the only unit-level proof that the browser would
+ * not reload the page (the reload itself is covered by e2e/forms-enter.spec.ts).
+ */
+function watchSubmits(): boolean[] {
+  const prevented: boolean[] = []
+  const listener = (event: Event) => prevented.push(event.defaultPrevented)
+  window.addEventListener('submit', listener)
+  onTestFinished(() => window.removeEventListener('submit', listener))
+  return prevented
+}
+
+describe('ProjectEdit: Enter in the form (P4)', () => {
+  it('DSC-1 / P4: Enter in the project Name field keeps the edits and does not submit', async () => {
+    const { user, router } = await openEdit(`/admin/projects/${PROJECT.webshop}`)
+    await waitFor(() => expect(router.state.initialized).toBe(true))
+    const name = screen.getByLabelText('Name')
+    expect(name).toHaveValue('Webshop')
+    const team = teamRows()
+    expect(team).toEqual([DEV1, DEV2])
+    const { pathname, search } = router.state.location
+    await user.clear(name)
+    await user.type(name, 'Renamed but unsaved')
+
+    const requests = recordRequests()
+    const submits = watchSubmits()
+    await user.type(name, '{Enter}')
+
+    // Name is the only field that blocks implicit submission, so Enter does submit; the submit is cancelled.
+    expect(submits).toEqual([true])
+    expect(name).toHaveValue('Renamed but unsaved')
+    expect(requests).toEqual([])
+    expect(router.state.location).toMatchObject({ pathname, search })
+    // Legacy's Enter clicked the first team "Remove"; not ported.
+    expect(teamRows()).toEqual(team)
   })
 })
