@@ -202,3 +202,53 @@ All matched files use Prettier code style!
   30 passed (10.8s)         (playwright)
 ```
 `pnpm typecheck` passed inside the same run.
+
+## 2026-11-21: Q-sprints-tasks-3 answered (b): `-- choose --` on the State select while unset
+
+### Changes
+- Owner answer (b) and the AC-TSK-02 spec line came in through the orchestrator's first commit on
+  `fix/task-state-choose`. Implemented as one conditional option in `TaskEdit.tsx`:
+  `{values.state === undefined && <option value="">-- choose --</option>}` as the State select's first
+  option. `values.state` can only be `undefined` through P5 (a stored state outside `TASK_STATES`), since the
+  §5.6 draft is `TODO` and `fromSelect` maps the only blank value back to `undefined`. Once a state is
+  chosen the option is gone, so the normal form is unchanged. Header comment and the inline comment on the
+  State select updated (the old one said a malformed state "must be chosen again" with no blank option).
+- Unit tests (`TaskEdit.test.tsx`):
+  - `AC-TSK-02 / Q-sprints-tasks-3: an unset state shows -- choose -- first, and TODO can be chosen`:
+    malformed stored state `WAITING` → options `['-- choose --', ...TASK_STATES]`, `-- choose --` selected,
+    value `''`, Save disabled; choosing `TODO` enables Save and removes the option; Save PUTs `state: 'TODO'`.
+  - `AC-TSK-02 / Q-sprints-tasks-3: a stored task with a state has no -- choose -- option in State` and
+    `... the new-task form with a state ...`: options are exactly `TASK_STATES`.
+- e2e (`sprints-tasks.spec.ts`): `AC-TSK-02 / P5 / Q-sprints-tasks-3: a malformed stored state shows
+  -- choose --, and TODO can be picked`. The seed was cheap: after signing in as dev1, the test GETs
+  "Design catalogue page" through the stub's own wire API and PUTs it back with `state: 'WAITING'` using
+  the page's session (any session user may write `tasks`, §7.3). It then asserts the State select reads
+  `''` / `-- choose --` with Save disabled, picks `TODO`, saves, and re-opens the task to see `TODO`. This is
+  the real-browser case the question was about: without the option the browser already shows `TODO`.
+
+### Mutation results (each reverted with `git checkout` or a saved copy; restore confirmed by a green re-run)
+| # | Mutation | Result |
+|---|---|---|
+| M42 | delete the conditional `-- choose --` option | unit: **1 failed** (`an unset state shows -- choose -- first…`: `expected [ 'TODO', 'IN_DEV', 'BLOCKED', …(2) ] to deeply equal [ '-- choose --', 'TODO', …(4) ]`), 36 passed |
+| M43 | render `-- choose --` always (drop the condition) | unit: **4 failed** (`State offers TASK_STATES in order`, the unset-state test, both "no -- choose --" tests), 33 passed |
+| E2E-M42 | M42, then `pnpm e2e e2e/sprints-tasks.spec.ts --project chromium -g malformed` (rebuilds `dist/`) | **1 failed**: `expect(locator).toHaveValue(expected) failed`, `Expected: ""`, `Received: "TODO"`, the browser shows TODO for a form holding no state |
+
+### Wrong turns
+- The first e2e draft parsed the GET with `response.json()`, failing with `SyntaxError: Unexpected token ')'`:
+  the stub keeps legacy's `)]}',` hijack prefix (AC-STUB-01). It now slices `JSON_PREFIX`.
+- The second draft's PUT was refused (not ok): unsafe methods need the `x-xsrf-token` header matching the
+  `XSRF-TOKEN` cookie (§7.2). It now reads that cookie from the browser context and sends the header.
+  Both constants are imported from `stub/` rather than retyped.
+
+### Gates run this session
+Ports `STUB_PORT=3801 PREVIEW_PORT=4973 PAGES_PORT=4974`. First `pnpm verify` exit 1 (the e2e prefix bug
+above: `1 failed`, `35 passed`). After the fixes, `pnpm verify`, unpiped (output redirected to a file), exit 0:
+```
+All matched files use Prettier code style!
+ Test Files  41 passed (41)
+      Tests  389 passed (389)
+✓ built in 335ms            (vite build)
+✓ built in 384ms            (vite build --mode pages)
+  36 passed (12.5s)         (playwright)
+```
+`pnpm typecheck` passed inside the same run.
