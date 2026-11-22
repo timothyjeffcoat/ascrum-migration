@@ -29,6 +29,18 @@ export function TeamMembers({ form, users }: TeamMembersProps) {
     if (next.selTeamMember !== extra.selTeamMember) form.setExtra('selTeamMember', next.selTeamMember)
   }
 
+  // Q-admin-projects-1 (owner answer (b)), a deliberate difference from legacy: TeamMembersController
+  // kept a team pick that had stopped being a candidate (e.g. that user was just made Product Owner), so
+  // `Add` stayed enabled and could add the PO as a developer. Choosing a PO or SM now clears a pick that
+  // is no longer in teamMemberCandidates for the new values. Done in the change handler, not an effect.
+  function setRole(field: 'productOwner' | 'scrumMaster', value: string | undefined) {
+    form.setField(field, value)
+    const picked = extra.selTeamMember
+    if (picked === undefined) return
+    const stillCandidate = teamMemberCandidates(users, { ...values, [field]: value }).some((u) => u.id === picked)
+    if (!stillCandidate) form.setExtra('selTeamMember', undefined)
+  }
+
   return (
     <div className="span6">
       <label htmlFor="project-productOwner">Product Owner</label>
@@ -36,7 +48,7 @@ export function TeamMembers({ form, users }: TeamMembersProps) {
         id="project-productOwner"
         className="span12"
         value={values.productOwner ?? ''}
-        onChange={(event) => form.setField('productOwner', fromSelect(event.target.value))}
+        onChange={(event) => setRole('productOwner', fromSelect(event.target.value))}
         required
       >
         <option value="">-- choose --</option>
@@ -51,7 +63,7 @@ export function TeamMembers({ form, users }: TeamMembersProps) {
         id="project-scrumMaster"
         className="span12"
         value={values.scrumMaster ?? ''}
-        onChange={(event) => form.setField('scrumMaster', fromSelect(event.target.value))}
+        onChange={(event) => setRole('scrumMaster', fromSelect(event.target.value))}
         required
       >
         <option value="">-- choose --</option>

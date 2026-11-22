@@ -330,4 +330,28 @@ describe('ProjectEdit (/admin/projects/new, /admin/projects/:itemId)', () => {
       expect(requests.filter((r) => PROJECTS_OR_USERS.test(r.pathname))).toEqual([])
     })
   }
+
+  it('AC-APR-04 / Q-admin-projects-1: a team pick that becomes the product owner is cleared', async () => {
+    const requests = recordRequests()
+    const { user, router } = await openEdit('/admin/projects/new')
+
+    await user.selectOptions(teamSelect(), DEV1)
+    expect(selectedLabel(teamSelect())).toBe(DEV1)
+    await user.selectOptions(screen.getByLabelText('Product Owner'), DEV1)
+
+    // Legacy kept the stale pick: the select showed `-- choose --` but Add stayed enabled.
+    expect(selectedLabel(teamSelect())).toBe(CHOOSE)
+    const add = within(devTeamTable()).getByRole('button', { name: 'Add' })
+    expect(add).toBeDisabled()
+    await user.click(add) // a no-op while disabled
+    expect(teamRows()).toEqual([])
+
+    await user.type(screen.getByLabelText('Name'), 'Intranet')
+    await user.selectOptions(screen.getByLabelText('Scrum Master'), SM)
+    await user.click(crudButton('Save'))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/admin/projects'))
+    const post = requests.find((r) => r.method === 'POST' && r.pathname === PROJECTS)
+    expect(post?.body).toMatchObject({ productOwner: USER.dev1, teamMembers: [] })
+  })
 })
