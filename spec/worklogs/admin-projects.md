@@ -103,3 +103,56 @@ Counts: 5 ported, 6 adapted, 0 n/a, 0 dead → **11/11 carried over**.
   `getDefaultNormalizer({collapseWhitespace: false})`.
 - A notification's text in the DOM starts with the close button's `x` (`x` + message); in Playwright
   match with `toContainText` or a regex.
+
+## 2026-11-21: session 2, owner decisions after review (DEV-admin-projects-01, Q-admin-projects-1/2)
+
+### What was done
+- **DEV-admin-projects-01 (guard tests).** Added four tests in `ProjectEdit.test.tsx`, one per route and
+  persona, for the `requireAdminUser()` guards of the "new" and "edit" loaders (§5.3 R14/R15):
+  - `AC-APR-01 / §5.3 R14/R15: a non-admin (dev1) deep link to /admin/projects/new gets the "not authorized" login modal and fetches no projects or users`
+  - `AC-APR-01 / §5.3 R14/R15: an anonymous deep link to /admin/projects/new asks for a login and fetches no projects or users`
+  - the same two for `/admin/projects/:itemId` (Webshop).
+
+  Each asserts the login modal with the right reason, no edit form, and (via `recordRequests()`) no
+  request to the `projects` or `users` collections.
+- **Q-admin-projects-1, owner answer (b).** `TeamMembers.tsx`: choosing a Product Owner or Scrum
+  Master now clears `extra.selTeamMember` when the pick is no longer in `teamMemberCandidates` for the
+  new values. Done in the select's change handler (no effect, no fetch); the comment cites
+  Q-admin-projects-1 as a deliberate difference from legacy. I cleared it in the handler instead of
+  deriving it at render: a derived value would keep the stale id in `extra`, and the pick would quietly
+  come back if the PO were changed away again. New test:
+  `AC-APR-04 / Q-admin-projects-1: a team pick that becomes the product owner is cleared` (pick Dana in
+  the add row, make Dana PO; the add-row select shows `-- choose --`, `Add` is disabled, a click on it
+  adds nothing, and the POST carries `productOwner: dev1, teamMembers: []`).
+- **Q-admin-projects-2, owner answer (a).** No code change.
+- Appended both owner answers to `spec/questions/admin-projects.md`.
+
+### Mutation checks (each reverted; `pnpm exec vitest run src/features/admin-projects`)
+| Mutation in `routes.tsx` / `TeamMembers.tsx` | Result |
+|---|---|
+| M1: drop `requireAdminUser()` from the "new" loader | 2 failed / 24 passed: both `/admin/projects/new` guard tests (dev1, anonymous) |
+| M2: drop it from the "edit" loader | 2 failed / 24 passed: both `/admin/projects/:itemId` guard tests |
+| M3: "new" loader uses `requireAuthenticatedUser()` | 1 failed / 25 passed: the dev1 `/admin/projects/new` test |
+| M4: "edit" loader uses `requireAuthenticatedUser()` | 1 failed / 25 passed: the dev1 `/admin/projects/:itemId` test |
+| M5: remove the `setExtra('selTeamMember', undefined)` clearing | 1 failed / 25 passed: the Q-admin-projects-1 test (`Received element is not disabled`) |
+
+After reverting: 26 passed (26). As expected, the anonymous tests do not catch M3/M4 (an anonymous
+user fails both guards); the dev1 tests do.
+
+### Mistakes and wrong turns
+- The first draft looped over `[name, route]` tuples; under `noUncheckedIndexedAccess` the destructured
+  values are `string | undefined`, so `pnpm verify` run 1 failed at typecheck (TS2345, two lines). Vitest
+  alone had passed, since it strips types. Switched to `{ name, route }` objects.
+- Run 1 of `pnpm verify` was written as `... > log; echo EXIT=$?`, so the metrics hook saw the `echo`'s
+  exit code 0 for a failing run (the trap CLAUDE.md warns about). Run 2 was redirected only, with no
+  trailing command, so its recorded exit code is the real one.
+- The first draft of the edit-route test names included the raw seed id; renamed to `:itemId`.
+
+### Gate results (this session; ports STUB_PORT=3201 PREVIEW_PORT=4373 PAGES_PORT=4374)
+- `pnpm verify` run 1: **failed** at typecheck (above).
+- `pnpm verify` run 2: **exit 0**.
+  - lint: `All matched files use Prettier code style!` (eslint `--max-warnings 0` clean)
+  - typecheck: clean
+  - unit: `Test Files  27 passed (27)`, `Tests  229 passed (229)`
+  - build: `✓ built in 339ms` (app), `✓ built in 407ms` (Pages)
+  - e2e: `21 passed (5.6s)`
