@@ -1,7 +1,7 @@
 import { act, getDefaultNormalizer, screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import { request } from '../api/http.ts'
-import { renderRoute } from '../test/renderRoute.tsx'
+import { recordRequests, renderRoute } from '../test/renderRoute.tsx'
 import { failNext } from '../test/stubControl.ts'
 import { getLoginDialogId } from './loginDialog.ts'
 import { RetryCancelledError, retryQueue } from './retryQueue.ts'
@@ -172,9 +172,64 @@ describe('LoginModal', () => {
     expect(document.querySelector('.modal')).toBeNull()
   })
 
-  it('every button in the login form is type="button" (CLAUDE.md)', async () => {
+  it('P4: "Sign in" is the form\'s only submit button; Clear and Cancel are type="button"', async () => {
     const { user } = await renderAtProjectsInfo()
     await user.click(screen.getByRole('button', { name: 'Log in' }))
-    for (const button of within(getModal()).getAllByRole('button')) expect(button).toHaveAttribute('type', 'button')
+    const modal = getModal()
+    expect(within(modal).getByRole('button', { name: 'Sign in' })).toHaveAttribute('type', 'submit')
+    expect(within(modal).getByRole('button', { name: 'Clear' })).toHaveAttribute('type', 'button')
+    expect(within(modal).getByRole('button', { name: 'Cancel' })).toHaveAttribute('type', 'button')
+  })
+
+  it('AC-AUTH-04 / DSC-2 / P4: Enter in the password field signs in', async () => {
+    const { user } = await renderAtProjectsInfo()
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    const modal = getModal()
+    await user.type(within(modal).getByLabelText('E-mail'), 'po@ascrum.test')
+    await user.type(within(modal).getByLabelText('Password'), 'demo')
+
+    const requests = recordRequests()
+    const submits = watchSubmits()
+    await user.type(within(modal).getByLabelText('Password'), '{Enter}')
+
+    await waitFor(() => expect(document.querySelector('.modal')).toBeNull())
+    expect(screen.getByRole('link', { name: 'Paula Owner' })).toBeInTheDocument()
+    expect(requests.filter((r) => r.method === 'POST' && r.pathname === '/login')).toHaveLength(1)
+    expect(submits).toEqual([true]) // signed in by script; the native submission was cancelled
+  })
+
+  it('AC-AUTH-04 / DSC-2 / P4: Enter with an invalid e-mail does not sign in', async () => {
+    const { user } = await renderAtProjectsInfo()
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    const modal = getModal()
+    await user.type(within(modal).getByLabelText('E-mail'), 'po@ascrum') // no TLD: invalid (AC-AUTH-04)
+    await user.type(within(modal).getByLabelText('Password'), 'demo')
+    expect(within(modal).getByRole('button', { name: 'Sign in' })).toBeDisabled()
+
+    const requests = recordRequests()
+    const submits = watchSubmits()
+    await user.type(within(modal).getByLabelText('E-mail'), '{Enter}')
+    await user.type(within(modal).getByLabelText('Password'), '{Enter}')
+    // A browser never submits through a disabled default button. Submit anyway, the way any other
+    // trigger would, to prove the handler itself refuses while Sign in is disabled.
+    await act(async () => getModal().closest('form')?.requestSubmit())
+
+    expect(submits).toEqual([true]) // only the scripted submission; Enter submitted nothing
+    expect(requests.filter((r) => r.method === 'POST' && r.pathname === '/login')).toEqual([])
+    expect(getModal()).toBe(modal)
+    expect(modal.querySelector('.alert-error')).toBeNull()
   })
 })
+
+/**
+ * P4: records `defaultPrevented` for every submit event that reaches window. The listener sits outside
+ * React's root, so it sees each event after the form's onSubmit has run. jsdom never navigates on a
+ * native submission, so a cancelled submit event is the only unit-level proof that a browser would not.
+ */
+function watchSubmits(): boolean[] {
+  const prevented: boolean[] = []
+  const listener = (event: Event) => prevented.push(event.defaultPrevented)
+  window.addEventListener('submit', listener)
+  onTestFinished(() => window.removeEventListener('submit', listener))
+  return prevented
+}

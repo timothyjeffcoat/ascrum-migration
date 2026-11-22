@@ -1,7 +1,7 @@
 // Port of security/login/LoginFormController.js + login/form.tpl.html, inside the markup the legacy
 // ui-bootstrap $dialog wrapped it in (`div.modal` plus `div.modal-backdrop`). Mounted outside the
 // router (spec §4.1) so a guard in an initial loader can open it while the router is still loading.
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore, type FormEvent } from 'react'
 import { ApiError } from '../api/errors.ts'
 import { isEmail } from '../crud/validators.ts'
 import { getMessage } from '../notifications/messages.ts'
@@ -51,6 +51,15 @@ function LoginForm() {
     )
   }
 
+  // P4 / DSC-2: in legacy "Sign in" had no type, so it was the form's default button and Enter in E-mail
+  // or Password clicked it. It is type="submit" again and signing in happens here, on the form's submit,
+  // whether it came from a click or from Enter. The browser never submits through a disabled default
+  // button; the formInvalid check keeps that rule for any other submission (AC-AUTH-04).
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!formInvalid) onLogin()
+  }
+
   function onClear() {
     setEmail('')
     setPassword('')
@@ -59,7 +68,7 @@ function LoginForm() {
   return (
     <>
       <div className="modal">
-        <form name="form" noValidate className="login-form">
+        <form name="form" noValidate className="login-form" onSubmit={onSubmit}>
           <div className="modal-header">
             <h4>Sign in</h4>
           </div>
@@ -89,7 +98,7 @@ function LoginForm() {
             />
           </div>
           <div className="modal-footer">
-            <button type="button" className="btn btn-primary login" onClick={onLogin} disabled={formInvalid}>
+            <button type="submit" className="btn btn-primary login" disabled={formInvalid}>
               Sign in
             </button>{' '}
             <button type="button" className="btn clear" onClick={onClear}>
