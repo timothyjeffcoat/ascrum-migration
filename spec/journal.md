@@ -543,3 +543,35 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "Three of the breakages that 'survived' were not test gaps at all: the browser itself trims an e-mail field. Before calling a test weak, the reviewer wrote a probe to check whether the breakage could be seen by anyone."
+
+## 2026-11-22: After Phase 3, and Phase 4 (the case study)
+
+**What happened after every cluster merged**
+- **PR #22 (Q-sprints-tasks-3).** The owner chose (b): the task State select shows `-- choose --` only while a corrupted stored state leaves the form without one. Reviewed with 7 unit mutations, all caught (journal entry above; DEV-sprints-tasks-04). This closed the last item left over from DEV-sprints-tasks-01.
+- **PR #23 (wave B legacy audit).** The second blind reading of `legacy/`, for the sprint, task, dashboard and Current Projects screens: 59 claims, 44 agree, 14 intentional differences, 3 findings (`spec/reviews/legacy-audit-wave-b.md`). As in wave A, the inventory described nothing wrongly; the findings were things nobody had written down.
+  - DSC-B-1 (DEV-audit-05): legacy trimmed every text field and the port did not, so a sprint named with only spaces was saved. Live in the shipped app, with every gate green.
+  - DSC-B-2 (DEV-audit-06): legacy's Revert broke the sprint backlog picker. The port never had the bug; it had simply not been logged as a fix.
+  - DSC-B-3 (DEV-audit-07): a double click on Save in a "new" form creates two records, in legacy and in the port.
+- **Owner decisions on the audit (2026-11-22).** Fix the trimming (spec §0.2 P6, with a new `viewValue` in the §4.2 form contract); keep the double-click behavior as legacy parity (DEV-audit-07, accepted); log the Revert difference (DEV-audit-06).
+- **PR #24 (P6, trimming).** A worker added trimming to the shared form hook and bound all 14 text inputs to `viewValue`; 18 files, +446/−27. The reviewer ran 26 mutations; 19 were caught. Two survivors were real test gaps (the user form's First name and Password (repeat) could have been bound to the trimmed value, which would have made "Mary Ann" impossible to type): DEV-audit-08. The orchestrator added one test on the PR branch that fails under both mutations. The other five survivors were shown to be invisible to users (a browser already strips spaces from `type="email"` inputs; one code path has no field using it yet). CI on the merge commit `8e22769`: 402 unit tests in 41 files, 37 Playwright, all 5 jobs green (run 45058504468).
+
+**Phase 4: what was written**
+- `README.md` is now the case study: results at a glance, how the workflow ran, what the gates caught and missed, the legacy audits, the flaky-test hunt, what went wrong, lessons for engineering managers, a repo map and the run commands. Every number in it cites a file, `gh` or `git`; the PR body lists each source.
+- `spec/deviations.md` gained a Summary above the table: 35 deviations; 1 blocking; by resolution 20 fixed, 12 accepted, 3 logged, 0 open. The rows themselves are unchanged.
+- `MIGRATION.md` gained a "Phase 4 complete" gate row.
+
+**Found while writing it**
+- **One deviation is still open.** DEV-admin-users-02 (non-blocking, from the cluster 1 review) recommended a one-assertion test for the Password (repeat) half of the edit-time "required" rule. Wave A's fix list covered the guard tests and P2, but not this, and nothing since has added it. The writer listed it as open instead of rounding it to "all closed". The orchestrator then added the missing assertion on the Phase 4 branch and confirmed the reviewer's original mutation now fails it (`1 failed | 28 passed (29)`), so the final count is 0 open.
+- **One later question was answered by the orchestrator, not the owner.** Q-fix-forms-1 (add `preventDefault` to the two toolbar forms) was answered "under the owner's P4 rule". The README says so rather than claiming the owner answered every question.
+- **The committed metrics ledger stops at PR #21.** `spec/metrics.jsonl` on `migration` was last updated in #21, so PRs #22–#24 and their agent launches are not in the committed snapshot. The README cites CI, `gh` and `git` for those, not the ledger. The orchestrator then committed the hook-written ledger as it stood (401 rows, unedited) in the Phase 4 PR, so the snapshot now runs through PR #24.
+
+**Metrics**
+| Metric | Value | Source |
+|---|---|---|
+| Deviations: total / blocking / open | 35 / 1 / 1 | `spec/deviations.md` |
+| Unit tests / files / Playwright on `8e22769` | 402 / 41 / 37 | CI run 45058504468 |
+| PRs opened / merged / closed unmerged (before this one) | 24 / 23 / 1 | `gh pr list --state all` |
+| Legacy-audit claims, waves A + B | 53 + 59 | `spec/reviews/legacy-audit-wave-{a,b}.md` |
+
+**Moment (article candidate)**
+- "The summary was supposed to say 'zero open deviations'. Counting the rows found one. It is listed, not rounded away."

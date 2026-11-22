@@ -150,6 +150,10 @@ describe('UserEdit: the form', () => {
     await user.clear(field('Password'))
     expect(errorsAfter('Password')).toEqual([])
     expect(errorsAfter('Password (repeat)')).toEqual([])
+
+    // The other half of "either" (DEV-admin-users-02): filling only the repeat makes Password required.
+    await user.type(field('Password (repeat)'), 'x')
+    expect(errorsAfter('Password')).toEqual([REQUIRED, MISMATCH])
   })
 
   it('AC-USR-04: last name and first name are required; the Admin checkbox edits `admin`', async () => {
