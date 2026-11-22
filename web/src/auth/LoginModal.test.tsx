@@ -233,3 +233,30 @@ function watchSubmits(): boolean[] {
   onTestFinished(() => window.removeEventListener('submit', listener))
   return prevented
 }
+
+// P6 / DSC-B-1: legacy's ngTrim trimmed `user.email` and `user.password` (password inputs too).
+describe('LoginModal: trimming (P6)', () => {
+  it('P6 / DSC-B-1: a spaces-only password keeps Sign in disabled; a padded one is sent trimmed and signs in', async () => {
+    const requests = recordRequests()
+    const { user } = await renderAtProjectsInfo()
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    const modal = getModal()
+    const signIn = within(modal).getByRole('button', { name: 'Sign in' })
+    const password = within(modal).getByLabelText('Password')
+    await user.type(within(modal).getByLabelText('E-mail'), 'sm@ascrum.test')
+    await user.type(password, '   ')
+    expect(password).toHaveValue('   ') // the input shows what was typed
+    expect(signIn).toBeDisabled()
+
+    await user.type(password, 'demo  ')
+    expect(password).toHaveValue('   demo  ')
+    expect(signIn).toBeEnabled()
+    await user.click(signIn)
+
+    await waitFor(() => expect(document.querySelector('.modal')).toBeNull())
+    expect(requests.find((r) => r.method === 'POST' && r.pathname === '/login')?.body).toEqual({
+      email: 'sm@ascrum.test',
+      password: 'demo',
+    })
+  })
+})

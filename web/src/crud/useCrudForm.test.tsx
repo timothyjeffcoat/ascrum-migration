@@ -363,3 +363,82 @@ describe('useCrudForm', () => {
     await waitFor(() => expect(opts.onSave).toHaveBeenCalledWith({ someVal: 'v+r' }))
   })
 })
+
+// P6 / DSC-B-1: AngularJS 1.2's ngTrim trimmed the model value of every text input and textarea, while
+// the input kept showing what was typed (its view value).
+describe('P6 trimming', () => {
+  it('P6 / DSC-B-1: a spaces-only required field is invalid, "  x  " saves as "x", and viewValue shows the raw text', async () => {
+    const { result, opts } = setup({ initial: { someVal: '' }, validators: requiredSomeVal })
+    act(() => result.current.setField('someVal', '   '))
+    expect(result.current.values.someVal).toBe('')
+    expect(result.current.viewValue('someVal')).toBe('   ')
+    expect(result.current.showError('someVal', 'required')).toBe(true)
+    expect(result.current.canSave).toBe(false)
+
+    act(() => result.current.setField('someVal', '  x  '))
+    expect(result.current.values.someVal).toBe('x')
+    expect(result.current.viewValue('someVal')).toBe('  x  ')
+    expect(result.current.canSave).toBe(true)
+    act(() => result.current.save())
+    expect(opts.save).toHaveBeenCalledWith({ someVal: 'x' })
+    await waitFor(() => expect(opts.onSave).toHaveBeenCalled())
+  })
+
+  it('P6 / DSC-B-1: typing "a b" keystroke by keystroke keeps the inner space; a trailing space is shown but is not a change', () => {
+    const { result } = setup({ initial: { someVal: 'a' } })
+    act(() => result.current.setField('someVal', 'a '))
+    // Legacy: the trimmed model value is still 'a', so the form is not dirty.
+    expect(result.current.viewValue('someVal')).toBe('a ')
+    expect(result.current.values.someVal).toBe('a')
+    expect(result.current.canRevert).toBe(false)
+    expect(result.current.canSave).toBe(false)
+    act(() => result.current.setField('someVal', 'a b'))
+    expect(result.current.viewValue('someVal')).toBe('a b')
+    expect(result.current.values.someVal).toBe('a b')
+    expect(result.current.canSave).toBe(true)
+  })
+
+  it('P6 / DSC-B-1: revert shows the original text unless the typed text already trims to it (AngularJS re-rendered only changed models)', () => {
+    const { result } = setup({ initial: { someVal: 'orig', count: 1 }, numberFields: ['count'] })
+    act(() => result.current.setField('someVal', ' changed '))
+    act(() => result.current.revert())
+    expect(result.current.values.someVal).toBe('orig')
+    expect(result.current.viewValue('someVal')).toBe('orig')
+
+    act(() => result.current.setField('someVal', 'orig  '))
+    act(() => result.current.setField('count', '2'))
+    act(() => result.current.revert())
+    expect(result.current.values).toEqual({ someVal: 'orig', count: 1 })
+    expect(result.current.viewValue('someVal')).toBe('orig  ')
+    expect(result.current.canRevert).toBe(false)
+  })
+
+  it('P6 / DSC-B-1: extra text is trimmed too, so equalsField compares trimmed values; numbers and non-strings are untouched', () => {
+    const { result } = setup({
+      initial: { someVal: '', tags: [] },
+      numberFields: ['count'],
+      validators: { repeat: [equalsField<Doc & Extra>('someVal')] },
+    })
+    act(() => result.current.setField('someVal', 'pw'))
+    act(() => result.current.setExtra('repeat', ' pw '))
+    expect(result.current.extra.repeat).toBe('pw')
+    expect(result.current.viewValue('repeat')).toBe(' pw ')
+    expect(result.current.showError('repeat', 'equal')).toBe(false)
+
+    act(() => result.current.setField('count', ' 3 '))
+    expect(result.current.values.count).toBe(3)
+    const tags = [' a ']
+    act(() => result.current.setField('tags', tags))
+    expect(result.current.values.tags).toBe(tags)
+  })
+
+  it('P6 / DSC-B-1: a trailing space does not restart an async check (legacy re-validated only a changed model)', async () => {
+    const check = vi.fn<AsyncValidator<Doc & Extra>>(() => Promise.resolve(null))
+    const { result } = setup({ asyncValidators: { someVal: check } })
+    act(() => result.current.setField('someVal', 'x'))
+    await waitFor(() => expect(result.current.pending).toBe(false))
+    act(() => result.current.setField('someVal', 'x '))
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(result.current.pending).toBe(false)
+  })
+})

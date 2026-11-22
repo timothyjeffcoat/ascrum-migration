@@ -202,4 +202,30 @@ test.describe('sprints and tasks on the Node stub', () => {
     await expect(page).toHaveURL(`${sprint1TasksPath}/new`)
     expect(documentRequests).toEqual([])
   })
+
+  test('P6 / DSC-B-1: a spaces-only sprint Name keeps Save disabled; typed text is shown as typed and saved trimmed', async ({
+    page,
+  }) => {
+    await page.goto(`${sprintsPath}/new`)
+    await signIn(page, 'dev1@ascrum.test', 'demo')
+    const name = page.getByLabel('Name')
+    const save = page.getByRole('button', { name: 'Save' })
+    // Key by key, as a user types: the trailing and inner spaces must survive every keystroke.
+    await name.pressSequentially('   ')
+    await page.getByLabel('Capacity').fill('5')
+    await page.getByLabel('Start date').pressSequentially('  2026-01-05  ')
+    await page.getByLabel('End date').pressSequentially(' 2026-01-16')
+    await expect(name).toHaveValue('   ')
+    await expect(save).toBeDisabled()
+
+    // Playwright's refocus puts the caret at the start (a plain input does the same); type at the end.
+    await name.press('End')
+    await name.pressSequentially('Sprint  3 ')
+    await expect(name).toHaveValue('   Sprint  3 ')
+    const post = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/collections/sprints'))
+    await save.click()
+    expect((await post).postDataJSON()).toMatchObject({ name: 'Sprint  3', start: '2026-01-05', end: '2026-01-16' })
+    await expect(page).toHaveURL(sprintsPath)
+    await expect(page.locator('tbody tr', { hasText: 'Sprint  3' }).locator('td').nth(1)).toHaveText('2026-01-05')
+  })
 })

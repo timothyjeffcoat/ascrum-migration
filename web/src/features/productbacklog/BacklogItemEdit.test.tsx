@@ -242,3 +242,25 @@ describe('backlog item edit: Enter in the form (P4)', () => {
     expect(router.state.location).toMatchObject({ pathname, search })
   })
 })
+
+describe('backlog item edit: trimming (P6)', () => {
+  it('P6 / DSC-B-1: a spaces-only Name or User story keeps Save disabled; padded text is saved trimmed', async () => {
+    const requests = recordRequests()
+    const { user, router } = await renderEdit(cartPath)
+    const name = screen.getByLabelText('Name')
+    const story = screen.getByLabelText('User story')
+    await user.clear(name)
+    await user.type(name, '  ')
+    expect(name).toHaveValue('  ')
+    expect(button('Save')).toBeDisabled()
+    await user.type(name, 'Basket ')
+    await user.clear(story)
+    await user.type(story, '   ')
+    expect(button('Save')).toBeDisabled()
+    await user.type(story, 'As a buyer ')
+    await user.click(button('Save'))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(listPath))
+    expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({ name: 'Basket', desc: 'As a buyer' })
+  })
+})
