@@ -1,7 +1,7 @@
 // Cluster 0 e2e: the shell, the login modal and deep links, in a real browser.
 //   - "Node stub" tests: the production build on `vite preview` (base '/'), API proxied to the Node stub.
 //   - "Pages build" tests: the GitHub Pages build (base '/ascrum-migration/', MSW in the browser), served
-//     by scripts/pages-server.ts on :4174. They run in this file's project with a different baseURL;
+//     by scripts/pages-server.ts on PAGES_PORT (default 4174). They run in this file's project with a different baseURL;
 //     no reset there, because the Pages build has no reset route and each page load is a fresh stub.
 import { expect, test, type Page } from '@playwright/test'
 import { probeStyles } from './support.ts'
@@ -101,7 +101,7 @@ test.describe('shell on the Node stub', () => {
 })
 
 test.describe('shell on the Pages build (base /ascrum-migration/, MSW)', () => {
-  test.use({ baseURL: 'http://localhost:4174' })
+  test.use({ baseURL: `http://localhost:${process.env.PAGES_PORT ?? '4174'}` })
   const BASE = '/ascrum-migration/'
 
   test('AC-SHELL-06 / AC-AUTH-09: a deep-link reload works under the Pages basename, through the login modal', async ({

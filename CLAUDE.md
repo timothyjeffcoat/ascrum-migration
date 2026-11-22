@@ -40,6 +40,9 @@ Node 24 LTS, pnpm, React 19, TypeScript strict, Vite, react-router v7 (data mode
 
 Node comes from `web/.nvmrc` (`nvm use`), pnpm from `packageManager` (`corepack enable`).
 
+**Parallel worktrees:** `STUB_PORT`, `PREVIEW_PORT` and `PAGES_PORT` (defaults 3001/4173/4174) move every e2e server.
+Cluster `n` exports `STUB_PORT=3001+100n PREVIEW_PORT=4173+100n PAGES_PORT=4174+100n` before `pnpm verify`/`pnpm e2e`. For example, cluster 2 uses 3201/4373/4374.
+
 ## Conventions
 **Layout and routes**
 - Feature code goes in `web/src/features/<feature>/`.

@@ -311,3 +311,8 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
   - Running Prettier over the root Markdown tables padded them into unreadable dash rows. That was reverted; Prettier only gates `web/`.
 - The CLAUDE.md fix also passes on the reviewer's notes for wave A: wait for `router.state.initialized` before clicking shell controls; use `recordRequests()` instead of mocking `api/`; and leave the login-modal composition alone, because a single test guards it.
 - Gates: wave A (clusters 1, 2, 3) is open. Cluster 0 is merged, and §11-4 is proven by reviewer-verified tests.
+
+## 2026-11-21 — Harness: e2e ports for parallel workers
+- Before starting three workers at once, the orchestrator checked a shared resource the spec had missed: every worktree's `pnpm e2e` used the same fixed ports. Playwright never reuses servers (R2-13), so the second worker would have failed with "port in use".
+- Fix: `STUB_PORT`, `PREVIEW_PORT` and `PAGES_PORT` env vars (defaults unchanged), plus a per-cluster port plan in CLAUDE.md. Proven by two full Playwright suites running at the same time on different ports: 18/18 passed in each.
+- A wrong turn on the way: the first parallel run failed one test. Both runs shared the same `test-results/` folder, which separate worktrees don't share. Rerun with separate output folders, both passed.
