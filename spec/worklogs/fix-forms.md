@@ -77,7 +77,7 @@ $ tsc --noEmit -p tsconfig.json
 ```
 
 ### Questions
-- Q-fix-forms-1 (open, not blocking): the two `navbar-form` forms in `LoginToolbar.tsx` have no
+- Q-fix-forms-1 (open at the time, not blocking; answered yes in session 2): the two `navbar-form` forms in `LoginToolbar.tsx` have no
   `onSubmit`. They cannot be submitted (no fields, no submit button), but P4 says *every* form. The file is
   outside this task's owned paths, so it was not edited.
 
@@ -93,3 +93,41 @@ $ tsc --noEmit -p tsconfig.json
 - The e2e DSC-1 test checks the value right after Enter. A reload could in principle land after that
   check; in practice the unfixed run failed reliably (the value was "Webshop" for the whole 5 s retry), and
   the URL / document-request assertions back it up.
+
+## 2026-11-21: session 2 (Q-fix-forms-1 answered)
+
+Owned paths for this session: `web/src/auth/LoginToolbar.tsx` (+ test), this worklog and the questions file.
+(Session 1 above is dated 2026-11-22; that date was a slip, it ran before this session.)
+
+### What was done
+- The orchestrator answered Q-fix-forms-1 **yes** (under the owner's P4 rule). Both button-only
+  `<form className="navbar-form">` elements in `LoginToolbar.tsx` (Log out, Log in) now have
+  `onSubmit={(event) => event.preventDefault()}`, with a comment citing P4 / Q-fix-forms-1. Markup and
+  classes are otherwise unchanged.
+- Test `P4: the login toolbar forms cancel native submission` (`auth/LoginToolbar.test.tsx`): renders the
+  shell anonymous, then as `po`, waiting with `waitForShell(router)` each time (via the file's
+  `renderToolbar`). For each state it registers a `submit` listener on `window` recording
+  `defaultPrevented` (the session 1 pattern), calls `form.requestSubmit()` on the form around "Log in" /
+  "Log out", and asserts `[true]` and no request reaching the stub. The forms have no field or submit
+  button, so `requestSubmit()` is the only way to reach the handler.
+
+### Mutation checks (each applied alone, the P4 test run, then reverted)
+| # | Mutation | Result |
+|---|---|---|
+| M8 | remove `onSubmit` from the "Log out" form | `P4: the login toolbar forms cancel native submission` **red** (`expected [ false ] to deeply equal [ true ]`) |
+| M9 | remove `onSubmit` from the "Log in" form | same test **red** (same message) |
+
+`git status` after restoring showed only the intended two files changed.
+
+### Gates (run in this session, from `web/`, `STUB_PORT=3601 PREVIEW_PORT=4773 PAGES_PORT=4774 pnpm verify`, exit 0)
+```
+All matched files use Prettier code style!
+$ tsc --noEmit -p tsconfig.json
+ Test Files  34 passed (34)
+      Tests  295 passed (295)
+  27 passed (7.8s)
+```
+
+### Mistakes and wrong turns
+- None of note. `pnpm verify` output went to a scratch file by redirect (not a pipe), so the exit code the
+  metrics hook records is the real one.

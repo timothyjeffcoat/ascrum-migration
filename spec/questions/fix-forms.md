@@ -13,3 +13,4 @@ cluster 0, so P4 holds literally; (b) word P4 as "every form with a field that c
 *Recommended: (a).* It is two attributes, keeps the rule mechanical (easy to check with a grep or a
 lint rule), and does not depend on today's markup.
 **Answer:** (open)
+**Answer (orchestrator, 2026-11-21, under the owner's P4 rule): yes.** Implemented in this branch.
