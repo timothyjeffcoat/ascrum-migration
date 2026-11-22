@@ -6,6 +6,47 @@ public case study, so failures are recorded as plainly as successes.
 
 Format (spec §8.4). Ids are cluster-scoped so concurrent reviewers never clash.
 
+## Summary
+
+Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #24. The rows are unchanged.
+
+**By "Caught by"**
+
+| Caught by | Count | Ids |
+|---|---|---|
+| reviewer, by mutation | 9 | foundation-01, admin-projects-01, -02, admin-users-01, -02, audit-08, dashboard-01, -02, sprints-tasks-02 |
+| reviewer, by reading, probe or legacy reading | 8 | foundation-02, -03, admin-projects-03, -04, admin-users-05, dashboard-04, sprints-tasks-01 (probe), -03 (legacy reading) |
+| worker, by raising a question | 8 | foundation-04, projects-01, admin-projects-05, -06, admin-users-03, -04, dashboard-03, sprints-tasks-04 |
+| independent legacy audit | 7 | audit-01..07 |
+| CI | 3 | foundation-05, -06, projects-02 |
+
+**By severity:** 1 blocking (DEV-foundation-01, a test that could not fail; fixed before merge), 34 non-blocking.
+
+**By resolution.** Fixed means a code, test or document change closed it. Accepted means it was kept as built, by an owner answer or the reviewer's judgment. Logged means it was recorded for the parity record and needed no decision.
+
+| Resolution | Count | Ids |
+|---|---|---|
+| fixed | 19 | foundation-01, -05, -06, projects-02, admin-projects-01, -06, admin-users-01, -03, audit-01, -02, -03, -04, -05, -08, dashboard-01, -02, sprints-tasks-01, -02, -04 |
+| accepted | 12 | foundation-02, -03, -04, projects-01, admin-projects-02, -04, -05, admin-users-04, -05, audit-07, dashboard-03, -04 |
+| logged | 3 | admin-projects-03, audit-06, sprints-tasks-03 |
+| open | 1 | admin-users-02 |
+
+**By origin**
+
+| Where it came from | Count | Ids |
+|---|---|---|
+| Cluster 0, foundation (incl. two CI timing races in its tests, found during wave A) | 6 | foundation-01..06 |
+| Wave A: cluster 1 admin-users, 2 admin-projects, 3 projects | 13 | admin-users-01..05, admin-projects-01..06, projects-01..02 |
+| Wave B: cluster 4 sprints-tasks, 5 dashboard | 7 | sprints-tasks-01..03, dashboard-01..04 |
+| Wave A legacy audit (PR #15) | 4 | audit-01..04 |
+| After Phase 3: Q-sprints-tasks-3 (PR #22), wave B legacy audit (PR #23), trim fix review (PR #24) | 5 | sprints-tasks-04, audit-05..07, audit-08 |
+
+**Still open**
+
+- **DEV-admin-users-02** (non-blocking). On user edit, "required once either password field is filled" is tested only for the Password half; the Password (repeat) half has no test. The code is correct and no bad save is possible. The recommended one-assertion test has not been added.
+
+Every other row is closed.
+
 | Id | AC / D id | What was wrong | Caught by | Severity | Resolution | PR |
 |---|---|---|---|---|---|---|
 | DEV-foundation-01 | AC-SHELL-01 | The anonymous half of AC-SHELL-01 has no test that asserts it. `Header.test.tsx` "AC-SHELL-01: the brand goes to /projectsinfo when anonymous" starts at `/projectsinfo`, navigates to `/admin` (unknown, so it redirects back to `/projectsinfo`), clicks the brand and waits for `/projectsinfo`, which was already the location. Mutation `home()` → `if (isAuthenticated) void navigate('/dashboard')` (anonymous click does nothing): unit 181/181 still pass, and `e2e/shell.spec.ts` only clicks the brand while logged in. The code itself is correct. | reviewer (mutation) | blocking | Fixed in c31036b (test only, no source change): the test starts on a test-only public route `/elsewhere` (passed through `renderRoute`'s `routes` option, absent from production code), asserts the start location, clicks the brand and waits for `/projectsinfo`. Re-review mutation (same `home()` mutation): unit `Tests 1 failed \| 180 passed (181)`, the failing test being `AC-SHELL-01: the brand goes to /projectsinfo when anonymous`; reverted, tree clean, `pnpm verify` exit 0. | [#4](https://github.com/timothyjeffcoat/ascrum-migration/pull/4) |
