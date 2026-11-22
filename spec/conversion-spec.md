@@ -214,6 +214,7 @@ function useCrudForm<T extends object, X extends object = {}>(opts: {
 }): {
   values: Draft<T>; extra: X
   setField(name: keyof T, raw: unknown): void; setExtra(name: keyof X, raw: unknown): void
+  viewValue(name: keyof T | keyof X): string   // P6: the text as typed, for a text input's `value`
   errors: Partial<Record<string, ErrorKey[]>>; showError(field: string, key: ErrorKey): boolean
   pending: boolean                                      // any async validator in flight
   canSave: boolean; canRevert: boolean; canRemove: boolean
@@ -224,6 +225,7 @@ Rules:
 - Validation runs on every change. Errors are **visible whenever a field is invalid**; there is no "touched" concept (legacy parity, R-08).
 - `canSave` = no errors && !pending && dirty. Dirty = deep-unequal(values, original). `extra` is excluded from dirty and payload.
 - An async validator result is applied only if the field's value is unchanged since the request started (stale responses are discarded, S2).
+- P6: `setField`/`setExtra` store a string trimmed; `viewValue` returns the untrimmed text last typed while it still trims to the held value, otherwise the held value. Text inputs and textareas bind `value={viewValue(name)}`; numbers and selects keep `values`. (Added by the orchestrator with P6, 2026-11-22.)
 - `revert()` restores `values` (and resets `extra` to its initial value). Validation reruns, so errors may still show, as in legacy.
 
 ### 4.3 Route-file contract
