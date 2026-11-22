@@ -316,3 +316,32 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - Before starting three workers at once, the orchestrator checked a shared resource the spec had missed: every worktree's `pnpm e2e` used the same fixed ports. Playwright never reuses servers (R2-13), so the second worker would have failed with "port in use".
 - Fix: `STUB_PORT`, `PREVIEW_PORT` and `PAGES_PORT` env vars (defaults unchanged), plus a per-cluster port plan in CLAUDE.md. Proven by two full Playwright suites running at the same time on different ports: 18/18 passed in each.
 - A wrong turn on the way: the first parallel run failed one test. Both runs shared the same `test-results/` folder, which separate worktrees don't share. Rerun with separate output folders, both passed.
+
+## 2026-11-21 — Cluster 3 (projects + productbacklog): reviewed, verified, merge held
+- Scope: the `/projects` page, the reusable `ProjectsTable` (the dashboard, cluster 5, will import it), and the product backlog list and edit screens. PR [#7](https://github.com/timothyjeffcoat/ascrum-migration/pull/7).
+
+| Metric | Value | Source |
+|---|---|---|
+| Worker diff | 13 files, +945 / −19, all inside the cluster's owned paths | `git diff --stat origin/migration...HEAD` |
+| New tests | 34 unit (4 files), 2 e2e | worklog, `pnpm verify` |
+| Legacy test cases (§9) | 5: 2 ported, 2 adapted, 1 n/a (pre-assigned) | worklog, checked against `projects.spec.js` |
+| ACs passing on first review | 5 of 5 | PR comment |
+| Reviewer mutations | 14; all 14 caught by at least one test | PR comment |
+| Blocking findings | 0 | `deviations.md` |
+| `pnpm verify` (reviewer) | exit 0; 215/215 unit, 20/20 e2e | reviewer session |
+| CI runs on the PR | 2 so far; 1 failed once in a cluster 0 test, green on rerun | `gh run list` |
+
+**What the review did**
+- Lessons from cluster 0 applied: the reviewer did not reuse the worker's own mutation list. It wrote 14 new one-line breaks (wrong link target, missing guard, notify-next instead of notify-current, a number field left as text, and so on). Every one turned at least one test red. Cluster 0's review had found a test that could not fail; this cluster's tests all could.
+- The worker's own log recorded the same kind of slip before review: a guard mutation that silently changed nothing "passed", and the worker noticed only because `diff` printed nothing.
+
+**Findings (both non-blocking)**
+- DEV-projects-01: the backlog form's labels gained `for`/`id` so the fields have accessible names (Q-projects-1). It is the same choice the owner already approved for the login form; it is still a question for the owner because that answer named only the login form.
+- DEV-projects-02: CI failed once on a commit that changed only a status line, in a foundation test with a 1-second wait. Another wave A branch hit a different 1-second foundation test in the same minute. A rerun was green, and the test passed every time locally. It is recorded rather than rerun away quietly: three branches now run CI at once, and the foundation's timing assumptions are the first thing to feel it.
+
+**Process note**
+- Spec §8.2 lets the reviewer merge once CI is green. For wave A the **orchestrator holds the merge**, merging the three wave-A PRs one at a time and resolving bookkeeping conflicts, and the owner still has Q-projects-1 open. The review is complete; the merge waits.
+
+**Moments (article candidates)**
+- "Fourteen deliberate breakages, fourteen red tests. The reviewer's job is not to read the tests; it is to try to get past them."
+- "The flaky test was not in the code under review. Recording it anyway is how you find out it is a pattern, not a fluke."
