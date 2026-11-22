@@ -2,7 +2,7 @@
 // and AuthProvider), plus AC-AUTH-01 and AC-AUTH-07.
 import { act, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { recordRequests, renderRoute, resetClientState, signIn } from '../test/renderRoute.tsx'
+import { recordRequests, renderRoute, resetClientState, signIn, waitForShell } from '../test/renderRoute.tsx'
 import { USER } from '../../stub/seed.ts'
 import { getCurrentUser, isAdmin, isAuthenticated, login, logout, requestCurrentUser } from './currentUser.ts'
 import { requireAuthenticatedUser } from './guards.ts'
@@ -79,8 +79,8 @@ describe('legacy security service cases', () => {
 
     it('AC-AUTH-07 (legacy: redirects to / by default): Log out POSTs /logout, clears the user and navigates to /', async () => {
       const { router, user } = await renderRoute('/projects', { as: 'po' })
-      // Wait for the first load first: the shell is re-mounted when it completes (root HydrateFallback).
-      await waitFor(() => expect(router.state.initialized).toBe(true))
+      // The header must be the real shell's, not the first-load copy (DEV-foundation-06).
+      await waitForShell(router)
       expect(router.state.location.pathname).toBe('/projects')
       const logoutButton = await screen.findByRole('button', { name: 'Log out' })
       const seen = recordRequests()

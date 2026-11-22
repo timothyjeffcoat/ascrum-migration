@@ -1,11 +1,11 @@
 // Legacy common/security/login/login-toolbar.spec.js, rendered inside the real shell, plus AC-AUTH-08.
 import { screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { recordRequests, renderRoute, type Persona } from '../test/renderRoute.tsx'
+import { recordRequests, renderRoute, waitForShell, type Persona } from '../test/renderRoute.tsx'
 
 async function renderToolbar(as: Persona = 'anonymous') {
   const rendered = await renderRoute('/projectsinfo', { as })
-  await waitFor(() => expect(rendered.router.state.initialized).toBe(true))
+  await waitForShell(rendered.router) // the real header, not the first-load copy (DEV-foundation-06)
   if (as !== 'anonymous') await screen.findByRole('button', { name: 'Log out' })
   const toolbar = screen.getAllByRole('list').find((ul) => ul.querySelector('li.divider-vertical + li'))
   if (!toolbar) throw new Error('login toolbar not found')
