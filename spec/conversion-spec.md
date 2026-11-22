@@ -687,6 +687,7 @@ Each AC must be covered by at least one test whose name starts with the AC id.
   - Assigned to: optional select over `getByIds(project.teamMembers)` labelled `fullName`, blank option `-- unassigned --`; choosing it removes `assignedUserId` (S13).
   - The draft is per §5.6.
   - A stored backlog item or assignee that is not among the select's options starts unset (P5).
+  - While `state` is unset (reachable only through P5, a stored state outside `TASK_STATES`), the State select shows a first option `-- choose --` with an empty value, so it never reads as a state the form does not hold and `TODO` stays choosable. The option is not rendered once a state is set, so the normal form is unchanged (owner, Q-sprints-tasks-3 (b), 2026-11-21).
 - **AC-TSK-03** Save/remove → `/projects/:projectId/sprints/:sprintId/tasks` (D6). Save error → `crud.task.save.error`; remove error → `crud.task.remove.error`; both notify-current (D14).
 - **AC-E2E-FULL** `e2e/full-path.spec.ts`: admin login → create project with team → backlog item → sprint (add the item) → task → logout, against the Node stub.
 
