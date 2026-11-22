@@ -1,6 +1,6 @@
 # Conversion Spec: AScrum, AngularJS 1.2 → React 19
 
-Status: **APPROVED rev 3** (owner: "approve all" for §0.1 S1–S15, 2026-11-20; §0.2 Phase 3 amendments P1–P4 from owner answers and the wave A legacy audit, 2026-11-21). Workers start only after the Phase 2 exit gate (§13) and the wave gates (§8.1).
+Status: **APPROVED rev 3** (owner: "approve all" for §0.1 S1–S15, 2026-11-20; §0.2 Phase 3 amendments P1–P5 from owner answers, the wave A legacy audit and the wave B reviews, 2026-11-21). Workers start only after the Phase 2 exit gate (§13) and the wave gates (§8.1).
 Revision history: rev 1 (initial). Rev 2 incorporates independent team-lead review `spec/reviews/spec-review-1.md` (25 findings, all confirmed).
 Inputs: `spec/inventory.md` (facts) and `spec/questions.md` (owner answers, 2026-11-20).
 Authority: this spec is the contract for every worker and reviewer session. If code and spec disagree, the spec wins until it is amended. If the spec is silent, raise a question (§8.5) and do not guess.
@@ -78,6 +78,7 @@ Each row is an owner answer from `spec/questions/<cluster>.md`; the deviation lo
 | P2 | **The user form's `password` is a `values` field;** only `passwordRepeat` is `extra`. It starts as `''` on both routes (edit loads `{...user, password:''}`), so a password-only change on edit makes the form dirty and saveable, as in legacy. `toPayload` still omits a blank `password` (A3, AC-USR-06). §5.6 and AC-USR-04 are updated. | Q-admin-users-1 (2026-11-21) |
 | P3 | **A stale team pick is cleared.** When `extra.selTeamMember` stops being a `teamMemberCandidates` entry (e.g. that user becomes Product Owner), it is cleared, so `Add` is disabled. Legacy kept the stale pick and could add the PO as a developer. AC-APR-04 is updated. | Q-admin-projects-1 (2026-11-21) |
 | P4 | **Forms never submit natively; Enter signs in.** Every `<form>` has an `onSubmit` that calls `preventDefault()`, so the browser can never reload the page and lose edits (on a form whose only text field is Name, Enter used to do that). Buttons stay `type="button"`, with one exception restoring legacy: the login modal's "Sign in" is `type="submit"`, and Enter there signs in when Sign in is enabled (AC-AUTH-04). Elsewhere Enter does nothing; legacy's project form clicked the first team "Remove" on Enter, which is not ported. | wave A legacy audit DSC-1, DSC-2 (`spec/reviews/legacy-audit-wave-a.md`) |
+| P5 | **A stale select starts unset.** A select whose stored value is not among its current options starts unset: the form's `initial` holds `undefined` for it. A required select must then be chosen again before Save; an optional one saves as unset. It extends P3 (stale team pick) and replaces legacy's blank `?` option. It applies to the task form's backlog item and "Assigned to" selects, where an item taken out of the sprint or an assignee taken off the team otherwise showed "-- choose --" / "-- unassigned --" while Save kept the old id. | Owner, on wave B review DEV-sprints-tasks-01 (2026-11-21) |
 
 Accepted as-is, no spec change: the breadcrumbs follow a failed navigation (DEV-foundation-02), the extra `div` around the project form's `CrudButtons` (Q-admin-projects-2), and a blank gravatar for an empty e-mail (Q-admin-users-2).
 
@@ -685,6 +686,7 @@ Each AC must be covered by at least one test whose name starts with the AC id.
   - State: required select over `TASK_STATES`; a new task gets `TODO`.
   - Assigned to: optional select over `getByIds(project.teamMembers)` labelled `fullName`, blank option `-- unassigned --`; choosing it removes `assignedUserId` (S13).
   - The draft is per §5.6.
+  - A stored backlog item or assignee that is not among the select's options starts unset (P5).
 - **AC-TSK-03** Save/remove → `/projects/:projectId/sprints/:sprintId/tasks` (D6). Save error → `crud.task.save.error`; remove error → `crud.task.remove.error`; both notify-current (D14).
 - **AC-E2E-FULL** `e2e/full-path.spec.ts`: admin login → create project with team → backlog item → sprint (add the item) → task → logout, against the Node stub.
 
