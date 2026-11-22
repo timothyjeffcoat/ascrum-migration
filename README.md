@@ -27,8 +27,8 @@ Every number below is measured; the [number sources](#number-sources) section at
 | Deviations logged | 35: 1 blocking, 34 non-blocking; none open |
 | Live bugs found by the independent legacy audits | 3, after every gate had passed |
 | Owner decisions | 33 discovery answers, 15 spec sign-offs, 15 later answers, 6 spec amendments |
-| Pull requests | 24: 23 merged, 1 closed unmerged (a CI experiment) |
-| Calendar time | 2026-11-20 12:08 to 2026-11-22 12:02 (local time), first Phase 0 commit to last merge |
+| Pull requests before this write-up | 24: 23 merged, 1 closed unmerged (a CI experiment); this case study is #25 |
+| Calendar time | 2026-11-20 12:08 to 2026-11-22 12:02 (local time), first Phase 0 commit to the last code merge (#24) |
 
 What these numbers do not say: tests passed in this repo's CI, against a stub. Nothing here has run in production.
 
