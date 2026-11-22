@@ -8,6 +8,11 @@ import { failNext } from '../../test/stubControl.ts'
 import { recordRequests, renderRoute } from '../../test/renderRoute.tsx'
 
 const PROJECTS = '/databases/ascrum/collections/projects'
+const PROJECTS_OR_USERS = /^\/databases\/ascrum\/collections\/(projects|users)(\/|$)/
+
+const NOT_AUTHENTICATED = 'You must be logged in to access this part of the application.'
+// The legacy string has a double space, which getByText's default normalizer collapses.
+const NOT_AUTHORIZED = /^You do not have the necessary access permissions\. +Do you want to login as someone else\?$/
 
 // fullName() of the seeded users: "Last First (email)".
 const ADMIN = 'User Admin (admin@abc.com)'
@@ -299,4 +304,30 @@ describe('ProjectEdit (/admin/projects/new, /admin/projects/:itemId)', () => {
     expect(put?.pathname).toBe(`${PROJECTS}/${PROJECT.legacyCleanup}`)
     expect(put?.body).toMatchObject({ productOwner: USER.admin, scrumMaster: USER.sm, teamMembers: [USER.dev2] })
   })
+
+  // DEV-admin-projects-01: the requireAdminUser() guards of the "new" and "edit" loaders (§5.3 R14/R15).
+  for (const { name, route } of [
+    { name: '/admin/projects/new', route: '/admin/projects/new' },
+    { name: '/admin/projects/:itemId', route: `/admin/projects/${PROJECT.webshop}` },
+  ]) {
+    it(`AC-APR-01 / §5.3 R14/R15: a non-admin (dev1) deep link to ${name} gets the "not authorized" login modal and fetches no projects or users`, async () => {
+      const requests = recordRequests()
+      await renderRoute(route, { as: 'dev1' })
+
+      const modal = (await screen.findByRole('heading', { name: 'Sign in' })).closest('.modal') as HTMLElement
+      expect(within(modal).getByText(NOT_AUTHORIZED)).toHaveClass('alert alert-warning')
+      expect(screen.queryByLabelText('Product Owner')).not.toBeInTheDocument()
+      expect(requests.filter((r) => PROJECTS_OR_USERS.test(r.pathname))).toEqual([])
+    })
+
+    it(`AC-APR-01 / §5.3 R14/R15: an anonymous deep link to ${name} asks for a login and fetches no projects or users`, async () => {
+      const requests = recordRequests()
+      await renderRoute(route)
+
+      const modal = (await screen.findByRole('heading', { name: 'Sign in' })).closest('.modal') as HTMLElement
+      expect(within(modal).getByText(NOT_AUTHENTICATED)).toBeInTheDocument()
+      expect(screen.queryByLabelText('Product Owner')).not.toBeInTheDocument()
+      expect(requests.filter((r) => PROJECTS_OR_USERS.test(r.pathname))).toEqual([])
+    })
+  }
 })
