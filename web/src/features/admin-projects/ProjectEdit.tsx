@@ -53,7 +53,11 @@ export function ProjectEdit({ initial, users }: ProjectEditProps) {
 
   return (
     <div className="well">
-      <form name="form">
+      {/* P4 / DSC-1: Name is the form's only field that blocks implicit submission, so Enter there made the
+          browser submit natively and reload the page with `?name=…`, losing every edit. AngularJS's form
+          directive cancelled that; so does this. Legacy's Enter also clicked the first team "Remove" (its
+          buttons had no type); every button here is type="button", so that bug is not ported. */}
+      <form name="form" onSubmit={(event) => event.preventDefault()}>
         <legend>Project</legend>
         <div className="row-fluid">
           <div className="span6">

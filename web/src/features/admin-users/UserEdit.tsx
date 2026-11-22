@@ -100,7 +100,9 @@ export function UserEdit({ user }: UserEditProps) {
 
   return (
     <div className="well">
-      <form name="form" noValidate>
+      {/* P4: AngularJS's form directive cancelled native submission; so does this. (With five text
+          fields and no submit button Enter cannot submit today, but nothing should depend on that.) */}
+      <form name="form" noValidate onSubmit={(event) => event.preventDefault()}>
         <legend>User</legend>
         <Gravatar email={values.email} size={200} className="img-polaroid pull-right" />
         <label htmlFor="email">E-mail</label>

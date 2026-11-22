@@ -1,7 +1,7 @@
 // AC-USR-04..07, D8, D9, and the legacy admin-users-edit.spec / uniqueEmail.spec form-level cases,
 // through the real app (renderRoute + MSW stub).
 import { fireEvent, getDefaultNormalizer, screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import { failNext } from '../../test/stubControl.ts'
 import { recordRequests, renderRoute, type RecordedRequest } from '../../test/renderRoute.tsx'
 import { USER } from '../../../stub/seed.ts'
@@ -359,5 +359,43 @@ describe('UserEdit: outcomes (AC-USR-07, legacy admin-users-edit.spec)', () => {
     expect(field('Last name')).toHaveValue('Master')
     expect(field('Password')).toHaveValue('')
     expect(saveButton()).toBeDisabled()
+  })
+})
+
+/**
+ * P4: records `defaultPrevented` for every submit event that reaches window. The listener sits outside
+ * React's root, so it sees each event after the form's onSubmit has run. jsdom never navigates on a
+ * native submission, so a cancelled submit event is the only unit-level proof that the browser would
+ * not reload the page (the reload itself is covered by e2e/forms-enter.spec.ts).
+ */
+function watchSubmits(): boolean[] {
+  const prevented: boolean[] = []
+  const listener = (event: Event) => prevented.push(event.defaultPrevented)
+  window.addEventListener('submit', listener)
+  onTestFinished(() => window.removeEventListener('submit', listener))
+  return prevented
+}
+
+describe('UserEdit: Enter in the form (P4)', () => {
+  it('P4: Enter in the Last name field keeps the edits and does not submit', async () => {
+    const { user, router } = await openEdit(USER.po)
+    const { pathname, search } = router.state.location
+    const lastName = field('Last name')
+    await user.clear(lastName)
+    await user.type(lastName, 'Renamed')
+
+    const requests = recordRequests()
+    const submits = watchSubmits()
+    await user.type(lastName, '{Enter}')
+    // Five text fields and no submit button: a browser does not submit on Enter here. Submit anyway, the
+    // way any other trigger would, to prove the form cancels it.
+    const form = lastName.form
+    if (!form) throw new Error('Last name is not in a form')
+    form.requestSubmit()
+
+    expect(submits).toEqual([true])
+    expect(lastName).toHaveValue('Renamed')
+    expect(requests).toEqual([])
+    expect(router.state.location).toMatchObject({ pathname, search })
   })
 })

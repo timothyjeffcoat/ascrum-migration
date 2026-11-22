@@ -1,5 +1,5 @@
 import { screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import { BACKLOG, PROJECT } from '../../../stub/seed.ts'
 import { recordRequests, renderRoute, type RenderRouteResult } from '../../test/renderRoute.tsx'
 import { failNext } from '../../test/stubControl.ts'
@@ -200,5 +200,45 @@ describe('backlog item edit (BacklogItemEdit)', () => {
     await renderRoute(`${listPath}/${BACKLOG.deleted}`, { as: 'dev1' })
     expect(await screen.findByText('Route change error')).toHaveClass('alert alert-error')
     expect(screen.queryByRole('heading', { name: 'Product backlog item' })).toBeNull()
+  })
+})
+
+/**
+ * P4: records `defaultPrevented` for every submit event that reaches window. The listener sits outside
+ * React's root, so it sees each event after the form's onSubmit has run. jsdom never navigates on a
+ * native submission, so a cancelled submit event is the only unit-level proof that the browser would
+ * not reload the page (the reload itself is covered by e2e/forms-enter.spec.ts).
+ */
+function watchSubmits(): boolean[] {
+  const prevented: boolean[] = []
+  const listener = (event: Event) => prevented.push(event.defaultPrevented)
+  window.addEventListener('submit', listener)
+  onTestFinished(() => window.removeEventListener('submit', listener))
+  return prevented
+}
+
+describe('backlog item edit: Enter in the form (P4)', () => {
+  it('P4: Enter in the backlog item Name field keeps the edits and does not submit', async () => {
+    const { user, router } = await renderEdit(cartPath)
+    await waitFor(() => expect(router.state.initialized).toBe(true))
+    const name = screen.getByLabelText('Name')
+    await waitFor(() => expect(name).not.toHaveValue(''))
+    const { pathname, search } = router.state.location
+    await user.clear(name)
+    await user.type(name, 'Renamed but unsaved')
+
+    const requests = recordRequests()
+    const submits = watchSubmits()
+    await user.type(name, '{Enter}')
+    // Priority and Estimation also block implicit submission, so a browser does not submit on Enter
+    // here. Submit anyway, the way any other trigger would, to prove the form cancels it.
+    const form = name instanceof HTMLInputElement ? name.form : null
+    if (!form) throw new Error('Name is not an input in a form')
+    form.requestSubmit()
+
+    expect(submits).toEqual([true])
+    expect(name).toHaveValue('Renamed but unsaved')
+    expect(requests).toEqual([])
+    expect(router.state.location).toMatchObject({ pathname, search })
   })
 })
