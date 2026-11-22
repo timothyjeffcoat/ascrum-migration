@@ -115,3 +115,57 @@ The 4 validateEquals cases of the same §9 row are cluster 0's (`crud/validators
   ✓ built in 370ms
     21 passed (5.4s)
   ```
+
+## 2026-11-21: session 2, review follow-ups (DEV-admin-users-01, Q-admin-users-1)
+
+### What was done
+- **DEV-admin-users-01: guard tests.** `UserEdit.test.tsx` gains a "route guards" block with four
+  tests, `AC-USR-01 / §5.3 R17|R18: a deep link to <path> as anonymous|dev1 gets the login modal and
+  fetches no user`. Each one records requests from before the render and asserts that the legacy
+  login-modal message shows (`alert alert-warning`), that the router is not initialized, that the
+  user form is absent, and that no request touched `/collections/users`.
+- **Q-admin-users-1, owner answer (b).** `password` is now a `values` field, and only
+  `passwordRepeat` stays in `extra`. The new draft is `{email:'', lastName:'', firstName:'',
+  admin:false, password:''}`, and `editUserLoader` returns `{...user, password: ''}`, so a blank
+  password is not dirty against the loaded user. `toPayload` drops `password` when it is `''` (A3)
+  and otherwise sends it. `passwordRequired` / `equalsField('password')` work unchanged on the merged
+  values. New test: `AC-USR-04 / Q-admin-users-1: a password-only change on edit can be saved`
+  (Save is disabled on load and enabled after typing only the two password fields. The PUT body is
+  exactly the loaded fields plus `password`, with no `passwordRepeat`). The AC-USR-06 tests are
+  unchanged and still pass. The spec amendment (§5.6 draft, AC-USR-04 wording) is the
+  orchestrator's separate PR, and this branch does not touch the spec.
+- `spec/questions/admin-users.md`: recorded the owner's answers (Q1: b, Q2: a). The session-1
+  "Blocked" item (password-only change on edit) is resolved.
+
+### Mutation checks (each run with `vitest run … -t 'route guards'`, then reverted)
+| Mutation in `UserEdit.tsx` | Result |
+|---|---|
+| `newUserLoader` without `await requireAdminUser()` | 2 failed (R17 anonymous, R17 dev1) |
+| `editUserLoader` without `await requireAdminUser()` | 2 failed (R18 anonymous, R18 dev1) |
+| `editUserLoader` guard downgraded to `requireAuthenticatedUser()` | 1 failed (R18 dev1); anonymous still passes, as expected |
+| (restored) | 4 passed |
+
+Also checked: the new Q-admin-users-1 test against the pre-change `UserEdit.tsx` failed (1 failed,
+24 passed), and a `toPayload` that keeps a blank `password` turns `AC-USR-06: on edit with blank
+passwords…` red (1 failed). Both were restored afterwards. `git diff --stat` confirmed the restored state.
+
+### Mistakes and wrong turns
+- The first guard-test run had 4 failures. I asserted "no E-mail textbox", but the login modal has
+  its own E-mail input. I now assert on the form-only "Last name" field instead.
+- My first test names read "a anonymous deep link…", which I reworded to "a deep link to <path> as
+  <persona>".
+- A compound shell command stopped early because a `grep` for a `${…}` pattern matched nothing, so
+  the remaining steps did not run. No files were affected; I checked with `git diff --stat` and
+  re-ran the step.
+
+### Gates run this session (ports STUB 3101, PREVIEW 4273, PAGES 4274)
+- `pnpm exec vitest run src/features/admin-users`: `37 passed` (after the fix above).
+- `pnpm verify` (unpiped, output redirected to a file): **exit 0**. Summary lines:
+  ```
+  All matched files use Prettier code style!
+   Test Files  27 passed (27)
+        Tests  229 passed (229)
+  ✓ built in 339ms
+  ✓ built in 407ms
+    21 passed (5.6s)
+  ```

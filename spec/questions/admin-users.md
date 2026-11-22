@@ -25,6 +25,8 @@ contract. The worklog marks "password-only change on edit" as blocked on this qu
 test pins the (a) behaviour as desired: the AC-USR-06 test that sends a new password also changes the
 last name.
 
+**Answer (owner, 2026-11-21): (b).** Implemented in this branch.
+
 **Q-admin-users-2. Gravatar after the e-mail is cleared: keep legacy's stale image?**
 Context: legacy `gravatar.js` recomputed the hash only `if (email)`, so clearing the E-mail field
 on the user form kept showing the previous address's image. The spec (AC-GRAV-01) only defines the
@@ -33,3 +35,5 @@ ends in `/avatar/` (the image legacy showed before any address was entered).
 Options: (a) stateless, as implemented; (b) remember the last non-empty hash, as legacy did.
 *Recommended and implemented: (a).* It is cosmetic, and copying (b) would mean component state for no
 user-visible benefit. This does not block anything; it is cheap to reverse.
+
+**Answer (owner, 2026-11-21): (a), accepted.**
