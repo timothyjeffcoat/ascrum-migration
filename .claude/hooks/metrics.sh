@@ -33,6 +33,7 @@ classify() {
   if   grep -qE '(^|[;&|[:space:]])git[[:space:]]+commit' <<<"$c";                    then echo commit
   elif grep -qE '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+(create|merge)' <<<"$c"; then echo pr
   elif grep -qE '(^|[;&|[:space:]])gh[[:space:]]+run' <<<"$c";                          then echo ci
+  elif grep -qE "${pm}verify" <<<"$c";                                                   then echo verify
   elif grep -qE "playwright|${pm}(test:)?e2e" <<<"$c";                                  then echo e2e
   elif grep -qE "(^|[;&|[:space:]/])(vitest|jest|karma)([[:space:]]|$)|${pm}test" <<<"$c"; then echo test
   elif grep -qE "(^|[;&|[:space:]/])(eslint|jshint)([[:space:]]|$)|prettier.*--check|${pm}lint" <<<"$c"; then echo lint

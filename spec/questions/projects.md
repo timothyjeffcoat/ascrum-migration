@@ -14,3 +14,6 @@ Options: (a) add `htmlFor`/`id` (`name`, `desc`, `priority`, `estimation`, the f
 (priority and estimation have no `name` in legacy, an inventory §markup quirk this port keeps).
 *Recommended and implemented: (a).* Classes, strings and the missing `name` attributes are unchanged.
 Cheap to reverse; the sprint and task forms (cluster 4) will meet the same choice.
+**Answer (owner, 2026-11-21): (a).** The owner made it a standing rule for every legacy form: add
+`htmlFor`/`id` to labels, change nothing else in the markup (classes, strings, missing `name`s). The
+rule goes into the spec and CLAUDE.md in the amendment PR.
