@@ -3,9 +3,14 @@ import react from '@vitejs/plugin-react'
 import { copyFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-// Paths the Node stub (port 3001) answers. Proxied so the browser sees one origin and real cookies.
+// Ports default to 3001 (stub) / 4173 (preview). STUB_PORT and PREVIEW_PORT override them, so parallel
+// worktrees can each run `pnpm e2e` without colliding (see CLAUDE.md, wave A).
+const STUB_PORT = Number(process.env.STUB_PORT ?? 3001)
+const PREVIEW_PORT = Number(process.env.PREVIEW_PORT ?? 4173)
+
+// Paths the Node stub answers. Proxied so the browser sees one origin and real cookies.
 const STUB_PATHS = ['/databases', '/login', '/logout', '/current-user', '/__stub']
-const proxy = Object.fromEntries(STUB_PATHS.map((p) => [p, 'http://localhost:3001']))
+const proxy = Object.fromEntries(STUB_PATHS.map((p) => [p, `http://localhost:${STUB_PORT}`]))
 
 // Modes:
 //   development / production  base "/", Node stub via proxy (pnpm dev, pnpm build + preview, e2e)
@@ -27,7 +32,7 @@ export default defineConfig(({ mode }) => {
       postcss: { plugins: [dropIeStarHacks()] },
     },
     server: { port: 5173, strictPort: true, proxy },
-    preview: { port: 4173, strictPort: true, proxy },
+    preview: { port: PREVIEW_PORT, strictPort: true, proxy },
     build: { outDir: pages ? 'dist-pages' : 'dist' },
   }
 })
