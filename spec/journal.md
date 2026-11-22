@@ -519,3 +519,9 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "The worker listed the edge case as 'unchanged legacy behaviour' and moved on. The reviewer opened it and found that the new blank option made the screen say 'unassigned' about a task that wasn't. The data matched the old app; what the screen said didn't. Same pattern as the team-pick fix one wave earlier."
+
+## 2026-11-21 — Phase 3 complete: every screen converted
+- Wave B merged: #18 (dashboard + Current Projects, `eb33b23`) and #19 (sprints + tasks, `b9d1e3c`). The owner's wave B decisions were in by then: spec P5 (#20) and two test fixes. A short re-review followed each code change. Every cluster row in `MIGRATION.md` now reads `merged`.
+- Cluster 5's follow-up was test-only, so the orchestrator checked it directly: it read the diff and re-ran one deliberate breakage (task order reversed), which turned the test red. It did not spend a full reviewer on it. Cluster 4's follow-up changed app code, so it got a fresh reviewer: 9 of 10 new breakages caught, and the tenth could not change behaviour.
+- Still open, and small: Q-sprints-tasks-3. A task holding a corrupted state value shows "TODO" while the form holds no state. Only bad stored data reaches it. The reviewer found the spec doesn't require a fix but recommends one. It goes to the owner with the Phase 4 questions.
+- Next: Phase 4, the case-study README and the final `deviations.md` summary.
