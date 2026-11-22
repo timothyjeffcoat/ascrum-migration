@@ -1,9 +1,14 @@
-// PLACEHOLDER from cluster 0 (spec §8.1): the route is final (R1, public); cluster 5 adds the loader
-// and replaces the component.
+// Port of the `projectsinfo` module's route (projectsinfo/projectsinfo.js, R1): `/projectsinfo`, public
+// (spec §5.3), resolving all projects like the legacy `resolve`.
 import type { RouteObject } from 'react-router'
+import { projects } from '../../api/collections.ts'
+import type { Project } from '../../api/types.ts'
+import { ProjectsInfo } from './ProjectsInfo.tsx'
 
-function ProjectsInfoPlaceholder() {
-  return <p>Projects info: converted by cluster 5.</p>
+// D1 preserved: the projects are fetched (so a failure still shows the route-change error, as legacy's
+// failed resolve did) but never displayed.
+async function loader(): Promise<Project[]> {
+  return projects.all()
 }
 
-export const routes: RouteObject[] = [{ path: '/projectsinfo', Component: ProjectsInfoPlaceholder }]
+export const routes: RouteObject[] = [{ path: '/projectsinfo', loader, Component: ProjectsInfo }]
