@@ -557,13 +557,13 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Phase 4: what was written**
 - `README.md` is now the case study: results at a glance, how the workflow ran, what the gates caught and missed, the legacy audits, the flaky-test hunt, what went wrong, lessons for engineering managers, a repo map and the run commands. Every number in it cites a file, `gh` or `git`; the PR body lists each source.
-- `spec/deviations.md` gained a Summary above the table: 35 deviations; 1 blocking; by resolution 19 fixed, 12 accepted, 3 logged, 1 open. The rows themselves are unchanged.
+- `spec/deviations.md` gained a Summary above the table: 35 deviations; 1 blocking; by resolution 20 fixed, 12 accepted, 3 logged, 0 open. The rows themselves are unchanged.
 - `MIGRATION.md` gained a "Phase 4 complete" gate row.
 
 **Found while writing it**
-- **One deviation is still open.** DEV-admin-users-02 (non-blocking, from the cluster 1 review) recommended a one-assertion test for the Password (repeat) half of the edit-time "required" rule. Wave A's fix list covered the guard tests and P2, but not this, and nothing since has added it. The summary lists it as open instead of rounding it to "all closed".
+- **One deviation is still open.** DEV-admin-users-02 (non-blocking, from the cluster 1 review) recommended a one-assertion test for the Password (repeat) half of the edit-time "required" rule. Wave A's fix list covered the guard tests and P2, but not this, and nothing since has added it. The writer listed it as open instead of rounding it to "all closed". The orchestrator then added the missing assertion on the Phase 4 branch and confirmed the reviewer's original mutation now fails it (`1 failed | 28 passed (29)`), so the final count is 0 open.
 - **One later question was answered by the orchestrator, not the owner.** Q-fix-forms-1 (add `preventDefault` to the two toolbar forms) was answered "under the owner's P4 rule". The README says so rather than claiming the owner answered every question.
-- **The committed metrics ledger stops at PR #21.** `spec/metrics.jsonl` on `migration` was last updated in #21, so PRs #22–#24 and their agent launches are not in the committed snapshot. The README cites CI, `gh` and `git` for those, not the ledger.
+- **The committed metrics ledger stops at PR #21.** `spec/metrics.jsonl` on `migration` was last updated in #21, so PRs #22–#24 and their agent launches are not in the committed snapshot. The README cites CI, `gh` and `git` for those, not the ledger. The orchestrator then committed the hook-written ledger as it stood (401 rows, unedited) in the Phase 4 PR, so the snapshot now runs through PR #24.
 
 **Metrics**
 | Metric | Value | Source |
