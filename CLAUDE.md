@@ -60,7 +60,7 @@ Cluster `n` exports `STUB_PORT=3001+100n PREVIEW_PORT=4173+100n PAGES_PORT=4174+
 - Forms use `useCrudForm` exactly as specified in §4.2. "New" forms start from the §5.6 drafts.
 - No global state library. Context only for auth.
 - Explicit props types; no `React.FC`; no default exports unless a tool requires one.
-- Keep the legacy Bootstrap 2 markup, class names and UI strings verbatim (spec B4).
+- Keep the legacy Bootstrap 2 markup, class names and UI strings verbatim (spec B4). One standing exception: every form `<label>` gets `htmlFor` and its control an `id` (spec §0.2 P1).
 - Every `<button>` inside a `<form>` is `type="button"`.
 - Keep `<LoginModal/>` outside `RouterProvider` and keep the root route's `HydrateFallback`: a single test (`src/app/routerDataMode.test.tsx`, §11-4) guards this composition.
 - Role and candidate logic comes from `domain/` only.

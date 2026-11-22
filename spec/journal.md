@@ -354,3 +354,50 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 **Moments (article candidates)**
 - "Zero blocking findings is not zero findings: 3 of 17 deliberate breakages went unnoticed by the tests, and each one is now written down."
 - "The worker's numbers were close but wrong (215 vs 202). The reviewer trusted CI's log over the worklog, and found that the metrics log couldn't arbitrate because it never recorded the command."
+
+## 2026-11-21 — Cluster 3 (projects + productbacklog): reviewed, verified, merge held
+- Scope: the `/projects` page, the reusable `ProjectsTable` (the dashboard, cluster 5, will import it), and the product backlog list and edit screens. PR [#7](https://github.com/timothyjeffcoat/ascrum-migration/pull/7).
+
+| Metric | Value | Source |
+|---|---|---|
+| Worker diff | 13 files, +945 / −19, all inside the cluster's owned paths | `git diff --stat origin/migration...HEAD` |
+| New tests | 34 unit (4 files), 2 e2e | worklog, `pnpm verify` |
+| Legacy test cases (§9) | 5: 2 ported, 2 adapted, 1 n/a (pre-assigned) | worklog, checked against `projects.spec.js` |
+| ACs passing on first review | 5 of 5 | PR comment |
+| Reviewer mutations | 14; all 14 caught by at least one test | PR comment |
+| Blocking findings | 0 | `deviations.md` |
+| `pnpm verify` (reviewer) | exit 0; 215/215 unit, 20/20 e2e | reviewer session |
+| CI runs on the PR | 2 so far; 1 failed once in a cluster 0 test, green on rerun | `gh run list` |
+
+**What the review did**
+- Lessons from cluster 0 applied: the reviewer did not reuse the worker's own mutation list. It wrote 14 new one-line breaks (wrong link target, missing guard, notify-next instead of notify-current, a number field left as text, and so on). Every one turned at least one test red. Cluster 0's review had found a test that could not fail; this cluster's tests all could.
+- The worker's own log recorded the same kind of slip before review: a guard mutation that silently changed nothing "passed", and the worker noticed only because `diff` printed nothing.
+
+**Findings (both non-blocking)**
+- DEV-projects-01: the backlog form's labels gained `for`/`id` so the fields have accessible names (Q-projects-1). It is the same choice the owner already approved for the login form; it is still a question for the owner because that answer named only the login form.
+- DEV-projects-02: CI failed once on a commit that changed only a status line, in a foundation test with a 1-second wait. Another wave A branch hit a different 1-second foundation test in the same minute. A rerun was green, and the test passed every time locally. It is recorded rather than rerun away quietly: three branches now run CI at once, and the foundation's timing assumptions are the first thing to feel it.
+
+**Process note**
+- Spec §8.2 lets the reviewer merge once CI is green. For wave A the **orchestrator holds the merge**, merging the three wave-A PRs one at a time and resolving bookkeeping conflicts, and the owner still has Q-projects-1 open. The review is complete; the merge waits.
+
+**Moments (article candidates)**
+- "Fourteen deliberate breakages, fourteen red tests. The reviewer's job is not to read the tests; it is to try to get past them."
+- "The flaky test was not in the code under review. Recording it anyway is how you find out it is a pattern, not a fluke."
+
+## 2026-11-21 — Harness: CI timing in wave A
+- With three wave A PRs in CI at once, two cluster 0 tests failed on runners while passing locally:
+  - AC-AUTH-09 in `routerDataMode.test.tsx` failed on PR #9, twice in a row.
+  - AC-AUTH-07 in `security.test.tsx` failed once on PR #7, taking 1217 ms against Testing Library's 1000 ms default.
+- The orchestrator reproduced the first one locally by pinning the suite to one CPU with `CI=true`: it failed 1 run in 3. Cause: the test asserted the breadcrumbs synchronously right after `router.state.initialized` flipped, before React had committed the re-mounted shell. With cluster 0's placeholder screen that was never visible; with the real user list it was. After changing that assertion to `waitFor`, it passed 10 of 10 single-CPU runs (DEV-foundation-05).
+- Harness decision: Testing Library's async timeout is raised from 1 s to 3 s for all tests. A broken test still fails, inside Vitest's 5 s limit; an honest wait on a busy runner no longer does. This is a loosened setting, so it is recorded here rather than hidden.
+- The review of cluster 2 also found that the metrics hook never classified `pnpm verify`, so workers' "verify green" claims had no ledger row to check against. That run now has its own category.
+
+## 2026-11-21 — Owner decisions for wave A
+- All three wave A reviews came back with no blocking findings, but they raised six questions only the owner could answer. The orchestrator put them to the owner as one list, each with a recommendation; the owner approved all six recommendations in one reply.
+- Three became spec amendments (rev 3, §0.2): linked labels on every form (P1), a password-only edit that can be saved again (P2, a regression the spec itself had caused), and clearing a team pick that has become the Product Owner (P3, a legacy bug the port had faithfully copied).
+- Three were accepted as-is and logged: breadcrumbs after a failed navigation, one extra wrapper `div`, and a blank gravatar for an empty e-mail.
+- Two reviewers had independently found the same gap: admin guards on the `new` and `edit` routes that no test could catch. Both clusters add the tests before merging, rather than after.
+- Cluster 3 needed no code change and merges first; clusters 1 and 2 go back to fresh workers with short fix lists, then a short re-review.
+
+**Moment (article candidate)**
+- "The spec caused a bug: two rules that were each reasonable on their own meant a user could not change only a password. A worker spotted the contradiction, refused to guess, and asked."
