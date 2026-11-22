@@ -26,7 +26,8 @@ export function newTaskDraft(projectId: string, sprintId: string): Draft<Task> {
  * - Product Backlog item (required): an item no longer in the sprint must be chosen again before Save;
  * - Assigned to (optional): a user no longer on the team shows `-- unassigned --` and saves as unassigned
  *   (S13: no `assignedUserId`);
- * - State (required): a value outside TASK_STATES must be chosen again before Save.
+ * - State (required): a value outside TASK_STATES starts unset and must be chosen again before Save. While
+ *   it is unset the State select shows a `-- choose --` first option (owner, Q-sprints-tasks-3 (b)).
  */
 export function taskFormInitial(
   task: Task,
@@ -167,7 +168,10 @@ function TaskEdit({ projectId, sprintId, initial, sprintBacklogItems, teamMember
             />
             <label htmlFor="state">State</label>
             {/* Every route starts with a state (the draft's TODO or the loaded one), so, as in legacy,
-                there is no blank option. A malformed stored state starts unset (P5, taskFormInitial). */}
+                there is no blank option. The one exception is P5: a malformed stored state starts unset,
+                and then `-- choose --` is shown first (Q-sprints-tasks-3 (b)). Without it the browser
+                would display TODO for a form that holds no state, and picking the TODO already shown would
+                fire no change event. Once a state is chosen the option goes, so the normal form is as legacy. */}
             <select
               id="state"
               name="state"
@@ -176,6 +180,7 @@ function TaskEdit({ projectId, sprintId, initial, sprintBacklogItems, teamMember
               value={values.state ?? ''}
               onChange={(event) => setField('state', fromSelect(event.target.value))}
             >
+              {values.state === undefined && <option value="">-- choose --</option>}
               {TASK_STATES.map((state) => (
                 <option key={state} value={state}>
                   {state}
