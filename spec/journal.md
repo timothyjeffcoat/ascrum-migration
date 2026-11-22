@@ -455,3 +455,17 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "We couldn't reproduce it on our machine, so we stopped trying. Forty runs on the machine where it failed found it in one CI job."
+
+## 2026-11-21 — An independent audit of the legacy reading
+- The owner asked a fair question: how can they review a port of an app they don't understand? Everything here (spec, tests, reviews) traces back to one agent's reading of the old code (`spec/inventory.md`). If that reading was wrong, every check downstream would inherit the mistake and stay green.
+- So a fresh agent read the old code with the inventory and spec off-limits, and committed that blind reading (53 claims, each citing a legacy line) before comparing. Result: 36 agree, 14 are deliberate, documented differences, and 4 are findings (PR #15). The inventory misdescribed nothing on these screens.
+- Two of the findings were real bugs in the shipped app that every gate had passed:
+  - Enter in a project's Name field reloaded the page and silently threw away the edits.
+  - Enter in the login window no longer signed in.
+
+  Neither was covered by any acceptance criterion, so reviewers checking against the spec could not have caught them. One existing convention ("every button in a form is `type=button`") even caused the second.
+- Response: spec amendment P4 (forms never submit natively; Enter signs in) and a CLAUDE.md rule, both landing before wave B builds its forms, plus a worker fix with tests that fail without it.
+- The owner also got a plain-English review guide: per screen, what the old app did, what to click in the live demo, and where the new app differs.
+
+**Moment (article candidate)**
+- "Every gate was green and two bugs were live. Gates check what the spec says; only someone reading the original without the spec in hand can notice what the spec forgot."

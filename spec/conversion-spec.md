@@ -1,6 +1,6 @@
 # Conversion Spec: AScrum, AngularJS 1.2 → React 19
 
-Status: **APPROVED rev 3** (owner: "approve all" for §0.1 S1–S15, 2026-11-20; §0.2 Phase 3 amendments P1–P3 from owner answers, 2026-11-21). Workers start only after the Phase 2 exit gate (§13) and the wave gates (§8.1).
+Status: **APPROVED rev 3** (owner: "approve all" for §0.1 S1–S15, 2026-11-20; §0.2 Phase 3 amendments P1–P4 from owner answers and the wave A legacy audit, 2026-11-21). Workers start only after the Phase 2 exit gate (§13) and the wave gates (§8.1).
 Revision history: rev 1 (initial). Rev 2 incorporates independent team-lead review `spec/reviews/spec-review-1.md` (25 findings, all confirmed).
 Inputs: `spec/inventory.md` (facts) and `spec/questions.md` (owner answers, 2026-11-20).
 Authority: this spec is the contract for every worker and reviewer session. If code and spec disagree, the spec wins until it is amended. If the spec is silent, raise a question (§8.5) and do not guess.
@@ -66,7 +66,7 @@ Owner reply 2026-11-20: "approve all". No vetoes.
 | S11 | Concurrent `/current-user` requests share **one in-flight promise**. Re-fetching while anonymous is otherwise unchanged | the start-up request and the first guard race in legacy |
 | S12 | A failed **remove** shows a `*.remove.error` message. Legacy reused "save" wording or showed nothing | — |
 | S13 | Selects get explicit blank options: "Assigned to" allows **unassigning** (legacy couldn't once set); other blanks read `-- choose --` | a React controlled select needs an explicit option |
-| S14 | `login.error.serverError`'s `{{exception}}` = `HTTP <status>` (legacy printed `[object Object]`) | — |
+| S14 | `login.error.serverError`'s `{{exception}}` = `HTTP <status>` (legacy printed a JSON dump of the whole `$http` response; corrected by the wave A audit, DSC-3) | — |
 | S15 | The notification **sticky bucket is dropped** (no producer exists once `pushSticky` is dead) | dead code (A2) |
 
 ### 0.2 Phase 3 amendments (owner answers to cluster questions)
@@ -77,6 +77,7 @@ Each row is an owner answer from `spec/questions/<cluster>.md`; the deviation lo
 | P1 | **Linked labels in every form.** Each legacy `<label>` gets `htmlFor` and its control an `id` (the field name; the login modal uses `login-email`/`login-pass`). Nothing else in the markup changes: classes, strings and legacy quirks such as missing `name` attributes stay. Refines B4. | Q-foundation-1, Q-projects-1 (2026-11-21) |
 | P2 | **The user form's `password` is a `values` field;** only `passwordRepeat` is `extra`. It starts as `''` on both routes (edit loads `{...user, password:''}`), so a password-only change on edit makes the form dirty and saveable, as in legacy. `toPayload` still omits a blank `password` (A3, AC-USR-06). §5.6 and AC-USR-04 are updated. | Q-admin-users-1 (2026-11-21) |
 | P3 | **A stale team pick is cleared.** When `extra.selTeamMember` stops being a `teamMemberCandidates` entry (e.g. that user becomes Product Owner), it is cleared, so `Add` is disabled. Legacy kept the stale pick and could add the PO as a developer. AC-APR-04 is updated. | Q-admin-projects-1 (2026-11-21) |
+| P4 | **Forms never submit natively; Enter signs in.** Every `<form>` has an `onSubmit` that calls `preventDefault()`, so the browser can never reload the page and lose edits (on a form whose only text field is Name, Enter used to do that). Buttons stay `type="button"`, with one exception restoring legacy: the login modal's "Sign in" is `type="submit"`, and Enter there signs in when Sign in is enabled (AC-AUTH-04). Elsewhere Enter does nothing; legacy's project form clicked the first team "Remove" on Enter, which is not ported. | wave A legacy audit DSC-1, DSC-2 (`spec/reviews/legacy-audit-wave-a.md`) |
 
 Accepted as-is, no spec change: the breadcrumbs follow a failed navigation (DEV-foundation-02), the extra `div` around the project form's `CrudButtons` (Q-admin-projects-2), and a blank gravatar for an empty e-mail (Q-admin-users-2).
 
@@ -370,7 +371,7 @@ Loaded docs for edit routes: a missing `sprintBacklog`/`teamMembers` is set to `
 ### 7.3 Endpoints
 | Method | Path | Behaviour |
 |---|---|---|
-| POST | `/login` | `{email,password}`; match → set session user, 200 `{user: CurrentUser}`; no match → 200 `{user:null}` |
+| POST | `/login` | `{email,password}`; match (the first user with that email and password; legacy required exactly one user with the email, so duplicates locked both out, audit DSC-4: not ported) → set session user, 200 `{user: CurrentUser}`; no match → 200 `{user:null}` |
 | POST | `/logout` | clear session user → 204 |
 | GET | `/current-user` | 200 `{user: CurrentUser \| null}` |
 | GET | `/databases/ascrum/collections/:c` | `?q=` optional JSON → 200 `Doc[]` |
