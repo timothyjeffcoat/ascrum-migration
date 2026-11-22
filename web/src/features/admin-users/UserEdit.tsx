@@ -1,7 +1,8 @@
 // Port of admin/users/admin-users-edit.js (UsersEditCtrl) + users-edit.tpl.html (AC-USR-04..07).
-// D8 fixed: legacy copied the stored plaintext password into both password fields. Here both are
-// form-only `extra` fields that always start empty (§5.6), and a blank password on edit is left out
-// of the payload, which the stub reads as "unchanged" (A3, S8).
+// D8 fixed: legacy copied the stored plaintext password into both password fields. Here both always
+// start empty (§5.6), and a blank password on edit is left out of the payload, which the stub reads as
+// "unchanged" (A3, S8). Q-admin-users-1 (b): `password` is a `values` field, so a password-only change
+// makes the form dirty and can be saved, as in legacy; only `passwordRepeat` is a form-only `extra`.
 import type { LoaderFunctionArgs } from 'react-router'
 import { useLoaderData, useNavigate } from 'react-router'
 import { users } from '../../api/collections.ts'
@@ -14,16 +15,16 @@ import { email, equalsField, required } from '../../crud/validators.ts'
 import { pushForCurrentRoute, pushForNextRoute } from '../../notifications/store.ts'
 import { uniqueEmail } from './uniqueEmail.ts'
 
-type PasswordFields = { password: string; passwordRepeat: string }
-type UserFormValues = Draft<User> & PasswordFields
+type RepeatField = { passwordRepeat: string }
+type UserFormValues = Draft<User> & RepeatField
 
 /** §5.6 draft for `/admin/users/new`. A fresh object per call: forms must never share one. */
 export function newUserDraft(): Draft<User> {
-  return { email: '', lastName: '', firstName: '', admin: false }
+  return { email: '', lastName: '', firstName: '', admin: false, password: '' }
 }
 
-function emptyPasswords(): PasswordFields {
-  return { password: '', passwordRepeat: '' }
+function emptyRepeat(): RepeatField {
+  return { passwordRepeat: '' }
 }
 
 /** R17 resolve: `currentUser: requireAdminUser`, `user: new Users()`. */
@@ -32,10 +33,14 @@ export async function newUserLoader(): Promise<Draft<User>> {
   return newUserDraft()
 }
 
-/** R18 resolve: `currentUser: requireAdminUser`, `user: Users.getById(itemId)`. */
+/**
+ * R18 resolve: `currentUser: requireAdminUser`, `user: Users.getById(itemId)`. The loaded user gets
+ * `password: ''` (Q-admin-users-1), so a blank password field is not dirty against it.
+ */
 export async function editUserLoader({ params }: LoaderFunctionArgs): Promise<Draft<User>> {
   await requireAdminUser()
-  return users.getById(params.itemId ?? '')
+  const user = await users.getById(params.itemId ?? '')
+  return { ...user, password: '' }
 }
 
 /**
@@ -44,13 +49,12 @@ export async function editUserLoader({ params }: LoaderFunctionArgs): Promise<Dr
  * pre-filled password is what made editing work at all.
  */
 const passwordRequired: Validator<UserFormValues> = (value, values, ctx: Ctx) =>
-  ctx.isNew || values.password !== '' || values.passwordRepeat !== '' ? required(value) : null
+  ctx.isNew || (values.password ?? '') !== '' || values.passwordRepeat !== '' ? required(value) : null
 
-/** AC-USR-06: the password is sent only when one was entered; on edit, blank means "unchanged". */
-function toPayload(values: Draft<User>, extra: PasswordFields): Draft<User> {
+/** AC-USR-06: the password is sent only when one was entered; on edit, blank means "unchanged" (A3). */
+function toPayload(values: Draft<User>): Draft<User> {
   const payload: Draft<User> = { ...values }
-  Reflect.deleteProperty(payload, 'password')
-  if (extra.password !== '') payload.password = extra.password
+  if (payload.password === '') Reflect.deleteProperty(payload, 'password')
   return payload
 }
 
@@ -64,9 +68,9 @@ type UserEditProps = { user: Draft<User> }
 
 export function UserEdit({ user }: UserEditProps) {
   const navigate = useNavigate()
-  const form = useCrudForm<User, PasswordFields>({
+  const form = useCrudForm<User, RepeatField>({
     initial: user,
-    extra: emptyPasswords(),
+    extra: emptyRepeat(),
     validators: {
       email: [required, email],
       lastName: [required],
@@ -142,8 +146,8 @@ export function UserEdit({ user }: UserEditProps) {
           type="password"
           id="password"
           name="password"
-          value={extra.password}
-          onChange={(event) => form.setExtra('password', event.target.value)}
+          value={values.password ?? ''}
+          onChange={(event) => form.setField('password', event.target.value)}
           required
         />
         {showError('password', 'required') && <span className="help-inline">This field is required.</span>}

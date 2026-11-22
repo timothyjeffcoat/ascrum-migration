@@ -250,6 +250,28 @@ describe('UserEdit: passwords (AC-USR-06, D8)', () => {
     expect(put?.body).toEqual({ email: 'dev1@ascrum.test', firstName: 'Dina', lastName: 'Developer', admin: false })
   })
 
+  it('AC-USR-04 / Q-admin-users-1: a password-only change on edit can be saved', async () => {
+    const requests = recordRequests()
+    const { user } = await openEdit(USER.dev1)
+    expect(saveButton()).toBeDisabled() // blank passwords are not dirty against the loaded user
+    await user.type(field('Password'), 'only-pw')
+    await user.type(field('Password (repeat)'), 'only-pw')
+    expect(saveButton()).toBeEnabled()
+    await user.click(saveButton())
+    await screen.findByText(`A user with id '${USER.dev1}' was saved successfully.`)
+
+    const put = requests.find((r) => r.method === 'PUT')
+    expect(put?.pathname).toBe(`/databases/ascrum/collections/users/${USER.dev1}`)
+    // The loaded fields unchanged, plus the new password; never the repeat.
+    expect(put?.body).toEqual({
+      email: 'dev1@ascrum.test',
+      firstName: 'Dana',
+      lastName: 'Developer',
+      admin: false,
+      password: 'only-pw',
+    })
+  })
+
   it('AC-USR-06: on edit with a new password (and another change), the password is sent; the repeat never is', async () => {
     const requests = recordRequests()
     const { user } = await openEdit(USER.dev1)
