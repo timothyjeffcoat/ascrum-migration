@@ -144,3 +144,61 @@ All matched files use Prettier code style!
 ### Questions
 - Q-sprints-tasks-1 (picker labels stay plain): implemented as recommended (a); not blocking.
 - Q-sprints-tasks-2 (authentication-only guards, outsider allowed): implemented per spec (a); not blocking.
+
+## 2026-11-21: review follow-up (P5, DEV-sprints-tasks-01/02, owner answers)
+
+Pulled the reviewer's commits (`git pull --ff-only`); `migration` not merged. Owner rulings applied:
+§0.2 P5 (stale select values start unset) and the DEV-sprints-tasks-02 hardening.
+
+### Changes
+- `features/tasks/TaskEdit.tsx`: new `taskFormInitial(task, sprintBacklogItems, teamMembers)`, used as the
+  edit route's `initial`. It derives from the same lists the selects render (no effect, no extra fetch):
+  a `productBacklogItemId` not in the sprint's items, an `assignedUserId` not on the team, and a `state`
+  outside `TASK_STATES` are left out of `initial`. Commented with P5 / DEV-sprints-tasks-01.
+- Sprint form: checked; it has no `<select>` (the picker is two tables of buttons; legacy
+  `sprints-edit.tpl.html` has none either), so P5 does not apply there.
+- `features/tasks/TaskEdit.test.tsx`: three tests, each changing the stub store after `resetStub()`
+  through `stubContext.store` + `findById` (a test-local `patchStub` helper):
+  - `AC-TSK-02 / P5: a task whose backlog item left the sprint must be re-chosen before Save`
+    ("Product catalogue" removed from Sprint 1: select reads `-- choose --` and is `:invalid`, the
+    form's required error since the legacy markup has no message; Save disabled after an edit; no PUT;
+    choosing "Shopping cart" enables Save and the PUT carries it);
+  - `AC-TSK-02 / P5: a task whose assignee left the team shows unassigned and saving unassigns`
+    (dev1 removed from Webshop's team: reads `-- unassigned --`; after a Name edit the PUT body
+    has no `assignedUserId`, the S13 convention);
+  - `AC-TSK-02 / P5: a task with a malformed state must have a state chosen before Save`
+    (`state: 'WAITING'`: Save disabled, no PUT, until IN_DEV is chosen).
+- `e2e/full-path.spec.ts`: after saving the task, reopens it and asserts Name, "Product Backlog item"
+  and "Assigned to" (`option:checked`).
+- `spec/questions/sprints-tasks.md`: owner answers under Q-1 and Q-2; new **Q-sprints-tasks-3** (not
+  blocking): the State select has no blank option, so a malformed state reads `TODO` while unset, and
+  `TODO` cannot be re-chosen in a real browser without picking another state first. Recommended a
+  `-- choose --` option shown only while unset; not implemented, since that is markup the spec doesn't cover.
+
+### Mutation results (each reverted; `diff` against a saved copy confirmed the restore)
+| # | Mutation | Result |
+|---|---|---|
+| M38 | backlog item kept even when not in the sprint | 1 failed (backlog-item P5 test) |
+| M39 | assignee kept even when not on the team | 1 failed (assignee P5 test) |
+| M40 | state kept even when not in `TASK_STATES` | 1 failed (malformed-state P5 test) |
+| M41 | `initial = task` (P5 off entirely) | 3 failed (all three P5 tests) |
+| M29 (re-run) | State not `required` | **1 failed** (malformed-state test). No longer an equivalent mutant: P5 can leave `state` unset, so the earlier worklog note on M29 is out of date |
+| E2E-M | task save sends `assignedUserId: undefined` | `full-path.spec.ts` red: `Expected: "Developer Dana (dev1@ascrum.test)"`, `Received: "-- unassigned --"` (chromium project, after `pnpm build`) |
+
+### Wrong turns
+- None in the code. One process note: the first plan was to ask before touching the State select at
+  all. P5's text covers any select, so the data rule went in, and only the display question
+  (Q-sprints-tasks-3) was raised.
+
+### Gates run this session
+Ports `STUB_PORT=3401 PREVIEW_PORT=4573 PAGES_PORT=4574`. `pnpm verify`, unpiped (output redirected to a
+file, not piped), exit 0:
+```
+All matched files use Prettier code style!
+ Test Files  39 passed (39)
+      Tests  365 passed (365)
+✓ built in 338ms            (vite build)
+✓ built in 371ms            (vite build --mode pages)
+  30 passed (10.8s)         (playwright)
+```
+`pnpm typecheck` passed inside the same run.
