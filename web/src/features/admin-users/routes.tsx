@@ -1,20 +1,12 @@
-// PLACEHOLDER from cluster 0 (spec §8.1): the routes and guards are final (R16–R18, requireAdminUser);
-// cluster 1 replaces the loaders' data and the components.
+// Port of admin/users/admin-users.js: `crudRouteProvider.routesFor('Users', 'admin')`, R16–R18, every
+// route guarded by requireAdminUser (spec §5.3).
 import type { RouteObject } from 'react-router'
-import { requireAdminUser } from '../../auth/guards.ts'
 import { crudRoutes } from '../../crud/crudRoutes.ts'
-
-async function loader() {
-  await requireAdminUser()
-  return null
-}
-
-function AdminUsersPlaceholder() {
-  return <p>Manage users: converted by cluster 1.</p>
-}
+import { editUserLoader, newUserLoader, UserEditRoute } from './UserEdit.tsx'
+import { UsersList, usersListLoader } from './UsersList.tsx'
 
 export const routes: RouteObject[] = crudRoutes('/admin/users', {
-  list: { loader, Component: AdminUsersPlaceholder },
-  create: { loader, Component: AdminUsersPlaceholder },
-  edit: { loader, Component: AdminUsersPlaceholder },
+  list: { loader: usersListLoader, Component: UsersList },
+  create: { loader: newUserLoader, Component: UserEditRoute },
+  edit: { loader: editUserLoader, Component: UserEditRoute },
 })
