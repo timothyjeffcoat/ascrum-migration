@@ -436,3 +436,13 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "The spec caused a bug: two rules that were each reasonable on their own meant a user could not change only a password. A worker spotted the contradiction, refused to guess, and asked."
+
+## 2026-11-21 — Wave A merged; wave B opens
+- Clusters 1 and 2 went back to fresh workers with short fix lists: guard tests on both clusters, plus the P2 (password) and P3 (team pick) changes. Each worker took about 3 minutes. Each fix then got a fresh re-reviewer with its own mutation list: 9 mutations on cluster 1 and 7 on cluster 2. Every mutation that changed behaviour turned a test red. One survived on cluster 2, and the reviewer showed it could not change behaviour: the Scrum Master never affects the team candidates.
+- Order of merges, one at a time because of branch protection: #7 (cluster 3), #11 (spec rev 3), #8 (cluster 2), #9 (cluster 1). Each later PR conflicted only in the shared bookkeeping files (`MIGRATION.md`, `deviations.md`, `journal.md`), resolved by keeping both sides. One resolution left a stale duplicate deviation row, caught by listing the ids before committing.
+- A worker noticed its own metrics row was wrong: it had run `pnpm verify > log; echo EXIT=$?`, so the hook recorded the failed run as a pass. It reported this in its worklog, not quietly. The CLAUDE.md rule (run gates unpiped) exists for exactly this; it still slipped through once.
+- The flaky foundation test came back: AC-AUTH-07 failed on #9's last CI run, this time after the full 3 s wait, so it is not just slowness. The orchestrator could not reproduce it (18 runs, some on a deliberately loaded CPU), and a probe ruled out the first theory. It was rerun green, merged, and logged as open (DEV-foundation-06). The test now fails at the step that stalls, so the next failure will be informative.
+- Two journal headings had been dated 2026-11-22 (UTC) while the rest of the day used the local date, 2026-11-21. They were corrected during the merges.
+
+**Moment (article candidate)**
+- "A rerun turned it green. The work was in refusing to call it fixed: one theory tested and ruled out, the test changed so the next failure would say where it stuck, and the open item written down."

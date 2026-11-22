@@ -87,10 +87,12 @@ describe('legacy security service cases', () => {
 
       await user.click(logoutButton)
 
-      // '/' then the legacy `otherwise` redirect to /projectsinfo.
+      // One step at a time, so an intermittent CI failure names the step that stalled (DEV-foundation-06):
+      // the click reached the stub, then the user was cleared, then '/' and the legacy `otherwise`
+      // redirect to /projectsinfo.
+      await waitFor(() => expect(seen[0]).toMatchObject({ method: 'POST', pathname: '/logout' }))
+      await waitFor(() => expect(getCurrentUser()).toBeNull())
       await waitFor(() => expect(router.state.location.pathname).toBe('/projectsinfo'))
-      expect(seen[0]).toMatchObject({ method: 'POST', pathname: '/logout' })
-      expect(getCurrentUser()).toBeNull()
       expect(screen.getByRole('button', { name: 'Log in' })).toBeInTheDocument()
     })
   })
