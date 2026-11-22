@@ -44,3 +44,5 @@ Options: (a) leave the markup as is (data rule only; the display gap stays, limi
 normal form; not recommended).
 *Recommended: (b).* Implemented: (a) until answered, since a new option is markup the spec does not
 cover.
+**Answer (owner, 2026-11-21): (b).** Render `-- choose --` (empty value) as the State select's first option
+only while `state` is unset; the spec line is added to AC-TSK-02.
