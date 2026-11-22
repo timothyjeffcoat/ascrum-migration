@@ -59,6 +59,7 @@ Node comes from `web/.nvmrc` (`nvm use`), pnpm from `packageManager` (`corepack 
 - Explicit props types; no `React.FC`; no default exports unless a tool requires one.
 - Keep the legacy Bootstrap 2 markup, class names and UI strings verbatim (spec B4).
 - Every `<button>` inside a `<form>` is `type="button"`.
+- Keep `<LoginModal/>` outside `RouterProvider` and keep the root route's `HydrateFallback`: a single test (`src/app/routerDataMode.test.tsx`, §11-4) guards this composition.
 - Role and candidate logic comes from `domain/` only.
 - Comments explain *why*, especially wherever behaviour deliberately differs from legacy (cite the D-id or S-id).
 
@@ -67,7 +68,8 @@ Node comes from `web/.nvmrc` (`nvm use`), pnpm from `packageManager` (`corepack 
 - Every screen has at least one assertion on its legacy root classes (spec §12 class-parity rule). No snapshot tests.
 - Port every legacy case assigned to your cluster (spec §9) using the statuses defined there. Respect the pre-assigned statuses. Record each case in your worklog table.
 - Use the shared helpers in `src/test/`:
-  - `renderRoute(path, {as: 'admin' | 'po' | 'sm' | 'dev1' | 'dev2' | 'outsider' | 'anonymous'})`;
+  - `const { user, router } = await renderRoute(path, {as: 'admin' | 'po' | 'sm' | 'dev1' | 'dev2' | 'outsider' | 'anonymous'})`. It is async (it signs the persona in on the stub first; Q-foundation-2). Before clicking shell controls, wait for `router.state.initialized` or a screen element, because the shell re-mounts once the first load completes;
+  - `recordRequests()` to see what reached the stub without mocking `api/`;
   - `resetStub()`, which runs automatically before each test;
   - `failNext(method, pathPattern, status)` for error paths.
 
