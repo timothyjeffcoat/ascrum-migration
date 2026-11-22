@@ -19,6 +19,6 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 | 0 | foundation | first | merged | [#4](https://github.com/timothyjeffcoat/ascrum-migration/pull/4) | 46/46 ACs; DEV-foundation-01 fixed in c31036b; owner answered Q-foundation-1/2 and accepted DEV-foundation-02 (2026-11-21) |
 | 1 | admin-users | A | pending | | |
 | 2 | admin-projects | A | pending | | |
-| 3 | projects + productbacklog | A | pending | | |
+| 3 | projects + productbacklog | A | converted | [#7](https://github.com/timothyjeffcoat/ascrum-migration/pull/7) | review in progress |
 | 4 | sprints + tasks | B | pending | | |
 | 5 | dashboard + projectsinfo | B | pending | | |
