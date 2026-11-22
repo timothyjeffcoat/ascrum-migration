@@ -1,15 +1,15 @@
 // THROWAWAY CI PROBE for DEV-foundation-06. Never merged; the draft PR is closed after one run.
 import { screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, it } from 'vitest'
-import { recordRequests, renderRoute, resetClientState } from '../test/renderRoute.tsx'
+import { recordRequests, renderRoute, resetClientState, waitForShell } from '../test/renderRoute.tsx'
 import { getCurrentUser } from './currentUser.ts'
 
 beforeEach(() => resetClientState())
 
-for (let i = 0; i < 40; i++) {
+for (let i = 0; i < 80; i++) {
   it(`AUTH07PROBE run ${i}`, async () => {
     const { router, user } = await renderRoute('/projects', { as: 'po' })
-    await waitFor(() => expect(router.state.initialized).toBe(true))
+    await waitForShell(router)
     const btn = await screen.findByRole('button', { name: 'Log out' })
     const pageAtFind = document.querySelector('.container-fluid')?.children.length ?? -1
     const seen = recordRequests()
