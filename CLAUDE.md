@@ -71,7 +71,7 @@ Cluster `n` exports `STUB_PORT=3001+100n PREVIEW_PORT=4173+100n PAGES_PORT=4174+
 - Every screen has at least one assertion on its legacy root classes (spec §12 class-parity rule). No snapshot tests.
 - Port every legacy case assigned to your cluster (spec §9) using the statuses defined there. Respect the pre-assigned statuses. Record each case in your worklog table.
 - Use the shared helpers in `src/test/`:
-  - `const { user, router } = await renderRoute(path, {as: 'admin' | 'po' | 'sm' | 'dev1' | 'dev2' | 'outsider' | 'anonymous'})`. It is async (it signs the persona in on the stub first; Q-foundation-2). Before clicking shell controls, wait for `router.state.initialized` or a screen element, because the shell re-mounts once the first load completes;
+  - `const { user, router } = await renderRoute(path, {as: 'admin' | 'po' | 'sm' | 'dev1' | 'dev2' | 'outsider' | 'anonymous'})`. It is async (it signs the persona in on the stub first; Q-foundation-2). Before touching anything in the header (nav, Admin menu, Log in/out, breadcrumbs), `await waitForShell(router)`: the shell re-mounts once the first load completes, and `router.state.initialized` alone flips too early (DEV-foundation-06). Screen content (a table, a form) only exists in the real shell, so `findByRole` on it is enough;
   - `recordRequests()` to see what reached the stub without mocking `api/`;
   - `resetStub()`, which runs automatically before each test;
   - `failNext(method, pathPattern, status)` for error paths.
