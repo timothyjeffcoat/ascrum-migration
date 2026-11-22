@@ -114,7 +114,7 @@ function TaskEdit({ projectId, sprintId, initial, sprintBacklogItems, teamMember
               className="span10"
               required
               autoFocus
-              value={values.name ?? ''}
+              value={form.viewValue('name')}
               onChange={(event) => setField('name', event.target.value)}
             />
             <label htmlFor="productBacklogItemId">Product Backlog item</label>
@@ -141,7 +141,7 @@ function TaskEdit({ projectId, sprintId, initial, sprintBacklogItems, teamMember
               cols={10}
               className="span10"
               required
-              value={values.desc ?? ''}
+              value={form.viewValue('desc')}
               onChange={(event) => setField('desc', event.target.value)}
             />
           </div>

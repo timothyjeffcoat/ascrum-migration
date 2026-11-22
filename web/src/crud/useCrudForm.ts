@@ -10,6 +10,8 @@
 // - An async validator's result is applied only if the field is unchanged since it started (S2).
 // - The form state starts from `initial` once. A screen that can switch documents without unmounting
 //   should key the form by document id.
+// - P6 / DSC-B-1: string values are trimmed, as AngularJS 1.2's ngTrim did for every text input and
+//   textarea. See setField and viewValue below.
 import { useRef, useState } from 'react'
 import type { Draft } from '../api/types.ts'
 
@@ -41,6 +43,8 @@ export type CrudForm<T extends object, X extends object> = {
   extra: X
   setField(name: keyof T, raw: unknown): void
   setExtra(name: keyof X, raw: unknown): void
+  /** P6: what a text input or textarea shows (the text as typed); bind `value` to this, not to `values`. */
+  viewValue(name: keyof T | keyof X): string
   errors: Partial<Record<string, ErrorKey[]>>
   showError(field: string, key: ErrorKey): boolean
   /** Any async validator in flight. */
@@ -71,6 +75,8 @@ export function useCrudForm<T extends object, X extends object = Record<never, n
   const [asyncErrors, setAsyncErrors] = useState<Partial<Record<string, ErrorKey>>>({})
   const [pendingFields, setPendingFields] = useState<Flags>({})
   const [unparsable, setUnparsable] = useState<Flags>({})
+  // P6: the last text typed into each field, untrimmed. Only viewValue reads it.
+  const [typed, setTyped] = useState<Readonly<Partial<Record<string, string>>>>({})
 
   // The latest values, for handlers and async callbacks that run before the next render. Every
   // change goes through the functions below, which update this first and then the state.
@@ -123,6 +129,36 @@ export function useCrudForm<T extends object, X extends object = Record<never, n
     validator(value, nextMerged, docCtx).then(apply, () => apply(null))
   }
 
+  // --- P6: trimming ----------------------------------------------------------------------------
+  // P6 / DSC-B-1. AngularJS 1.2 kept two values per input: the view value (what the input shows) and
+  // the model value, which ngTrim trimmed. The most boring way to keep both here is the same split:
+  // `values`/`extra` hold the trimmed text, so `required`, dirty and the payload all see it, and
+  // `typed` remembers the untrimmed text for the input to show. Trimming the controlled input's own
+  // value instead would eat a trailing space on every keystroke, so "a b" could never be typed.
+  // Number fields are parsed instead (parseNumber already ignores surrounding blanks). Selects and
+  // other non-string values pass through; select option values are ids and enum names, which never
+  // carry surrounding whitespace, so trimming leaves them as they are.
+  /** Records what was typed and returns the trimmed text, or `undefined` if `raw` is no text. */
+  function trimText(field: string, raw: unknown): string | undefined {
+    if (typeof raw !== 'string') return undefined
+    setTyped((prev) => ({ ...prev, [field]: raw }))
+    return raw.trim()
+  }
+
+  /**
+   * As typed while the typed text still trims to the held value; otherwise (first render, revert to a
+   * different value, a programmatic change) the held value itself. That is AngularJS's rule too: the
+   * view was only re-rendered from the model when the model value changed, so a Revert that restored
+   * the same trimmed text left the typed spaces in the input.
+   */
+  function viewValue(name: keyof T | keyof X): string {
+    const field = String(name)
+    const held = readField({ ...values, ...extra }, field)
+    const text = typed[field]
+    if (text !== undefined && text.trim() === held) return text
+    return held === undefined || held === null ? '' : String(held)
+  }
+
   // --- the API ----------------------------------------------------------------------------------
   function setField(name: keyof T, raw: unknown) {
     const field = String(name)
@@ -131,6 +167,14 @@ export function useCrudForm<T extends object, X extends object = Record<never, n
       const parsed = parseNumber(raw)
       value = parsed.value
       setUnparsable((prev) => (parsed.invalid ? { ...prev, [field]: true } : without(prev, field)))
+    } else {
+      const text = trimText(field, raw)
+      if (text !== undefined) {
+        // Legacy only re-parsed (and re-validated) when the trimmed value changed, so typing a trailing
+        // space neither dirties the form nor restarts an async check.
+        if (Object.is(readField(latest.current.values, field), text)) return
+        value = text
+      }
     }
     const nextValues: Draft<T> = { ...latest.current.values, [field]: value }
     latest.current = { ...latest.current, values: nextValues }
@@ -140,10 +184,13 @@ export function useCrudForm<T extends object, X extends object = Record<never, n
 
   function setExtra(name: keyof X, raw: unknown) {
     const field = String(name)
-    const nextExtra: X = { ...latest.current.extra, [field]: raw }
+    const text = trimText(field, raw)
+    if (text !== undefined && Object.is(readField(latest.current.extra, field), text)) return
+    const value = text ?? raw
+    const nextExtra: X = { ...latest.current.extra, [field]: value }
     latest.current = { ...latest.current, extra: nextExtra }
     setExtraState(nextExtra)
-    startAsync(field, raw, { ...latest.current.values, ...nextExtra }, ctxFor(latest.current.original))
+    startAsync(field, value, { ...latest.current.values, ...nextExtra }, ctxFor(latest.current.original))
   }
 
   function save() {
@@ -195,6 +242,7 @@ export function useCrudForm<T extends object, X extends object = Record<never, n
     extra,
     setField,
     setExtra,
+    viewValue,
     errors,
     showError: (field, key) => errors[field]?.includes(key) ?? false,
     pending,
