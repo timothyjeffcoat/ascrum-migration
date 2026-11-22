@@ -44,7 +44,8 @@ function LoginForm() {
         if (!loggedIn) setAuthError(getMessage('login.error.invalidCredentials'))
       },
       (error: unknown) => {
-        // S14: legacy interpolated the rejected response object and printed "[object Object]".
+        // S14: legacy interpolated the whole rejected $http response, printing a JSON dump of it
+        // (AngularJS 1.2 $interpolate runs toJson; corrected by the wave A audit, DSC-3).
         const exception = error instanceof ApiError ? `HTTP ${error.status}` : String(error)
         setAuthError(getMessage('login.error.serverError', { exception }))
       },
