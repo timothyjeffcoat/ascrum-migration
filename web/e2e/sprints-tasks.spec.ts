@@ -138,6 +138,36 @@ test.describe('sprints and tasks on the Node stub', () => {
     await expect(list.getByText('Cart badge')).toHaveCount(0)
   })
 
+  test('AC-TSK-02 / P5 / Q-sprints-tasks-3: a malformed stored state shows -- choose --, and TODO can be picked', async ({
+    page,
+  }) => {
+    await page.goto(sprint1TasksPath)
+    await signIn(page, 'dev1@ascrum.test', 'demo')
+
+    // Seed the malformed state through the stub's own API with the page's session (the UI cannot make one).
+    const tasksUrl = '/databases/ascrum/collections/tasks'
+    const found = await page.request.get(tasksUrl, { params: { q: JSON.stringify({ name: 'Design catalogue page' }) } })
+    const [{ _id: oid, ...task }] = (await found.json()) as [{ _id: { $oid: string } } & Record<string, unknown>]
+    expect((await page.request.put(`${tasksUrl}/${oid.$oid}`, { data: { ...task, state: 'WAITING' } })).ok()).toBe(true)
+
+    await page.goto(`${sprint1TasksPath}/${oid.$oid}`)
+    const state = page.getByLabel('State')
+    await expect(state).toHaveValue('')
+    await expect(state.locator('option:checked')).toHaveText('-- choose --')
+    const save = page.locator('button.save')
+    await expect(save).toBeDisabled()
+
+    // Without the blank option the browser showed TODO already, and picking it changed nothing.
+    await state.selectOption('TODO')
+    await expect(state).toHaveValue('TODO')
+    await expect(state.locator('option')).toHaveText(['TODO', 'IN_DEV', 'BLOCKED', 'IN_TEST', 'DONE'])
+    await expect(save).toBeEnabled()
+    await save.click()
+    await expect(page).toHaveURL(sprint1TasksPath)
+    await page.getByText('Design catalogue page').click()
+    await expect(page.getByLabel('State')).toHaveValue('TODO')
+  })
+
   test('P4: Enter in the sprint and task forms keeps the edits and does not reload the page', async ({ page }) => {
     await page.goto(`${sprintsPath}/${SPRINT.webshop1}`)
     await signIn(page, 'dev1@ascrum.test', 'demo')
