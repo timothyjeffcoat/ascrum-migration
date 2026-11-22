@@ -324,3 +324,13 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - The orchestrator reproduced the first one locally by pinning the suite to one CPU with `CI=true`: it failed 1 run in 3. Cause: the test asserted the breadcrumbs synchronously right after `router.state.initialized` flipped, before React had committed the re-mounted shell. With cluster 0's placeholder screen that was never visible; with the real user list it was. After changing that assertion to `waitFor`, it passed 10 of 10 single-CPU runs (DEV-foundation-05).
 - Harness decision: Testing Library's async timeout is raised from 1 s to 3 s for all tests. A broken test still fails, inside Vitest's 5 s limit; an honest wait on a busy runner no longer does. This is a loosened setting, so it is recorded here rather than hidden.
 - The review of cluster 2 also found that the metrics hook never classified `pnpm verify`, so workers' "verify green" claims had no ledger row to check against. That run now has its own category.
+
+## 2026-11-21 — Owner decisions for wave A
+- All three wave A reviews came back with no blocking findings, but they raised six questions only the owner could answer. The orchestrator put them to the owner as one list, each with a recommendation; the owner approved all six recommendations in one reply.
+- Three became spec amendments (rev 3, §0.2): linked labels on every form (P1), a password-only edit that can be saved again (P2, a regression the spec itself had caused), and clearing a team pick that has become the Product Owner (P3, a legacy bug the port had faithfully copied).
+- Three were accepted as-is and logged: breadcrumbs after a failed navigation, one extra wrapper `div`, and a blank gravatar for an empty e-mail.
+- Two reviewers had independently found the same gap: admin guards on the `new` and `edit` routes that no test could catch. Both clusters add the tests before merging, rather than after.
+- Cluster 3 needed no code change and merges first; clusters 1 and 2 go back to fresh workers with short fix lists, then a short re-review.
+
+**Moment (article candidate)**
+- "The spec caused a bug: two rules that were each reasonable on their own meant a user could not change only a password. A worker spotted the contradiction, refused to guess, and asked."
