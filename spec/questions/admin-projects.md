@@ -16,6 +16,8 @@ Options: (a) keep parity (implemented); (b) clear `selTeamMember` whenever it is
 *Recommended and implemented: (a).* It is reachable only by choosing the same person twice in a
 specific order; (b) is a one-line change in `TeamMembers.tsx` plus a named test if the owner wants it.
 
+**Answer (owner, 2026-11-21): (b).** Implemented in this branch as a logged deviation from legacy.
+
 **Q-admin-projects-2. `<crud-buttons class="span12">` becomes `div.span12 > CrudButtons`.**
 Context: `projects-edit.tpl.html` is the only legacy template that puts a class on `<crud-buttons>`.
 The directive used `replace: true`, so legacy rendered a single `<div class="span12">` holding the
@@ -25,3 +27,5 @@ unchanged; the extra plain `div` adds no Bootstrap styling.
 Options: (a) keep the wrapper (implemented); (b) cluster 0 adds an optional `className` prop to
 `CrudButtons`, and this screen passes `span12`.
 *Recommended: (a)*, unless a reviewer reads B4 as requiring identical nesting.
+
+**Answer (owner, 2026-11-21): (a), accepted.**
