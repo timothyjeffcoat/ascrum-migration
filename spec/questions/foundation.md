@@ -12,7 +12,7 @@ Options: (a) add `htmlFor`/`id` (`login-email`, `login-pass`); (b) keep the mark
 the password field by its `name` attribute in tests.
 *Recommended and implemented: (a).* Other legacy forms (for example `users-edit.tpl.html`) already use
 `for`/`id`, so this brings the login form in line rather than inventing a pattern.
-**Answer:**
+**Answer:** (a) keep `for`/`id`, confirmed by the owner 2026-11-21 ("confirm all three").
 
 **Q-foundation-2. `renderRoute()` is async; CLAUDE.md's example reads as if it were synchronous.**
 Context: `renderRoute(path, {as: 'admin'})` logs the persona in on the stub before rendering, which
@@ -22,4 +22,4 @@ A and B will copy that line.
 Options: (a) amend CLAUDE.md to show `await renderRoute(...)`; (b) leave it, since TypeScript flags
 an un-awaited promise used as a result object.
 *Recommended: (a).* CLAUDE.md is outside cluster 0's owned paths, so this is a question, not an edit.
-**Answer:**
+**Answer:** (a) amend CLAUDE.md, confirmed by the owner 2026-11-21; done by the orchestrator in the cluster 0 status PR.
