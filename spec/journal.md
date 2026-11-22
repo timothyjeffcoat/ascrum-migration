@@ -342,12 +342,12 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **What the mutations found**
 - Four survivors, all gaps in the tests rather than bugs in the code:
-  - The admin guards on "new user" and "edit user" (DEV-admin-users-01): removing them, even both at once, left all 224 unit tests green. This is the **same gap** the cluster 2 review found (DEV-admin-projects-01). Two workers, working in parallel from the same brief, both tested only the list route's guard, because the AC text names only the list route. The reviewer's brief this time asked for the check up front, so it was found in minutes. Worth a change to the AC wording or the worker brief for wave B.
+  - The admin guards on "new user" and "edit user" (DEV-admin-users-01): removing them, even both at once, left all 224 unit tests green. This is the **same gap** the cluster 2 review found (DEV-admin-projects-01). Two workers, working in parallel from the same brief, both tested only the list route's guard, because the AC text names only the list route. The reviewer's brief this time asked for this check explicitly. Worth a change to the AC wording or the worker brief for wave B.
   - The "password required on edit once either field is filled" rule is tested for one field only (DEV-admin-users-02). The untested half cannot cause a bad save.
 - The worker's own claims held up: its numbers matched the reviewer's and CI's exactly (compare cluster 2, where they did not), and its own three mutation checks reproduced.
 
 **A spec contradiction the worker found and did not paper over**
-- Q-admin-users-1 / DEV-admin-users-03: two rules of the approved spec combine so that an admin can't save a password-only change on an existing user. The worker built the spec as written, flagged it, and proposed a fix. The reviewer reproduced it with a throwaway test, then tried the smallest fix it could find (a 6-line change inside the cluster), which passed every existing test plus the probe. The decision, and the spec amendment, belong to the owner.
+- Q-admin-users-1 / DEV-admin-users-03: two rules of the approved spec combine so that an admin can't save a password-only change on an existing user. The worker built the spec as written, flagged it, and proposed a fix. The reviewer reproduced it with a throwaway test, then tried the smallest fix it could find (8 changed lines in one file inside the cluster), which passed every existing test plus the probe. The decision, and the spec amendment, belong to the owner.
 
 **Still open (for the owner)**
 - Q-admin-users-1: allow password-only changes on edit (recommended), which amends §5.6 and AC-USR-04.
