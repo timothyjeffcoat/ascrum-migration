@@ -1,20 +1,43 @@
-// PLACEHOLDER from cluster 0 (spec §8.1): the routes and guards are final (R13–R15, requireAdminUser);
-// cluster 2 replaces the loaders' data and the components.
+// Port of admin-projects.js routes (R13–R15, spec §5.3): crudRoutes('/admin/projects'), every loader
+// guarded by requireAdminUser. Legacy ran the guard alongside the other resolves; here it is awaited
+// first, so nothing is fetched for a user who is not (yet) an admin.
 import type { RouteObject } from 'react-router'
+import { useLoaderData, type LoaderFunctionArgs } from 'react-router'
+import { projects, users } from '../../api/collections.ts'
 import { requireAdminUser } from '../../auth/guards.ts'
 import { crudRoutes } from '../../crud/crudRoutes.ts'
+import { newProjectDraft, ProjectEdit, projectFormInitial } from './ProjectEdit.tsx'
+import { ProjectsAdminList } from './ProjectsAdminList.tsx'
 
-async function loader() {
+async function listLoader() {
   await requireAdminUser()
-  return null
+  return { projects: await projects.all() }
 }
 
-function AdminProjectsPlaceholder() {
-  return <p>Manage projects: converted by cluster 2.</p>
+async function newLoader() {
+  await requireAdminUser()
+  return { initial: newProjectDraft(), users: await users.all() }
+}
+
+async function editLoader({ params }: LoaderFunctionArgs) {
+  await requireAdminUser()
+  const [project, allUsers] = await Promise.all([projects.getById(params.itemId ?? ''), users.all()])
+  return { initial: projectFormInitial(project), users: allUsers }
+}
+
+function ProjectsAdminListRoute() {
+  const data = useLoaderData<typeof listLoader>()
+  return <ProjectsAdminList projects={data.projects} />
+}
+
+function ProjectEditRoute() {
+  const data = useLoaderData<typeof newLoader | typeof editLoader>()
+  // Keyed by document: useCrudForm takes `initial` once (crud/useCrudForm.ts).
+  return <ProjectEdit key={data.initial.id ?? 'new'} initial={data.initial} users={data.users} />
 }
 
 export const routes: RouteObject[] = crudRoutes('/admin/projects', {
-  list: { loader, Component: AdminProjectsPlaceholder },
-  create: { loader, Component: AdminProjectsPlaceholder },
-  edit: { loader, Component: AdminProjectsPlaceholder },
+  list: { loader: listLoader, Component: ProjectsAdminListRoute },
+  create: { loader: newLoader, Component: ProjectEditRoute },
+  edit: { loader: editLoader, Component: ProjectEditRoute },
 })
