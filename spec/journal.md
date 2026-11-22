@@ -392,6 +392,41 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - Harness decision: Testing Library's async timeout is raised from 1 s to 3 s for all tests. A broken test still fails, inside Vitest's 5 s limit; an honest wait on a busy runner no longer does. This is a loosened setting, so it is recorded here rather than hidden.
 - The review of cluster 2 also found that the metrics hook never classified `pnpm verify`, so workers' "verify green" claims had no ledger row to check against. That run now has its own category.
 
+## 2026-11-21 — Cluster 1 (admin-users): reviewed, verified, merge held
+PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh reviewer session (not the worker) reviewed against the spec, not the worker's account.
+
+| Measure | Value | Source |
+|---|---|---|
+| ACs passing | 8 of 8 (AC-USR-01..07, AC-GRAV-01) | PR comment |
+| Named defect tests | D8, D9, D17, all present and failing when the fix is broken | PR comment |
+| Legacy test cases (§9) | 14: 5 ported, 8 adapted, 1 n/a (pre-assigned), 0 dead | worklog |
+| New tests | 43 unit, 3 e2e | `pnpm exec vitest run` (cluster paths), `e2e/admin-users.spec.ts` |
+| Code / test lines | 474 source lines (legacy equivalent: 434), 677 test lines | `wc -l` |
+| Hand mutations run by the reviewer | 23; the suite caught 19 | PR comment, `deviations.md` |
+| Reviewer gates | `pnpm verify` exit 0 (27 files, 224 unit tests, 21 e2e); a second unit run 224/224 | reviewer session |
+| Worker's quoted numbers | 27 files / 224 tests / 21 e2e, matching the reviewer and CI's test count | worklog, CI |
+| CI on the PR before review | 2 runs: 1 failed (a cluster 0 test timing issue, DEV-foundation-05, fixed by the harness PR), 1 green | `gh run list` |
+
+**What the mutations found**
+- Four survivors, all gaps in the tests rather than bugs in the code:
+  - The admin guards on "new user" and "edit user" (DEV-admin-users-01): removing them, even both at once, left all 224 unit tests green. This is the **same gap** the cluster 2 review found (DEV-admin-projects-01). Two workers, working in parallel from the same brief, both tested only the list route's guard, because the AC text names only the list route. The reviewer's brief this time asked for this check explicitly. Worth a change to the AC wording or the worker brief for wave B.
+  - The "password required on edit once either field is filled" rule is tested for one field only (DEV-admin-users-02). The untested half cannot cause a bad save.
+- The worker's own claims held up: its numbers matched the reviewer's and CI's exactly (compare cluster 2, where they did not), and its own three mutation checks reproduced.
+
+**A spec contradiction the worker found and did not paper over**
+- Q-admin-users-1 / DEV-admin-users-03: two rules of the approved spec combine so that an admin can't save a password-only change on an existing user. The worker built the spec as written, flagged it, and proposed a fix. The reviewer reproduced it with a throwaway test, then tried the smallest fix it could find (8 changed lines in one file inside the cluster), which passed every existing test plus the probe. The decision, and the spec amendment, belong to the owner.
+
+**Still open (for the owner)**
+- Q-admin-users-1: allow password-only changes on edit (recommended), which amends §5.6 and AC-USR-04.
+- Q-admin-users-2: the avatar after the e-mail is cleared (cosmetic; stateless implemented).
+
+**Process note**
+- Row set to `verified`. **Not merged by the reviewer:** as for cluster 2, the orchestrator merges the wave A PRs one at a time and waits on the owner's answers.
+
+**Moments (article candidates)**
+- "The same blind spot twice: two agents, one brief, the same untested guard. The finding is about the brief, not the agents."
+- "A worker that says 'the spec contradicts itself here, I built it as written, here is my recommended fix' is worth more than one that quietly picks an answer."
+
 ## 2026-11-21 — Owner decisions for wave A
 - All three wave A reviews came back with no blocking findings, but they raised six questions only the owner could answer. The orchestrator put them to the owner as one list, each with a recommendation; the owner approved all six recommendations in one reply.
 - Three became spec amendments (rev 3, §0.2): linked labels on every form (P1), a password-only edit that can be saved again (P2, a regression the spec itself had caused), and clearing a team pick that has become the Product Owner (P3, a legacy bug the port had faithfully copied).
