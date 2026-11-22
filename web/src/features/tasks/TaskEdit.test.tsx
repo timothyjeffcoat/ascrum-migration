@@ -295,6 +295,38 @@ describe('task edit (TaskEdit)', () => {
     expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({ state: 'IN_DEV' })
   })
 
+  it('AC-TSK-02 / Q-sprints-tasks-3: an unset state shows -- choose -- first, and TODO can be chosen', async () => {
+    patchStub('tasks', taskId(1), { state: 'WAITING' })
+    const requests = recordRequests()
+    const { user, router } = await renderEdit(designPath)
+    expect(optionLabels('State')).toEqual(['-- choose --', ...TASK_STATES])
+    expect(selectedLabel('State')).toBe('-- choose --')
+    expect(select('State')).toHaveValue('')
+    expect(button('Save')).toBeDisabled()
+
+    // TODO, the first state, is the one a real browser could not "choose" without the blank option.
+    await user.selectOptions(select('State'), 'TODO')
+    expect(selectedLabel('State')).toBe('TODO')
+    expect(button('Save')).toBeEnabled()
+    expect(optionLabels('State')).toEqual([...TASK_STATES])
+
+    await user.click(button('Save'))
+    await waitFor(() => expect(router.state.location.pathname).toBe(listPath))
+    expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({ state: 'TODO' })
+  })
+
+  for (const [name, path, state] of [
+    ['a stored task', designPath, 'DONE'],
+    ['the new-task form', newPath, 'TODO'],
+  ] as const) {
+    it(`AC-TSK-02 / Q-sprints-tasks-3: ${name} with a state has no -- choose -- option in State`, async () => {
+      await renderEdit(path)
+      expect(selectedLabel('State')).toBe(state)
+      expect(optionLabels('State')).toEqual([...TASK_STATES])
+      expect(optionLabels('State')).not.toContain('-- choose --')
+    })
+  }
+
   it('AC-TSK-03 / D6: removing a task DELETEs it and returns to the sprint task list', async () => {
     const requests = recordRequests()
     const { user, router } = await renderEdit(designPath)
