@@ -18,7 +18,7 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 |---|---|---|---|---|---|
 | 0 | foundation | first | merged | [#4](https://github.com/timothyjeffcoat/ascrum-migration/pull/4) | 46/46 ACs; DEV-foundation-01 fixed in c31036b; owner answered Q-foundation-1/2 and accepted DEV-foundation-02 (2026-11-21) |
 | 1 | admin-users | A | verified | [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9) | 8/8 ACs; DEV-admin-users-01..05 non-blocking; Q-admin-users-1/2 open; merge held by the orchestrator |
-| 2 | admin-projects | A | pending | | |
-| 3 | projects + productbacklog | A | pending | | |
+| 2 | admin-projects | A | verified | [#8](https://github.com/timothyjeffcoat/ascrum-migration/pull/8) | 6/6 ACs; 17 mutations, 14 killed; DEV-admin-projects-01..05 non-blocking; Q-admin-projects-1/2 open; orchestrator holds the merge |
+| 3 | projects + productbacklog | A | merged | [#7](https://github.com/timothyjeffcoat/ascrum-migration/pull/7) | 5/5 ACs; 14/14 reviewer mutations caught; DEV-projects-01 (Q-projects-1, answered (a)) and -02 (CI flake, fixed in #10) non-blocking; merged as a66bf3f |
 | 4 | sprints + tasks | B | pending | | |
 | 5 | dashboard + projectsinfo | B | pending | | |
