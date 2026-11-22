@@ -71,7 +71,9 @@ describe('§11-4 router v7 data mode', () => {
     expect(router.state.location.pathname).toBe('/admin/users')
     expect(router.state.errors).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Sign in' })).not.toBeInTheDocument()
-    expect(breadcrumbNames()).toEqual(['admin', 'users'])
+    // `initialized` flips before React commits the re-mounted shell, so wait for the render. Asserting
+    // synchronously raced on slow CI runners once /admin/users had a real screen (DEV-foundation-05).
+    await waitFor(() => expect(breadcrumbNames()).toEqual(['admin', 'users']))
     expect(screen.getByRole('button', { name: /Admin/ })).toBeInTheDocument()
   })
 
