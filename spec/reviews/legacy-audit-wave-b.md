@@ -6,6 +6,24 @@ Method: Part 1 was written from `legacy/` alone, before anything under `spec/`, 
 
 Path shorthand: `c/` = `legacy/client/src/`, `v/` = `legacy/client/vendor/`, `s/` = `legacy/server/`. Legacy Angular is 1.2.0-rc.3 (`v/angular/angular.js:2`).
 
+## Summary
+
+The blind reading produced 59 claims (L1–L59). They were classified against `spec/inventory.md`, `spec/conversion-spec.md` (rev 3: §0, §0.1, §0.2 P1–P5, §5, §6, §7.3, §12.0, §12.4, §12.5), `spec/deviations.md` and `spec/questions/*.md`:
+
+| Class | Claims |
+|---|---|
+| **agrees** | 44 |
+| **intentional difference** | 14 |
+| **discrepancy** | 1 claim (L37), plus 2 findings that came up in Part 2 |
+
+The inventory and the spec describe the wave B screens accurately. I found no case where they get legacy behaviour wrong. Cluster 4's reviewer had already recorded the one legacy quirk I expected to be missing (Enter in the sprint form, DEV-sprints-tasks-03). The three findings below are things that nobody recorded. Only DSC-B-1 changes what users of the shipped app see.
+
+| Id | Source | Finding | Severity | Shipped React affected? Reproduced? |
+|---|---|---|---|---|
+| DSC-B-1 | Part 2 (not in Part 1) | AngularJS trims leading and trailing whitespace from every text input and textarea before it reaches the model (`ngTrim`, on by default). So in legacy a Name of only spaces failed `required`, and `"  Sprint 3 "` was saved as `"Sprint 3"`. The port never trims. A sprint or task whose Name, Start, End or Description is only spaces passes `required`, Save is enabled, and the spaces are stored. The sprint list then shows a row with an empty name. Neither the inventory nor the spec mentions trimming. The same code path serves the wave A forms. | **low–medium**: user-visible, lets "blank" required fields be saved; no crash | **Yes**, reproduced on the built app (sprint and task forms) |
+| DSC-B-2 | L37 | Legacy's Revert changes broke the sprint backlog picker. After a Revert, Add and Remove changed an object the form no longer showed or saved, so items vanished from both tables and Save stayed disabled. The port does not have this bug (one form state). This is a legacy bug that was fixed without being recorded, so the A1 rule "every fix is logged as an intentional deviation" is not met. | low (documentation) | No: the port behaves correctly (verified on the built app) |
+| DSC-B-3 | Part 2 | Double-clicking Save on a **new** sprint creates two sprints. This is the same as legacy, where Save stays enabled while the POST is in flight. The port keeps the behaviour because `canSave` ignores an in-flight save, but neither the spec nor any log says so. The same applies to every "new" form. | low (parity preserved, but not recorded) | Yes (same as legacy), reproduced: 2 POSTs, 2 "Dup" rows |
+
 ## Part 1: blind reading of the legacy app
 
 ### Routes, guards and data loading
@@ -90,3 +108,112 @@ Path shorthand: `c/` = `legacy/client/src/`, `v/` = `legacy/client/vendor/`, `s/
 - **L57.** Nav highlight follows the first breadcrumb: sprint and task screens highlight "My Projects", `/projectsinfo` highlights "Current Projects", and `/dashboard` highlights nothing (`app.js:76-78`, `header.tpl.html:5,9`).
 - **L58.** A spinner appears at the right of the navbar while any HTTP request is pending (`header.tpl.html:18-21`, `c/common/services/httpRequestTracker.js:5-7`).
 - **L59.** Route-scoped notifications are cleared on the next successful route change; notifications pushed "for the next route" appear after it (`c/common/services/notifications.js:18-23`). Wave B screens push none themselves (L15-L16); only "Route change error" (L13) can appear.
+
+## Part 2: comparison
+
+Sources read for this part: `CLAUDE.md`, `spec/conversion-spec.md` (rev 3), `spec/inventory.md`, `spec/deviations.md`, `spec/questions/*.md` and `spec/reviews/legacy-audit-wave-a.md`. For each discrepancy, and for the claims marked "port checked", I also read the shipped code under `web/src/features/{sprints,tasks,dashboard,projectsinfo}`, plus `web/src/crud/` and `web/src/auth/` where needed. "Inv" means an inventory section.
+
+### Classification of every claim
+
+| Claim | Class | Basis |
+|---|---|---|
+| L1 sprint routes, `new` before `:itemId` | agrees | Inv §3 R7–R9; §4.3 `crudRoutes` |
+| L2 task routes | agrees | Inv §3 R10–R12 |
+| L3 dashboard, projectsinfo, unknown → `/projectsinfo` | agrees | Inv §3; AC-SHELL-06 |
+| L4 no guards on wave B routes | intentional | D2, D4, §5.3 (R2, R7–R12 now require authentication; R1 public, AC-PIN-01) |
+| L5 any logged-in user may write sprints/tasks | agrees | §7.3; Q-sprints-tasks-2 (owner: authentication only) |
+| L6 401 on write → modal → retry / cancel → `/projectsinfo` | agrees | D1; AC-API-07, AC-AUTH-05. Port checked: session lost, Save → modal with the "not authorized" reason (the client still believes it is logged in, as in legacy) → Cancel → `/projectsinfo` with no alert |
+| L7 list loads, server order, no existence check | agrees | Inv §3; DEV-dashboard-02 (store order pinned); port loaders query by id only |
+| L8 sprint edit loads sprint + project backlog | agrees | Inv §3 R8/R9; `sprints/routes.tsx:29-43` |
+| L9 task edit loads, no ownership check | agrees | Inv §3 chained resolves; `tasks/routes.tsx:31-70` |
+| L10 dashboard loads everything | agrees | D2 preserved; AC-DSH-01 |
+| L11 projectsinfo loads but shows only a heading | agrees | D1 preserved; AC-PIN-01; DEV-dashboard-03 |
+| L12 failed GET resolves `undefined` | intentional | D10 fixed, S1, S5; AC-API-04, AC-NOT-04 |
+| L13 `" null "` → "Route change error" | intentional | C2 (404); AC-NOT-04. Message identical; S5 empties the content area instead of keeping the previous view |
+| L14 chained task loads fail → route error | intentional | Same message (AC-NOT-04); content-area difference per S5 |
+| L15 silent save/remove errors | intentional | D14 fixed; AC-SPR-05, AC-TSK-03; §5.4 keys |
+| L16 no success notifications | agrees | Spec adds none for sprints/tasks (AC-SPR-05, AC-TSK-03; comment in `TaskEdit.tsx:4`) |
+| L17 exception handler not wired | intentional | D16, §5.9; replaced by `error.fatal` (AC-NOT-05) |
+| L18 sprints table columns, raw dates | agrees | AC-SPR-01; D12 |
+| L19 Status always `ACTIVE` | agrees | D12 preserved; AC-SPR-01 |
+| L20 four cells open edit; `Tasks` button | agrees | AC-SPR-01 |
+| L21 "No sprints defined" | agrees | AC-SPR-01 |
+| L22 `New sprint` | agrees | AC-SPR-01 |
+| L23 sprint form layout and fields | agrees | AC-SPR-02; P1 adds `htmlFor`/`id` |
+| L24 free-text dates, no checks | agrees | D5, D12 |
+| L25 capacity number, unused | agrees | AC-SPR-02 (`numberFields`); D12 |
+| L26 wrong `name` attributes | agrees | Inv §7 markup quirks; kept (`SprintEdit.tsx:76-77`) |
+| L27 Save/Revert/Remove enablement | agrees | AC-CRUD-02, AC-CRUD-07 |
+| L28 save/remove → list; no confirmation; no cascade | agrees | AC-SPR-05. The missing cascade to tasks is not stated anywhere. The stub's DELETE has none either, so it is preserved, as for projects in the wave A audit (L41 there) |
+| L29 missing `sprintBacklog` → `[]`, not dirty | agrees | §5.6 (form-only default); `sprintFormInitial` |
+| L30 picker layout | agrees | AC-SPR-03; Q-sprints-tasks-1 (labels kept unlinked) |
+| L31 an item can be in several sprints | agrees | AC-SPR-03 ("not in the sprint"); `notInSprint` |
+| L32 picker order and add/remove semantics | agrees | `sprintBacklog.ts:31-39` (append; splice first occurrence) |
+| L33 deleted backlog id: blank row, total throws | intentional | D13 fixed; AC-SPR-04 (blank removable row, counted as 0) |
+| L34 missing estimation → `NaN` | intentional | Port counts it as 0 (`sprintBacklog.ts:21`), an extension of D13. Unreachable through the UI, since estimation is required on backlog items (AC-PBL-02) |
+| L35 item links leave without warning; no `href` | agrees | AC-SPR-03; anchors kept without `href` (`SprintBacklogPicker.tsx:44`, `:86`) |
+| L36 Enter in the sprint form removes or adds an item | intentional | P4; AC-SPR-03 (all buttons `type="button"`); recorded as DEV-sprints-tasks-03 |
+| L37 Revert desynchronises the picker | **discrepancy** (DSC-B-2) | Not in the inventory, §6 or the deviations log |
+| L38 no Cancel/Back, no unsaved-changes warning | agrees | Spec adds none; `CrudButtons` has the three legacy buttons |
+| L39 tasks table, only Name clickable, empty Tools | agrees | AC-TSK-01 |
+| L40 "No tasks defined for this sprint", `New task` | agrees | AC-TSK-01 |
+| L41 no sprint name or back link on the tasks list | agrees | Inv §4.3; `TasksList.tsx` |
+| L42 task form layout and fields | agrees | AC-TSK-02; P1 |
+| L43 backlog item options = sprint backlog; empty → never saveable | agrees | AC-TSK-02. The empty case is not mentioned but behaves the same: only `-- choose --`, and `required` blocks Save |
+| L44 states, new task `TODO` | agrees | AC-DOM-04, AC-TSK-02, §5.6 |
+| L45 team members only, `Last First (email)` | agrees | AC-TSK-02, AC-DOM-03 |
+| L46 unknown-option behaviour: no unassign, stale ids kept | intentional | S13 (`-- choose --`, `-- unassigned --`); P5 (stale value starts unset); DEV-sprints-tasks-01. The State select's display while unset is the approved Q-sprints-tasks-3 change, not reported here |
+| L47 no numeric range or cross-field checks | agrees | AC-TSK-02 (required numbers only) |
+| L48 task save/remove → `/admin/users` | intentional | D6 fixed; AC-TSK-03 (save **and** remove go to the task list). Inv §4.3 and D6 mention only save; the AC covers both |
+| L49 Enter in the task form does nothing | agrees | P4 ("elsewhere Enter does nothing"); DEV-sprints-tasks-03 |
+| L50 task form `name` quirks | agrees | Kept (`TaskEdit.tsx:104-106`, comment) |
+| L51 dashboard layout | agrees | AC-DSH-01; DEV-dashboard-01 (`ng-include` wrapper `div`) |
+| L52 dashboard links go to `/projects/[object Object]/…` | intentional | D3 fixed (`ProjectsTable` reused) |
+| L53 dashboard roles empty | intentional | D3 fixed; D20 formatting |
+| L54 "My tasks" = all tasks, inert rows, "No tasks for you!" | agrees | D2 preserved; AC-DSH-01; DEV-dashboard-02, DEV-dashboard-04 |
+| L55 brand → dashboard; `/dashboard` open to anonymous | intentional | AC-SHELL-01 agrees for the brand; D4 adds the guard |
+| L56 raw-id breadcrumbs, dead `/projects/<id>` crumb, sprint crumb opens edit | agrees | D3 (decision), AC-SHELL-04; `/projects/<id>` falls to `*` (`app/router.tsx:55`) |
+| L57 nav highlight by first segment; none on `/dashboard` | agrees | AC-SHELL-03 |
+| L58 spinner | agrees | AC-SHELL-05 |
+| L59 notification rotation; no wave B pushes in legacy | agrees | AC-NOT-01, S15; the port's pushes are the D14 additions (L15) |
+
+Count: 44 agree, 14 intentional (L4, L12, L13, L14, L15, L17, L33, L34, L36, L46, L48, L52, L53, L55), 1 discrepancy (L37).
+
+### Discrepancy details
+
+**DSC-B-1: the port does not trim text input (low–medium, shipped).**
+- Legacy: in AngularJS 1.2.0-rc.3 every `input` and `textarea` with `ng-model` runs `textInputType`, which trims the value unless `ng-trim="false"` is set (`v/angular/angular.js:14668-14684`; `textarea` uses the same directive, `:1654-1655`). No legacy template sets `ng-trim`. So:
+  - a Name of only spaces becomes `''`, and `required` fails;
+  - `"  Sprint 3 "` is stored as `"Sprint 3"`;
+  - typing a trailing space does not make the form dirty.
+- Port: `useCrudForm.setField` stores the raw string. `required` treats only `undefined`, `null`, `''` and `NaN` as empty (`web/src/crud/validators.ts:13-19`). The only `trim()` under `web/src` is in the number parser (`web/src/crud/useCrudForm.ts:254`).
+- Reproduced on the built app (`vite build` + `vite preview` on 4873 + Node stub on 3701), logged in as `dev1`:
+  - New sprint with Name `"   "`, Capacity 5, Start `"  2026-01-05  "`, End `" "`: Save was enabled, and the request was `POST …/collections/sprints {"projectId":"2000…01","name":"   ","start":"  2026-01-05  ","end":" ","sprintBacklog":[],"capacity":5}`. The sprints list then showed a third row with an empty Name and End cell.
+  - New task with Name `"  "` and Description `"   \n  "`: Save was enabled, and both were stored as typed.
+- Why nobody caught it: neither the inventory nor the spec mentions `ngTrim`. AC-CRUD-06/11 cover visibility and number parsing, not whitespace. Part 1 of this audit missed it too; it surfaced while reading the port's `required`.
+- Scope beyond wave B (from the code, not reproduced): the same `setField` path serves the project, user, backlog-item and login forms. `type="email"` inputs are safe because the browser strips whitespace from their value (a trailing space in the login e-mail still enables Sign in, checked).
+- Suggested follow-up (not done here): trim text and textarea values in one place (for example in `setField` for string fields, mirroring `ngTrim`), with a named test per form. Alternatively, record it as an accepted deviation. Either way it needs an owner decision, because the fix touches cluster 0's `useCrudForm`.
+
+**DSC-B-2: legacy Revert broke the sprint picker; the fix is not recorded (documentation).**
+- Legacy: `crudEdit` runs in its own child scope (`c/common/directives/crud/edit.js:10`). `revertChanges` assigns a fresh copy to `sprint` on that child scope (`:59-63`). `addBacklogItem`, `removeBacklogItem` and `notSelected` live on the controller scope and keep using the original object, and `estimationInTotal` uses the injected `sprint` closure (`c/app/projects/sprints/sprints.js:72-90`). After a Revert:
+  - Add makes the item disappear from the right-hand table without it appearing on the left, and Save stays disabled;
+  - Remove changes nothing visible;
+  - items added before the Revert are hidden from both tables.
+- Port: one form state. Revert restores `sprintBacklog` along with everything else, and Add after a Revert works. Checked on the built app: Add "Checkout", Revert, Add "Checkout" again → the left table lists it and Save is enabled. A unit test covers remove-then-revert (`SprintEdit.test.tsx:250`).
+- Gap: the inventory (§4.3, §13), spec §6 and the deviations log do not mention this bug. Under A1, every fixed bug should be logged as an intentional deviation. One line in `spec/deviations.md` or an inventory note would close it.
+
+**DSC-B-3: double-click Save creates duplicates, in legacy and in the port (low, not recorded).**
+- Legacy: `canSave` depends only on validity and dirtiness (`edit.js:74-76`), so Save stays enabled while the POST is in flight. `$saveOrUpdate` POSTs again because the edited object never receives the new `_id` (the result is a new `Resource`; `v/mongolab/mongolab-resource.js:15-33,76-79,91-97`).
+- Port: the same. `canSave` = no errors && no pending *async validators* && dirty (§4.2), and `save()` has no in-flight guard (`web/src/crud/useCrudForm.ts:149-161`).
+- Reproduced on the built app: a double-click on Save on `/projects/<Webshop>/sprints/new` sent 2 POSTs, and the list showed 2 "Dup" sprints.
+- This is parity, so it is not a defect of the port, but it is not listed in inventory §13 or spec §6. Recording it as "preserved" (or fixing it as a D-id) keeps the parity record complete. It applies to every "new" form, including wave A.
+
+### What the inventory says that is slightly incomplete
+- Inv §4.3 and D6 say only that *saving* a task goes to `/admin/users`. Remove does too, through crudEdit's `onRemove` → `onSave` fallback (`edit.js:50`). AC-TSK-03 already sends both to the task list, so the port is unaffected.
+- D13 says `estimationInTotal` "throws". More precisely, it throws on every digest, AngularJS logs the error to the console only (the exception-handler decorator is not wired, L17), and the total cell stays blank. That is consistent with the inventory, just more specific.
+- Not recorded anywhere, but preserved and harmless: removing a sprint leaves its tasks in place (L28). They still appear on the dashboard's "My tasks".
+
+### Method notes
+- Part 1 was committed (`Legacy audit wave B, part 1: blind reading of legacy/`) before any file under `spec/`, `web/`, `MIGRATION.md`, `CLAUDE.md` or `README.md` was opened. Afterwards Part 1 was not edited; the summary section was inserted above it.
+- One Part 1 claim was rewritten before that commit: a draft L38 about `autofocus` after client-side navigation rested on browser behaviour I could not cite, so I replaced it with the Cancel/Back claim.
+- Reproductions used `pnpm build`, `node stub/server.ts` (STUB_PORT 3701) and `vite preview` (PREVIEW_PORT 4873), driven by throwaway Playwright scripts outside the repo, with a stub reset before each run. No tracked file other than this one was changed, and the servers were stopped afterwards.
