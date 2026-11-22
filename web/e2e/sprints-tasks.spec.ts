@@ -1,7 +1,9 @@
 // Cluster 4 e2e: the sprints and tasks screens (R7–R12) in a real browser, on `vite preview` + the
 // Node stub.
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { JSON_PREFIX } from '../stub/handlers.ts'
 import { PROJECT, SPRINT } from '../stub/seed.ts'
+import { XSRF_COOKIE, XSRF_HEADER } from '../stub/session.ts'
 
 const sprintsPath = `/projects/${PROJECT.webshop}/sprints`
 const sprint1TasksPath = `${sprintsPath}/${SPRINT.webshop1}/tasks`
@@ -147,8 +149,15 @@ test.describe('sprints and tasks on the Node stub', () => {
     // Seed the malformed state through the stub's own API with the page's session (the UI cannot make one).
     const tasksUrl = '/databases/ascrum/collections/tasks'
     const found = await page.request.get(tasksUrl, { params: { q: JSON.stringify({ name: 'Design catalogue page' }) } })
-    const [{ _id: oid, ...task }] = (await found.json()) as [{ _id: { $oid: string } } & Record<string, unknown>]
-    expect((await page.request.put(`${tasksUrl}/${oid.$oid}`, { data: { ...task, state: 'WAITING' } })).ok()).toBe(true)
+    const body = (await found.text()).slice(JSON_PREFIX.length) // the stub's hijack prefix (AC-STUB-01)
+    const [{ _id: oid, ...task }] = JSON.parse(body) as [{ _id: { $oid: string } } & Record<string, unknown>]
+    // A write needs the XSRF header, as the app's own requests send it (§7.2).
+    const xsrf = (await page.context().cookies()).find((cookie) => cookie.name === XSRF_COOKIE)?.value ?? ''
+    const put = await page.request.put(`${tasksUrl}/${oid.$oid}`, {
+      data: { ...task, state: 'WAITING' },
+      headers: { [XSRF_HEADER]: xsrf },
+    })
+    expect(put.status()).toBe(200)
 
     await page.goto(`${sprint1TasksPath}/${oid.$oid}`)
     const state = page.getByLabel('State')
