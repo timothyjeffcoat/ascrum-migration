@@ -316,3 +316,11 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - Before starting three workers at once, the orchestrator checked a shared resource the spec had missed: every worktree's `pnpm e2e` used the same fixed ports. Playwright never reuses servers (R2-13), so the second worker would have failed with "port in use".
 - Fix: `STUB_PORT`, `PREVIEW_PORT` and `PAGES_PORT` env vars (defaults unchanged), plus a per-cluster port plan in CLAUDE.md. Proven by two full Playwright suites running at the same time on different ports: 18/18 passed in each.
 - A wrong turn on the way: the first parallel run failed one test. Both runs shared the same `test-results/` folder, which separate worktrees don't share. Rerun with separate output folders, both passed.
+
+## 2026-11-22 — Harness: CI timing in wave A
+- With three wave A PRs in CI at once, two cluster 0 tests failed on runners while passing locally:
+  - AC-AUTH-09 in `routerDataMode.test.tsx` failed on PR #9, twice in a row.
+  - AC-AUTH-07 in `security.test.tsx` failed once on PR #7, taking 1217 ms against Testing Library's 1000 ms default.
+- The orchestrator reproduced the first one locally by pinning the suite to one CPU with `CI=true`: it failed 1 run in 3. Cause: the test asserted the breadcrumbs synchronously right after `router.state.initialized` flipped, before React had committed the re-mounted shell. With cluster 0's placeholder screen that was never visible; with the real user list it was. After changing that assertion to `waitFor`, it passed 10 of 10 single-CPU runs (DEV-foundation-05).
+- Harness decision: Testing Library's async timeout is raised from 1 s to 3 s for all tests. A broken test still fails, inside Vitest's 5 s limit; an honest wait on a busy runner no longer does. This is a loosened setting, so it is recorded here rather than hidden.
+- The review of cluster 2 also found that the metrics hook never classified `pnpm verify`, so workers' "verify green" claims had no ledger row to check against. That run now has its own category.
