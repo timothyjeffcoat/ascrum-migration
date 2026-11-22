@@ -44,7 +44,7 @@ function teamSelect(): HTMLElement {
 function teamRows(): string[] {
   // Every row but the header and the trailing "add" row.
   const rows = within(devTeamTable()).getAllByRole('row').slice(1, -1)
-  return rows.map((row) => row.cells[0]?.textContent ?? '')
+  return rows.map((row) => row.querySelector('td')?.textContent ?? '')
 }
 
 function removeMemberButton(name: string): HTMLElement {

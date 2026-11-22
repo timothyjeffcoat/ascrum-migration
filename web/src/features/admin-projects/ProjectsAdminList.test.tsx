@@ -24,7 +24,13 @@ describe('ProjectsAdminList (/admin/projects)', () => {
         .map((th) => th.textContent),
     ).toEqual(['Name', 'Description'])
     const rows = within(table).getAllByRole('row').slice(1)
-    expect(rows.map((row) => Array.from(row.cells, (cell) => cell.textContent))).toEqual([
+    expect(
+      rows.map((row) =>
+        within(row)
+          .getAllByRole('cell')
+          .map((cell) => cell.textContent),
+      ),
+    ).toEqual([
       ['Webshop', 'Online store rewrite'],
       ['Mobile App', 'Companion app for the webshop'],
       ['Legacy Cleanup', 'Retire the old intranet'],
