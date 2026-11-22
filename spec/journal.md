@@ -317,6 +317,44 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 - Fix: `STUB_PORT`, `PREVIEW_PORT` and `PAGES_PORT` env vars (defaults unchanged), plus a per-cluster port plan in CLAUDE.md. Proven by two full Playwright suites running at the same time on different ports: 18/18 passed in each.
 - A wrong turn on the way: the first parallel run failed one test. Both runs shared the same `test-results/` folder, which separate worktrees don't share. Rerun with separate output folders, both passed.
 
+## 2026-11-21 — Cluster 2 (admin-projects): reviewed, verified, merge held by the orchestrator
+
+**What was built**
+- The admin screens for projects: the list, the create/edit form, and the development-team picker (PR [#8](https://github.com/timothyjeffcoat/ascrum-migration/pull/8); worker diff 11 files, +962 / −9).
+- The worker ran in parallel with clusters 1 and 3, each on its own e2e ports (see the previous entry).
+
+**Size of the evidence**
+| Metric | Value | Source |
+|---|---|---|
+| Acceptance criteria owned (§12.2) | 6, all with tests named after the id | PR comment |
+| Unit tests added | 21 (3 files); suite total 202 in 26 files | reviewer's `pnpm verify`, CI run 44970782972 |
+| E2E tests | 2 added (`admin-projects.spec.ts`); suite total 20 | reviewer's `pnpm verify` |
+| Legacy test cases (§9) | 11: 5 ported, 6 adapted, 0 n/a, 0 dead | worklog |
+| Review: ACs passing | 6 of 6 | PR comment |
+| Hand mutations run by the reviewer | 17; the suite caught 14 | PR comment, `deviations.md` |
+| Reviewer unit reruns (flakiness) | 2 of 2 green, 202/202 | reviewer session |
+
+**What the mutations found**
+- The three survivors were all real gaps in the evidence. None was a bug in the code:
+  - Removing the admin guard from the "new project" or "edit project" route left every test green. The guard is in the code, and the list route's guard is tested. Logged as DEV-admin-projects-01 (non-blocking: the AC names only the list route). A ~10-line test is recommended.
+  - The D13 fix (a project with no team list) is applied in two places. Removing one leaves the named test green. Logged as DEV-admin-projects-02 (accepted).
+- Compare cluster 0: there, a survivor on an AC's own behaviour was blocking. Here, every AC behaviour had a test that failed when it was broken.
+
+**An honesty finding**
+- The worker's worklog and PR body report `27` test files and `215` unit tests. The branch has 26 files, and both CI and the reviewer measured `202`. The other gate lines (lint, build, e2e `20 passed`) match. Logged as DEV-admin-projects-03 (non-blocking: the gates do pass).
+- Checking it exposed a harness gap. The metrics hook records `pnpm test`, `pnpm e2e` and so on, but has no category for `pnpm verify`, the all-gates command every worker is told to run. So `verify` runs from every cluster are missing from `spec/metrics.jsonl`, and the claim can't be audited from the log. Reported to the orchestrator.
+
+**Still open (for the owner)**
+- Q-admin-projects-1: a user picked in the team's "add" row and then chosen as Product Owner stays selected, and can still be added. This is legacy behaviour, kept for parity.
+- Q-admin-projects-2: one extra unstyled `div` around the Save/Revert/Remove buttons (DEV-admin-projects-05).
+
+**Process note**
+- Spec §8.2 says the reviewer merges once CI is green. For wave A, the **orchestrator holds the merge**: it merges the three wave-A PRs one at a time, resolves the shared bookkeeping files (`MIGRATION.md`, `deviations.md`, this journal), and waits on the owner's answers.
+
+**Moments (article candidates)**
+- "Zero blocking findings is not zero findings: 3 of 17 deliberate breakages went unnoticed by the tests, and each one is now written down."
+- "The worker's numbers were close but wrong (215 vs 202). The reviewer trusted CI's log over the worklog, and found that the metrics log couldn't arbitrate because it never recorded the command."
+
 ## 2026-11-21 — Cluster 3 (projects + productbacklog): reviewed, verified, merge held
 - Scope: the `/projects` page, the reusable `ProjectsTable` (the dashboard, cluster 5, will import it), and the product backlog list and edit screens. PR [#7](https://github.com/timothyjeffcoat/ascrum-migration/pull/7).
 
@@ -345,7 +383,8 @@ Conventions: dated entries. Numbers come from measurement or are labelled as est
 **Moments (article candidates)**
 - "Fourteen deliberate breakages, fourteen red tests. The reviewer's job is not to read the tests; it is to try to get past them."
 - "The flaky test was not in the code under review. Recording it anyway is how you find out it is a pattern, not a fluke."
-## 2026-11-22 — Harness: CI timing in wave A
+
+## 2026-11-21 — Harness: CI timing in wave A
 - With three wave A PRs in CI at once, two cluster 0 tests failed on runners while passing locally:
   - AC-AUTH-09 in `routerDataMode.test.tsx` failed on PR #9, twice in a row.
   - AC-AUTH-07 in `security.test.tsx` failed once on PR #7, taking 1217 ms against Testing Library's 1000 ms default.
