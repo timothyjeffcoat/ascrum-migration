@@ -8,7 +8,7 @@ run by the orchestrator under the owner's mandate. Owned paths for this task: `w
 Findings fixed: DSC-1 and DSC-2 from the independent legacy audit (`spec/reviews/legacy-audit-wave-a.md`,
 PR #15). Rule implemented: P4 (spec §0.2, merging separately).
 
-## 2026-11-22: session 1
+## 2026-11-21: session 1
 
 ### What was done
 - **Reproduction first.** Wrote `web/e2e/forms-enter.spec.ts` and ran it against the unfixed build
@@ -97,7 +97,7 @@ $ tsc --noEmit -p tsconfig.json
 ## 2026-11-21: session 2 (Q-fix-forms-1 answered)
 
 Owned paths for this session: `web/src/auth/LoginToolbar.tsx` (+ test), this worklog and the questions file.
-(Session 1 above is dated 2026-11-22; that date was a slip, it ran before this session.)
+(Session 1 was first dated 2026-11-22 (UTC had rolled over); the reviewer corrected it to the local date, 2026-11-21.)
 
 ### What was done
 - The orchestrator answered Q-fix-forms-1 **yes** (under the owner's P4 rule). Both button-only
