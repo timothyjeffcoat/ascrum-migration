@@ -12,7 +12,7 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 | Wave A (clusters 1, 2, 3) | cluster 0 `merged` **and** spec §11-4 proven by cluster 0's tests | **open** (2026-11-21): cluster 0 merged as `b04ff4d`; §11-4 proven by `web/src/app/routerDataMode.test.tsx` (reviewer-verified) |
 | Wave B (clusters 4, 5) | clusters 1, 2, 3 all `merged` | **open** (2026-11-21): cluster 3 merged as `a66bf3f`, cluster 2 as `bdc4150`, cluster 1 as `65e42c2` |
 | Phase 3 complete | every cluster `merged` | **done** (2026-11-21): cluster 5 merged as `eb33b23`, cluster 4 as `b9d1e3c`. Next: Phase 4 (case study README, `deviations.md` wrap-up) |
-| Phase 4 complete | case-study README and `deviations.md` summary merged | **done** (2026-11-22): README rewritten as the case study, Summary added to `spec/deviations.md` (35 deviations, 1 still open: DEV-admin-users-02, non-blocking), journal entry; PR "Phase 4: case-study README and deviations summary" |
+| Phase 4 complete | case-study README and `deviations.md` summary merged | **done** (2026-11-22): README rewritten as the case study, Summary added to `spec/deviations.md` (35 deviations, 1 still open: DEV-admin-users-02, non-blocking), journal entry; [#25](https://github.com/timothyjeffcoat/ascrum-migration/pull/25) |
 
 ## Clusters
 
