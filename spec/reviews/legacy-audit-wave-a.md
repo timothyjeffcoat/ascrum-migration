@@ -11,6 +11,29 @@ discrepancy, the shipped React code.
 Paths below are relative to `legacy/client/src/` unless they start with `legacy/` or `vendor/`
 (`vendor/` = `legacy/client/vendor/`) or `server/` (= `legacy/server/`).
 
+## Summary
+
+53 claims (L1–L53) from the blind reading, classified against `spec/inventory.md`,
+`spec/conversion-spec.md` (rev 3: §0, §0.1, §0.2, §5, §6, §12.0–12.3) and `spec/deviations.md`:
+
+| Class | Claims |
+|---|---|
+| **agrees** | 36 |
+| **intentional difference** | 14 |
+| **discrepancy** | 3 claims, 4 findings |
+
+The inventory is accurate. I found no case where it misdescribes what the legacy code does on these
+screens. All four findings are things it and the spec leave out (or, for DSC-3, explain wrongly).
+Two of them (DSC-1, DSC-2) change what users of the shipped app see, and both were reproduced against
+the built app (`vite build` + `vite preview` + Node stub).
+
+| Id | Claim | Discrepancy | Severity | Shipped React affected? |
+|---|---|---|---|---|
+| DSC-1 | L39 | Pressing Enter in the project form's Name field (`/admin/projects/:id`, `/new`) makes the browser submit the form natively: a **full page reload** to `…?name=<typed text>`, and every unsaved edit is lost. Legacy never reloaded; it clicked the first team "Remove" button instead (a legacy bug). Neither the inventory nor the spec covers native submission. Cluster 3 prevents it on the backlog form; cluster 2 does not. | **medium**: user-visible, loses unsaved work; nothing is written to the server | **Yes**, reproduced |
+| DSC-2 | L18 | Pressing Enter in the login modal does **not** sign in. Legacy did (the "Sign in" button had no `type` and was the form's default button). The port makes every button `type="button"` and adds no submit handler, so with two text fields the browser does nothing. | **low–medium**: keyboard users must Tab to or click "Sign in"; no data effect | **Yes**, reproduced |
+| DSC-3 | L18 | S14 (and the comment in `web/src/auth/LoginModal.tsx`) says legacy printed `[object Object]` in `login.error.serverError`. AngularJS 1.2.0-rc.3's `$interpolate` runs `toJson` on non-strings, so legacy printed a **JSON dump of the `$http` response**. The decision (`HTTP <status>`) is still sound, but the record of legacy behaviour is wrong. | low (documentation) | No (the shipped text follows S14 as intended) |
+| DSC-4 | L53 | Legacy login requires **exactly one** user with the email (`server/lib/mongo-strategy.js:51-58`), so duplicate emails lock both users out. The stub returns the first user matching email+password (`web/stub/handlers.ts:111-112`); spec §7.3 only says "match". | low: stub-only, needs duplicate emails, which uniqueEmail now prevents in normal use | Stub only; arguably better than legacy |
+
 ---
 
 ## Part 1 — blind reading
@@ -130,7 +153,7 @@ Each claim has an id (L-n) so Part 2 can classify it.
     is the whole `$http` response object, so the user sees a JSON dump of it
     (`LoginFormController.js:32-35`, `app/app.js:33`, `vendor/angular/angular.js:7313-7317`).
   - Login also fails if two users share the email (lookup requires exactly one match,
-    `server/lib/mongo-strategy.js:51-58`). See L44.
+    `server/lib/mongo-strategy.js:51-58`). See L53.
   - Success: modal closes; queued requests/guards are retried; **no navigation** otherwise (user stays on
     the current page) (`security.js:30-34`, `:63-68`). The error banner is cleared at the start of each attempt.
   - Cancel: rejects all queued items and navigates to `/` (→ `/projectsinfo`) (`security.js:35-37`, `:73-76`).
@@ -277,3 +300,146 @@ Each claim has an id (L-n) so Part 2 can classify it.
 - **L52. Admin pages expose passwords to the browser** (L6): the users list, the project form's users
   list and the uniqueness check all receive full user documents including `password`.
 - **L53. Duplicate emails lock both users out** (client-only uniqueness L27 + exactly-one lookup L18).
+
+---
+
+## Part 2 — comparison
+
+Sources read for this part: `spec/inventory.md`, `spec/conversion-spec.md` (§0, §0.1, §0.2, §5, §6,
+§12.0–12.3, plus §7.3 for DSC-4), `spec/deviations.md`, and the React code under `web/src/` and
+`web/stub/` for each discrepancy. "Inv" = inventory section.
+
+### Classification of every claim
+
+| Claim | Class | Basis |
+|---|---|---|
+| L1 versions | agrees | Inv §1 (1.2.0-rc.3, custom ui-bootstrap) |
+| L2 data access | agrees | Inv §6.1, §9.3; AC-API-03, AC-API-06 |
+| L3 HTTP errors resolve `undefined` | intentional | D10 fixed, S1; AC-API-04 |
+| L4 `" null "` not-found | intentional | C2 (404 instead); AC-API-04 |
+| L5 server access rules, 401/403, JSON prefix | agrees | Inv §9.1, §9.3; D15 preserved; AC-API-01/02 |
+| L6 passwords readable via open GET | intentional | D7 fixed in the stub, A3 |
+| L7 401 → modal → retry | agrees | Inv §6.2; D1; AC-API-07, AC-AUTH-02/05 |
+| L8 guards run in parallel with data GETs | intentional | Spec §4 "await guards at the top of loaders"; port awaits the guard first (DEV-admin-users-01 tests assert no data request) |
+| L9 crudEdit Save/Revert/Remove, no confirmation | agrees | Inv §5; AC-CRUD-02/05/07. Spec silent on confirmation; port has none either (checked `UsersList.tsx`, `CrudButtons`) |
+| L10 errors visible immediately | agrees | AC-CRUD-06 ("no touched concept") |
+| L11 skeleton, start-up `/current-user` | agrees | Inv §4.1; AC-AUTH-01, AC-NOT-03 |
+| L12 `/` and unknown routes → `/projectsinfo` | agrees | Inv §3; AC-SHELL-06; DEV-foundation-03 (index route for `/`) |
+| L13 `/projectsinfo` heading only | agrees | D1 preserved |
+| L14 header/nav, dropdown, active item, spinner | agrees | Inv §4.1; AC-SHELL-01/02/03/05. Port's dropdown also ignores outside clicks (`Header.tsx:26-70`) |
+| L15 login toolbar | agrees | AC-AUTH-08; port keeps the `href="#"` name link but prevents navigation (`LoginToolbar.tsx:6-8`) |
+| L16 breadcrumbs (raw segments, leading divider, links to non-routes) | agrees | D3 (decision), AC-SHELL-04; `Breadcrumbs.tsx` keeps the leading divider. Known difference after a *failed* navigation: DEV-foundation-02 |
+| L17 notifications | agrees | Inv §6.2; AC-NOT-01..04; S5 (loader failure), S15 (sticky dropped); exception handler dead (Inv §2) |
+| L18 login modal | **discrepancy** (DSC-2, DSC-3) | Everything else agrees: reasons (AC-AUTH-03), bad credentials (D19, AC-AUTH-04), success/cancel (AC-AUTH-05), Esc/backdrop (DEV-foundation-03), double-open (S7), retry loop (AC-AUTH-06) |
+| L19 logout | agrees | D19 preserved; AC-AUTH-07; §5.9 (no `redirectTo` caller, confirmed: `toolbar.js:14` + `toolbar.tpl.html:8`) |
+| L20 admin-users guard | agrees | §5.3; AC-USR-01; DEV-admin-users-01 |
+| L21 users list | agrees | Inv §4.4; AC-USR-01 (no empty-state row in either) |
+| L22 row click / New User | agrees | AC-USR-02 |
+| L23 remove from list | agrees | AC-USR-03 |
+| L24 user form layout | agrees | Inv §4.4; AC-USR-04; P1 labels (DEV-foundation-04 pattern) |
+| L25 validation messages verbatim (mismatch shown twice) | agrees | AC-USR-04; port renders "Passwords do not match." under both fields (`UserEdit.tsx:154`, `:166`) |
+| L26 password pre-fill, revert leaves repeat | intentional | D8 fixed, A3, P2; AC-CRUD-03 (revert resets `extra`) |
+| L27 email uniqueness | intentional | D9 fixed, S2; AC-USR-05; DEV-admin-users-05 (invalid input still queried) |
+| L28 gravatar | intentional | D17/S3 (https); DEV-admin-users-04 (stateless on empty email) |
+| L29 admin checkbox dirtiness | intentional | §5.6 draft starts `admin:false`, so tick-untick is not dirty |
+| L30 user save | agrees | AC-USR-07 |
+| L31 user remove from edit page | intentional | S12 (own remove-error text); success path agrees with AC-USR-07 |
+| L32 non-admin writes → 401 → modal | agrees | D15 preserved |
+| L33 admin-projects guard + users load | agrees | §5.3; AC-APR-01; DEV-admin-projects-01 |
+| L34 admin projects list | agrees | Inv §4.4; AC-APR-01 |
+| L35 project form layout | agrees | Inv §4.4; AC-APR-02/03/04; S13 adds `-- choose --` to the team select; DEV-admin-projects-04/05 |
+| L36 user labels | agrees | AC-DOM-03 |
+| L37 candidate rules | agrees | Inv §4.4; AC-DOM-05, AC-APR-05; P3 (stale pick cleared) |
+| L38 team add/remove, missing user → empty cell | agrees | AC-APR-04; D13; `TeamMembers.tsx:178-182` |
+| L39 Enter in Name triggers first team button | **discrepancy** (DSC-1) | Not in the inventory or spec |
+| L40 project save | agrees | AC-APR-06 |
+| L41 project remove says "saved"; no cascade | intentional | D21/S4. The missing cascade is not mentioned anywhere; the stub's DELETE has none either (`stub/handlers.ts:182-185`), so it is preserved |
+| L42 project revert | agrees | AC-CRUD-03 |
+| L43 `/projects` guard, all projects | agrees | Inv §3 R3; AC-PRJ-01; `ProjectsPage.tsx` keeps "all projects" |
+| L44 projects table, href-less anchors | agrees | Inv §4.3; AC-PRJ-01; worklog `projects.md` (anchors kept without href) |
+| L45 roles as JSON | intentional | D20 fixed |
+| L46 backlog unguarded | intentional | D2, §5.3 (R4–R6 now require authentication) |
+| L47 backlog list | agrees | Inv §4.3; AC-PBL-01. Unknown project → empty list in both (`productbacklog/routes.tsx:22-26`) |
+| L48 backlog form, no messages | agrees | Inv §4.3; AC-PBL-02 |
+| L49 backlog save/remove/error | intentional | D14 fixed, S12; no success message in either (worklog `projects.md`) |
+| L50 item from another project | agrees | Not in the spec; the port also loads by id only (`productbacklog/routes.tsx:33-36`) |
+| L51 deleted user leaves dangling ids | agrees | D13 for the team table; selects behave the same (value kept, `-- choose --` shown) |
+| L52 admin pages receive passwords | intentional | D7, A3 |
+| L53 duplicate emails lock users out | **discrepancy** (DSC-4) | Spec §7.3 says only "match" |
+
+### Discrepancy details
+
+**DSC-1 — Enter in the project form's Name field reloads the page (medium, shipped).**
+- Legacy: AngularJS's `form` directive cancels native submission for a form without `action`. The team
+  "Remove"/"Add" buttons have no `type`, so they are submit buttons, and Enter in the Name input clicked
+  the first of them (`projects-edit.tpl.html:35`, `:43`). With team members, that removed the first
+  member from the form (a legacy bug).
+- Port: `ProjectEdit.tsx:56` renders `<form name="form">` with no `onSubmit` and no `noValidate`, and every
+  button is `type="button"`. The Name input is the form's only field that blocks implicit submission
+  (the rest are a textarea and selects), so under the HTML implicit-submission rule the browser submits
+  the form natively.
+- Reproduced on the built app (Node stub, logged in as admin): open `/admin/projects/<id>`, type
+  "Renamed but unsaved" in Name, press Enter. One document request to
+  `/admin/projects/200000000000000000000001?name=Renamed+but+unsaved`; after the reload Name shows the
+  saved value "Webshop" again.
+- When a required select is still empty (e.g. a new project with no PO/SM), native constraint validation
+  blocks the submission instead (seen in a minimal DOM reproduction, not in the app).
+- No server data changes, but unsaved edits are silently lost, and the URL gains a query string.
+- Cluster 3 met the same issue on the backlog form and prevents it (`BacklogItemEdit.tsx:176`; worklog
+  `spec/worklogs/projects.md`, "The submit is prevented on the form"). The user form is safe only
+  because it has more than one text field. No AC or convention requires preventing native submission,
+  so a review against the spec could not catch this.
+- Suggested follow-up (not done here): add `onSubmit={(e) => e.preventDefault()}` to the project form,
+  plus a named test, and make "forms prevent native submission" a spec convention.
+
+**DSC-2 — Enter does not sign in (low–medium, shipped).**
+- Legacy: `form.tpl.html:19` "Sign in" has no `type`, so it is the default button. Enter in E-mail or
+  Password clicked it (when enabled) and called `login()`.
+- Port: `LoginModal.tsx:62` has no `onSubmit`, and all three buttons are `type="button"` (`:92-100`). With two
+  fields that block implicit submission and no submit button, the browser does nothing.
+- Reproduced on the built app: filled both fields, pressed Enter in Password, and the modal stayed open.
+- Not data-changing, but signing in is the most-used keyboard flow in the app. Neither AC-AUTH-04/05
+  nor the inventory (§4.5) mentions Enter. The project convention "every `<button>` inside a `<form>` is
+  `type="button"`" removed it as a side effect.
+
+**DSC-3 — S14's description of legacy is wrong (documentation).**
+- `LoginFormController.js:34` passes the rejected `$http` response object as `exception`.
+  `vendor/angular/angular.js:7313-7317` (1.2.0-rc.3 `$interpolate`) runs `toJson` on any non-string part,
+  so legacy showed `There was a problem with authenticating: {"data":…,"status":500,"config":{…}}.`, not
+  `[object Object]`.
+- The same claim appears in the comment at `web/src/auth/LoginModal.tsx:47`.
+- The decision stands (a JSON dump is worse). Only the case-study record needs correcting.
+
+**DSC-4 — "exactly one user per email" is not modelled (low, stub only).**
+- `server/lib/mongo-strategy.js:51-58` treats more than one match as "no user", so login fails for every
+  holder of a duplicated email.
+- `web/stub/handlers.ts:111-112` uses `find` on email+password, so the first-seeded or first-created
+  duplicate logs in.
+- Duplicates can only arise through a race (uniqueEmail is client-side only, in both legacy and port) or
+  a direct API call. Arguably the port is better. The difference should be noted in §7.3 rather than
+  left implicit.
+
+### What the inventory says that I could not confirm (or that is slightly off)
+- **Gravatar parameter order** (Inv §5: `?s=&d=&f=`). Legacy builds the query from an object filled in
+  watch-registration order `s`, `f`, `d` (`gravatar.js:23-34`), so with `forceDefault` set it would be
+  `?s=…&f=y&d=…`. No legacy caller sets `forceDefault`, so this cannot be observed, and AC-GRAV-01 fixes no order.
+- **DELETE returns the deleted document; GET of a missing id returns `" null "`** (Inv §9.3). These
+  are MongoLab behaviours. The legacy server only proxies (`server/lib/mongo-proxy.js`), so they can be
+  inferred from the client's handling (`mongolab-resource.js:24`; L31 uses the DELETE body's id) but not
+  confirmed from legacy code. Irrelevant to the port: C2 uses 404, and the remove messages use the
+  form's own id.
+- **S5's "Legacy kept the previous view"** holds for rejections (not-found, cancelled guard). For plain
+  HTTP errors, legacy rendered the *new* view with `undefined` data (L3), which the inventory records
+  separately as D10. That is not a discrepancy, but S5 on its own overstates it.
+- Confirmed rather than doubted, for the record: 133 legacy `it` blocks (grep of `legacy/client/test/unit`),
+  Bootstrap 2.1.1 (`vendor/bootstrap/responsive.less:2`), XSRF applies to `/login` (middleware order in
+  `server/server.js:31` before `:63`), `isDevTeamMember` throws on missing `teamMembers` (`projects.js:24`),
+  and dead `directives.modal` / `services.exceptionHandler` (not in `app.js:1-13`).
+
+### Method notes
+- Part 1 was committed (`Legacy audit wave A: part 1, blind reading of legacy/`) before any file under
+  `spec/` or `web/` was opened. After that commit only two edits touched Part 1: a cross-reference fix
+  (`See L44` → `See L53`, a numbering slip) and this file's summary section.
+- The reproductions used `pnpm build`, `vite preview` and `node stub/server.ts` on non-default ports,
+  driven by a throwaway Playwright script outside the repo. No tracked file was changed, and the servers
+  were stopped afterwards.
