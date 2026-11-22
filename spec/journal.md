@@ -469,3 +469,16 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "Every gate was green and two bugs were live. Gates check what the spec says; only someone reading the original without the spec in hand can notice what the spec forgot."
+
+## 2026-11-21: Cluster 4 (sprints + tasks) reviewed, verified, waiting to merge
+- **What was reviewed.** PR #19 covers the last real forms in the app: sprints with a two-table backlog picker, tasks, and `full-path.spec.ts`, the one end-to-end walk through the whole product (admin logs in, creates a project with a team, a backlog item, a sprint holding the item and a task, then logs out). That's 17 files and +2,040 lines (`git diff --stat`), all inside the cluster's owned paths. There are no legacy tests to port: the original suite never tested these screens (0 of 133 cases, spec §9). Every test here is new: 73 unit tests in the cluster, plus 5 browser tests.
+- **How.** A fresh reviewer checked each of the 9 acceptance criteria against the code and a named test, then tried to break the code. It ran 34 of its own mutations on the unit tests (not the worker's list of 37). Examples: the picker offers another project's items, a deleted item counts toward the estimate, a task save goes to the wrong list, a guard runs after a fetch, the start and end fields are swapped. All 34 turned a test red. It ran 5 more against the end-to-end walk; 4 were caught. The survivor (the task's assignee silently not saved) is caught by a unit test instead.
+- **Gates.** The reviewer's own `pnpm verify` exited 0: 362/362 unit tests in 39 files, both builds, 30/30 Playwright. CI green on both PR commits (`gh run list`). The metrics hook logged 9 gate runs by the worker before it opened the PR, one of them a failed lint (`spec/metrics.jsonl`).
+- **Findings (`spec/deviations.md`).** None blocking.
+  - DEV-sprints-tasks-01: a task can point at a backlog item that was taken out of the sprint, or at a developer who has left the team. The dropdown then shows "-- choose --" or "-- unassigned --" while the old value is quietly kept and saved. The old app also kept the value, but showed a blank. The worker had written this edge down. The reviewer reproduced it, found it takes two clicks from the demo data, and recommends an owner decision like P3 (the team-pick rule).
+  - DEV-sprints-tasks-02: the end-to-end walk doesn't check that the assignee was saved.
+  - DEV-sprints-tasks-03: reading the old templates turned up one more Enter-key bug that the inventory missed. Pressing Enter in a sprint field silently removed the first item from the sprint. The P4 rule, written after the wave A audit, already prevents it.
+- **Owner questions.** Q-sprints-tasks-1: leave the picker's two table captions as plain labels. Q-sprints-tasks-2: any signed-in user may open any project's sprints, as the spec and legacy allow. The reviewer recommends both as implemented. The PR waits for the orchestrator, which merges wave B one PR at a time.
+
+**Moment (article candidate)**
+- "The worker listed the edge case as 'unchanged legacy behaviour' and moved on. The reviewer opened it and found that the new blank option made the screen say 'unassigned' about a task that wasn't. The data matched the old app; what the screen said didn't. Same pattern as the team-pick fix one wave earlier."
