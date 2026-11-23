@@ -585,6 +585,11 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 **Moment (article candidate)**
 - "The old app could not run any more, so we rebuilt one form of it from its own parts and pressed the same keys in both. Same CSS, same field, different focus rule: the bug report turned out to be a parity question, and now it is written down."
 
+## 2026-11-23: No required-field messages, kept as legacy (DEV-owner-02)
+- **What happened.** The owner noticed that the task form says nothing when a required field is blank, and that the disabled Save button looks almost the same as an enabled one.
+- **What the code shows.** The old app behaved the same way: its task form has no validation messages, and its Save is disabled while the form is invalid. The port copies both, with the same Bootstrap button styles. Only the user form shows "This field is required.", in both apps.
+- **Decision.** The owner kept the old behaviour, so no messages are added. It is logged as an accepted difference from what a modern form would do, so the record says it was a choice, not an oversight.
+
 ## 2026-11-23: The metrics hook let a username through
 - **What happened.** While preparing PR #27, the orchestrator's own pre-commit scan for private details found the local login name in a new `spec/metrics.jsonl` row. The hook replaces home paths with `~` and `/home/<user>`, but a bare username (here, inside a grep pattern that searched for it) passed straight through. One row already on `migration` (row 317, from a wave B review command) has the same problem.
 - **Fix.** `.claude/hooks/metrics.sh` now also replaces the login name (`id -un`) and the git e-mail with `<user>` and `<email>` in every string field, as a literal replace, skipping names under 3 characters. Tested on a throwaway repo with a fake hook payload: no leaks in the written row.

@@ -8,7 +8,7 @@ Format (spec §8.4). Ids are cluster-scoped so concurrent reviewers never clash.
 
 ## Summary
 
-Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #24. The rows are unchanged. Updated 2026-11-23 for one later row, DEV-owner-01 (36 rows).
+Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #24. The rows are unchanged. Updated 2026-11-23 for two later rows, DEV-owner-01 and -02 (37 rows).
 
 **By "Caught by"**
 
@@ -19,16 +19,16 @@ Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #
 | worker, by raising a question | 8 | foundation-04, projects-01, admin-projects-05, -06, admin-users-03, -04, dashboard-03, sprints-tasks-04 |
 | independent legacy audit | 7 | audit-01..07 |
 | CI | 3 | foundation-05, -06, projects-02 |
-| owner, by using the app | 1 | owner-01 |
+| owner, by using the app | 2 | owner-01, -02 |
 
-**By severity:** 1 blocking (DEV-foundation-01, a test that could not fail; fixed before merge), 35 non-blocking.
+**By severity:** 1 blocking (DEV-foundation-01, a test that could not fail; fixed before merge), 36 non-blocking.
 
 **By resolution.** Fixed means a code, test or document change closed it. Accepted means it was kept as built, by an owner answer or the reviewer's judgment. Logged means it was recorded for the parity record and needed no decision.
 
 | Resolution | Count | Ids |
 |---|---|---|
 | fixed | 20 | foundation-01, -05, -06, projects-02, admin-projects-01, -06, admin-users-01, -03, audit-01, -02, -03, -04, -05, -08, dashboard-01, -02, sprints-tasks-01, -02, -04, admin-users-02 |
-| accepted | 13 | foundation-02, -03, -04, projects-01, admin-projects-02, -04, -05, admin-users-04, -05, audit-07, dashboard-03, -04, owner-01 |
+| accepted | 14 | foundation-02, -03, -04, projects-01, admin-projects-02, -04, -05, admin-users-04, -05, audit-07, dashboard-03, -04, owner-01, -02 |
 | logged | 3 | admin-projects-03, audit-06, sprints-tasks-03 |
 
 **By origin**
@@ -40,7 +40,7 @@ Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #
 | Wave B: cluster 4 sprints-tasks, 5 dashboard | 7 | sprints-tasks-01..03, dashboard-01..04 |
 | Wave A legacy audit (PR #15) | 4 | audit-01..04 |
 | After Phase 3: Q-sprints-tasks-3 (PR #22), wave B legacy audit (PR #23), trim fix review (PR #24) | 5 | sprints-tasks-04, audit-05..07, audit-08 |
-| After Phase 4: the owner's red border (task form) | 1 | owner-01 |
+| After Phase 4: the owner's notes on the task form (red border, no required messages) | 2 | owner-01, -02 |
 
 **Still open:** none. The last open row, DEV-admin-users-02, was closed in the Phase 4 PR (#25) by the one-assertion test it recommended.
 
@@ -82,3 +82,4 @@ Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #
 | DEV-sprints-tasks-03 | §0.2 P4 (legacy reading) | Not in the inventory: in legacy `sprints-edit.tpl.html` the picker buttons have no `type`, so they are submit buttons, and Enter in any of the four fields triggered implicit submission through the first of them. That removed the sprint's first backlog item, or added the first product backlog item when the sprint was empty (the same class of bug as audit DSC-1 on the project form). The port has every button `type="button"` plus `preventDefault`, so Enter does nothing, as P4 prescribes ("elsewhere Enter does nothing"). The task form's legacy buttons were all `type="button"`, so nothing happened there. | reviewer (legacy reading) | non-blocking (informational) | None needed; covered by P4 and the cluster's P4 unit and e2e tests. Recorded for the parity record. | [#19](https://github.com/timothyjeffcoat/ascrum-migration/pull/19) |
 | DEV-sprints-tasks-04 | AC-TSK-02 / P5 (Q-sprints-tasks-3) | Closes the display gap left open by DEV-sprints-tasks-01: with a malformed stored `state` (outside `TASK_STATES`) the form held no state but the State select, having no blank option, showed `TODO`, and picking that `TODO` fired no `change` event in a browser, so it could not be chosen. The owner chose (b): a conditional `-- choose --` first option (empty value) rendered only while `state` is unset. Reviewer e2e mutation "delete the option" reproduces the original gap in Chromium: `Expected: ""`, `Received: "TODO"`. In this case jsdom also sees it, because the unit test asserts the selected option and the option list, not only a `change` event. | worker (question), owner decision | non-blocking (resolved) | Implemented in 56ac015 (one conditional `<option>`), tests in 56ac015 and the e2e in 2e772a5/3866cde. Review (2026-11-22) mutations, each red: delete the option (unit 1 red, e2e red), always render it (unit 4 red, e2e red), inverted condition (4 red), shown only for a set state (2 red), value `none` (1 red), label `-- select --` (unit 1 red, e2e red), option last instead of first (1 red). The e2e seeds the malformed state through the stub's wire API with the page's own session (hijack prefix, XSRF header), and the file's `beforeEach` `POST /__stub/reset` keeps it from leaking. `pnpm verify` exit 0. | [#22](https://github.com/timothyjeffcoat/ascrum-migration/pull/22) |
 | DEV-owner-01 | B4 (parity record) | The owner saw a red border on the task form's Name field. Cause: Bootstrap 2's `input:focus:required:invalid` style, identical in legacy and the port (`forms.less` is byte-identical), applies to the empty, focused Name. The two apps differ in *when* Name is focused. Legacy used the native `autofocus` attribute, which the browser honours once per page load: the first form after a load got the focus (red), but after the login dialog's autofocused E-mail, or on any later form opened by in-app navigation, Name was not focused (grey). The port's React `autoFocus` calls `focus()` on every mount, so every new form opens with a focused, red Name, including straight after sign-in. Measured side by side in Chromium (2026-11-23): the port on `pnpm dev`, legacy as a throwaway page built from its own AngularJS 1.2.0-rc.3, the verbatim `tasks-edit.tpl.html` and its stylesheet compiled from the vendored LESS (the backend cannot run: MongoLab is gone). A filled Name was never red in either app. The same `required` + `autofocus` pattern is on the project, backlog item and sprint forms and the login E-mail (`autoFocus` in 5 port components); only the task form was measured. The wave B audit had drafted this claim and dropped it for lack of a citable browser rule (`spec/reviews/legacy-audit-wave-b.md:218`). | owner (noticed), orchestrator (side-by-side measurement) | non-blocking | Accepted by the owner (2026-11-23): focusing the first field on every form is kept; the red is Bootstrap's standard hint on an empty required field. Matching legacy would mean copying a once-per-page browser quirk; hiding the red would change the legacy CSS (B4). No code change. | this PR |
+| DEV-owner-02 | B4 (parity record) | The owner noticed that the task form gives no feedback when a required field is blank: no message, and the disabled Save (Bootstrap 2's `.btn[disabled]`, opacity .65) looks barely different from an enabled one. This is legacy behaviour, kept: legacy `tasks-edit.tpl.html` has no validation messages, and its `crud-buttons` Save is `ng-disabled="!canSave()"`, as the port's `CrudButtons` is `disabled={!form.canSave}`. The button styles are the same vendored Bootstrap source (`web/src/styles/bootstrap2/` differs from `legacy/client/vendor/bootstrap/` only in `mixins.less` and `navbar.less`, patched for the LESS compiler). In both apps only the user form shows "This field is required."; the project, backlog item and sprint forms behave like the task form. Not recorded before. | owner (noticed) | non-blocking | Accepted by the owner (2026-11-23): no required-field messages are added; the forms stay as legacy. No code change. | this PR |
