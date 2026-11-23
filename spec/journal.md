@@ -622,3 +622,12 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "Two agents had chosen 18 ways to break the sign-in fix, and the tests caught them all. The owner chose one more without opening the code: 'what if Cancel signed you in?' All 440 tests stayed green. The agents had tested the code that existed; a person asked about the behaviour they expected."
+
+## 2026-11-23: The second breakage was already there (DEV-owner-04, spec P7)
+- **The breakage.** The owner's second pick: "if pressing Enter twice signed in twice, a test should catch it."
+- **What happened.** Before writing a mutation, the orchestrator checked what the app already did. Neither app guarded a sign-in in progress. In Chromium, with the sign-in reply held for 500 ms, a second Enter sent a second `POST /login`. With the stub's instant reply it sent one, which is why 404 unit tests never saw it. The user still ended up signed in once, with no error. The old app behaves the same (by reading its code, not run).
+- **Decision.** The owner chose to fix it, for sign-in only. Spec rule P7: while a sign-in is pending, further submits are ignored. Double-clicking Save in a "new" form still creates two records, as accepted in DEV-audit-07.
+- **Checks.** Two tests: two submits in the same tick send one request, and Sign in works again after a wrong password and after a server error. Removing the guard fails the first test; removing either reset fails the second. Re-measured in Chromium: 1 request in all three timings. `pnpm verify` exit 0.
+
+**Moment (article candidate)**
+- "The owner's second breakage didn't need breaking: the app already did it. Unit tests run against an instant stub, so a double Enter never reached the server twice there. On a real browser with a 500 ms reply it did. The tests weren't wrong; nobody had asked what a slow network does."
