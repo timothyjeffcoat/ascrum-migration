@@ -24,7 +24,7 @@ Every number below is measured; the [number sources](#number-sources) section at
 | Legacy unit tests carried over | 103 of 133 (60 ported, 43 adapted); 10 n/a, 20 tested dead code |
 | Tests on the final commit | 402 unit tests in 41 files, 37 Playwright tests; CI green on all 5 jobs |
 | Reviewer mutations, first review of each cluster | 135 deliberate breakages; tests caught 125 |
-| Deviations logged | 36: 1 blocking, 35 non-blocking; none open |
+| Deviations logged | 37: 1 blocking, 36 non-blocking; none open |
 | Live bugs found by the independent legacy audits | 3, after every gate had passed |
 | Owner decisions | 33 discovery answers, 15 spec sign-offs, 15 later answers, 6 spec amendments |
 | Pull requests before this write-up | 24: 23 merged, 1 closed unmerged (a CI experiment); this case study is #25 |
@@ -221,7 +221,7 @@ Each figure in [Results at a glance](#results-at-a-glance), with where to check 
 | 103 of 133 legacy tests; 60 / 43 / 10 / 20 | worklog tables in `spec/worklogs/{foundation,admin-users,admin-projects,projects}.md`; 20 dead from §9 (17 + 3) |
 | 402 unit tests, 41 files, 37 Playwright, 5 jobs | CI run 45058504468 on `8e22769` (`gh run view 45058504468 --log`) |
 | 135 mutations, 125 caught | first reviews in `spec/journal.md`: cluster 0 20/19, cluster 2 17/14, cluster 3 14/14, cluster 1 23/19, cluster 5 27/25, cluster 4 34/34 (unit) |
-| 36 deviations, 1 blocking, 0 open | `spec/deviations.md` (see its Summary) |
+| 37 deviations, 1 blocking, 0 open | `spec/deviations.md` (see its Summary) |
 | 3 live bugs from audits | `spec/reviews/legacy-audit-wave-a.md` (DSC-1, DSC-2), `legacy-audit-wave-b.md` (DSC-B-1) |
 | 33 / 15 / 15 / 6 owner decisions | `spec/questions.md` (Q-A1..Q-F4), spec §0.1 (S1–S15), the 16 question ids in `spec/questions/*.md` minus Q-fix-forms-1 (answered by the orchestrator under the owner's P4 rule), spec §0.2 (P1–P6) |
 | 24 PRs, 23 merged, 1 closed | `gh pr list --state all` |
