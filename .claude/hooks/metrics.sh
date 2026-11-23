@@ -77,12 +77,19 @@ esac
 # Redact before truncating (R2-14): a path cut at character 300 no longer matches $HOME.
 # Masks: the home dir; any other /home/<name>; Claude's temp dir; and "-home-<user>-..." segments,
 # which is how Claude Code encodes a project path in folder names (~/.claude/projects/-home-...).
-record="$(jq -c --arg home "$HOME" '
+# Then the bare login name and git e-mail, wherever they still appear (e.g. a grep pattern in a command):
+# the path rules alone let a username through (2026-11-23, ledger row 317). split/join is a literal
+# replace, so no regex escaping; names under 3 characters are skipped so they can't mangle ordinary text.
+user="$(id -un 2>/dev/null || true)"
+email="$(git -C "$cwd" config user.email 2>/dev/null || true)"
+record="$(jq -c --arg home "$HOME" --arg user "$user" --arg email "$email" '
   walk(if type == "string" then
          (if $home != "" then gsub($home; "~") else . end)
          | gsub("/tmp/claude-[0-9]+/[^/\\s\"]*"; "<claude-tmp>")
          | gsub("/home/[^/\\s\"]+"; "/home/<user>")
          | gsub("-home-[^/\\s\"]*"; "<project-dir>")
+         | (if ($email | length) >= 3 then split($email) | join("<email>") else . end)
+         | (if ($user | length) >= 3 then split($user) | join("<user>") else . end)
        else . end)
   | if .command then .command |= .[0:300] else . end
   | if .error then .error |= .[0:300] else . end' <<<"$record")" || exit 0

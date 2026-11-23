@@ -584,3 +584,11 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "The old app could not run any more, so we rebuilt one form of it from its own parts and pressed the same keys in both. Same CSS, same field, different focus rule: the bug report turned out to be a parity question, and now it is written down."
+
+## 2026-11-23: The metrics hook let a username through
+- **What happened.** While preparing PR #27, the orchestrator's own pre-commit scan for private details found the local login name in a new `spec/metrics.jsonl` row. The hook replaces home paths with `~` and `/home/<user>`, but a bare username (here, inside a grep pattern that searched for it) passed straight through. One row already on `migration` (row 317, from a wave B review command) has the same problem.
+- **Fix.** `.claude/hooks/metrics.sh` now also replaces the login name (`id -un`) and the git e-mail with `<user>` and `<email>` in every string field, as a literal replace, skipping names under 3 characters. Tested on a throwaway repo with a fake hook payload: no leaks in the written row.
+- **Not done by an agent.** Cleaning the rows already written means editing the ledger by hand, which the rules forbid. When the orchestrator tried, at the owner's request, the agent's permission check blocked it as undermining oversight. That cleanup is left to the owner, and the git history keeps the old row in any case.
+
+**Moment (article candidate)**
+- "The check for private details leaked the very thing it was checking for: the grep pattern was the username, and the hook logged the command. The fix was one line in the hook. Cleaning the old rows was blocked, because the agent may not edit its own audit log, even when asked to."
