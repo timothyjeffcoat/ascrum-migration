@@ -575,3 +575,12 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "The summary was supposed to say 'zero open deviations'. Counting the rows found one. It is listed, not rounded away."
+
+## 2026-11-23: A red border, checked against the old app (DEV-owner-01)
+- **What happened.** Using the finished app, the owner saw a red border on the task form's Name field. The orchestrator measured it in Chromium. The red is Bootstrap 2's built-in hint for an empty, focused, required field, and the stylesheet rule is byte-identical in the old app and the port. A filled Name was never red.
+- **The side-by-side.** The old app cannot run (its database service, MongoLab, shut down in 2020), so the orchestrator built a throwaway page from the old app's own parts: its AngularJS 1.2.0-rc.3, the task form template unchanged, and its stylesheet compiled from the vendored source. The same browser steps then ran against both apps. They differ in one thing: when the cursor lands in Name. The old app used the browser's `autofocus`, which fires once per page load, so after signing in, or on a second form, Name was not focused and showed grey. React's `autoFocus` focuses on every form, so the port shows red after sign-in and on every new form.
+- **Decision.** The owner kept the port's behaviour (option 1 of 3) and logged it as an accepted difference. The other options were to copy the once-per-page quirk or to hide the red, which would change the old styling the spec says to keep.
+- **Note.** The wave B auditor had drafted exactly this claim and then dropped it, because it could not cite the browser rule. Measuring both apps settled it in a few minutes.
+
+**Moment (article candidate)**
+- "The old app could not run any more, so we rebuilt one form of it from its own parts and pressed the same keys in both. Same CSS, same field, different focus rule: the bug report turned out to be a parity question, and now it is written down."
