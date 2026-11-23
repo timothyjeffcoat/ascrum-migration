@@ -597,3 +597,12 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "The check for private details leaked the very thing it was checking for: the grep pattern was the username, and the hook logged the command. The fix was one line in the hook. Cleaning the old rows was blocked, because the agent may not edit its own audit log, even when asked to."
+
+## 2026-11-23: Who chose the breakages? (a LinkedIn question)
+- **The question.** A reader asked whether a person or the agent picked the 7 deliberate breakages behind the Enter-to-sign-in fix (#17): "If the same agent wrote the fix and the list of ways to break it, I'd still wonder what it didn't think to try."
+- **The answer, from the record.** The agent that wrote the fix picked the 7 (`spec/worklogs/fix-forms.md`, "Mutation checks"). A separate reviewer agent then ran 11 of its own and says it did so "independently of the worker's mutation list" (its checklist comment on #17). Its list included cases the first one missed: the two toolbar forms, dropping the validity check on Sign in, and Sign in firing twice. All 11 turned a test red. It also noted one gap it could not break: no test checks that a *click* on Sign in sends exactly one request (the code has only one path today).
+- **What the record cannot show.** Both lists came from agents running the same model, and no person picked a single breakage. The session that briefed the reviewer is lost, so whether its brief showed it the worker's list rests on the reviewer's own statement.
+- **Lesson.** Independent agents widen the search, but they share a model's blind spots. Next time, a person adds a few breakages of their own to each review.
+
+**Moment (article candidate)**
+- "A reader asked who chose the ways to break the fix. The honest answer: the agent that wrote it, then a second agent that wrote its own list and found cases the first had missed. No person picked one. Two agents running the same model can still share a blind spot."
