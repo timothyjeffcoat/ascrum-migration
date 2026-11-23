@@ -198,6 +198,25 @@ describe('LoginModal', () => {
     expect(submits).toEqual([true]) // signed in by script; the native submission was cancelled
   })
 
+  // The #17 review's open note: its double-POST mutation (`onClick={onLogin}` on the submit button) was
+  // caught only through Enter. A click runs both the onClick and the form's submit, so count it too.
+  it('AC-AUTH-04 / DSC-2 / P4: a click on Sign in sends exactly one POST /login', async () => {
+    const { user } = await renderAtProjectsInfo()
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    const modal = getModal()
+    await user.type(within(modal).getByLabelText('E-mail'), 'po@ascrum.test')
+    await user.type(within(modal).getByLabelText('Password'), 'demo')
+
+    const requests = recordRequests()
+    const submits = watchSubmits()
+    await user.click(within(modal).getByRole('button', { name: 'Sign in' }))
+
+    await waitFor(() => expect(document.querySelector('.modal')).toBeNull())
+    expect(screen.getByRole('link', { name: 'Paula Owner' })).toBeInTheDocument()
+    expect(requests.filter((r) => r.method === 'POST' && r.pathname === '/login')).toHaveLength(1)
+    expect(submits).toEqual([true]) // the click submitted once, and the native submission was cancelled
+  })
+
   it('AC-AUTH-04 / DSC-2 / P4: Enter with an invalid e-mail does not sign in', async () => {
     const { user } = await renderAtProjectsInfo()
     await user.click(screen.getByRole('button', { name: 'Log in' }))
