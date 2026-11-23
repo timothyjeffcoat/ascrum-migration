@@ -1,7 +1,7 @@
 // Port of security/login/LoginFormController.js + login/form.tpl.html, inside the markup the legacy
 // ui-bootstrap $dialog wrapped it in (`div.modal` plus `div.modal-backdrop`). Mounted outside the
 // router (spec §4.1) so a guard in an initial loader can open it while the router is still loading.
-import { useEffect, useState, useSyncExternalStore, type FormEvent } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
 import { ApiError } from '../api/errors.ts'
 import { isEmail } from '../crud/validators.ts'
 import { getMessage } from '../notifications/messages.ts'
@@ -42,13 +42,22 @@ function LoginForm() {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [cancelLogin])
 
+  // P7 / DEV-owner-04: one sign-in at a time. Legacy posted /login again on every Enter or click while
+  // a slow reply was pending; the port ignores those. A ref, not state, so two submits in the same tick
+  // see it. Sign in keeps its legacy markup (no extra `disabled`): the extra presses just do nothing.
+  const signingIn = useRef(false)
+
   function onLogin() {
+    if (signingIn.current) return
+    signingIn.current = true
     setAuthError(null)
     login(email, password).then(
       (loggedIn) => {
+        signingIn.current = false
         if (!loggedIn) setAuthError(getMessage('login.error.invalidCredentials'))
       },
       (error: unknown) => {
+        signingIn.current = false
         // S14: legacy interpolated the whole rejected $http response, printing a JSON dump of it
         // (AngularJS 1.2 $interpolate runs toJson; corrected by the wave A audit, DSC-3).
         const exception = error instanceof ApiError ? `HTTP ${error.status}` : String(error)

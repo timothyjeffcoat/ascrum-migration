@@ -237,6 +237,50 @@ describe('LoginModal', () => {
     expect(submits).toEqual([true]) // the click submitted once, and the native submission was cancelled
   })
 
+  // P7 / DEV-owner-04: on a slow network a second Enter (or click) before the reply posted /login again,
+  // as legacy did. Two submits in the same tick stand in for it: the second always lands before the reply.
+  it('P7 / DEV-owner-04: a second submit while signing in sends no second POST /login', async () => {
+    const { user } = await renderAtProjectsInfo()
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    const modal = getModal()
+    await user.type(within(modal).getByLabelText('E-mail'), 'po@ascrum.test')
+    await user.type(within(modal).getByLabelText('Password'), 'demo')
+
+    const requests = recordRequests()
+    const form = modal.closest('form') ?? modal
+    if (!(form instanceof HTMLFormElement)) throw new Error('no login form')
+    await act(async () => {
+      form.requestSubmit()
+      form.requestSubmit()
+    })
+
+    await waitFor(() => expect(document.querySelector('.modal')).toBeNull())
+    expect(screen.getByRole('link', { name: 'Paula Owner' })).toBeInTheDocument()
+    expect(requests.filter((r) => r.method === 'POST' && r.pathname === '/login')).toHaveLength(1)
+  })
+
+  it('P7 / DEV-owner-04: after a failed sign-in (bad password, then a server error) Sign in works again', async () => {
+    const { user } = await renderAtProjectsInfo()
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    const modal = getModal()
+    await user.type(within(modal).getByLabelText('E-mail'), 'po@ascrum.test')
+    await user.type(within(modal).getByLabelText('Password'), 'wrong')
+    const requests = recordRequests()
+    const signIn = within(modal).getByRole('button', { name: 'Sign in' })
+
+    await user.click(signIn)
+    await waitFor(() => expect(modal.querySelector('.alert-error')).toBeInTheDocument())
+    failNext('POST', '/login', 500)
+    await user.click(signIn)
+    await waitFor(() => expect(modal.querySelector('.alert-error')).toHaveTextContent('HTTP 500'))
+
+    await user.clear(within(modal).getByLabelText('Password'))
+    await user.type(within(modal).getByLabelText('Password'), 'demo{Enter}')
+    await waitFor(() => expect(document.querySelector('.modal')).toBeNull())
+    expect(screen.getByRole('link', { name: 'Paula Owner' })).toBeInTheDocument()
+    expect(requests.filter((r) => r.method === 'POST' && r.pathname === '/login')).toHaveLength(3)
+  })
+
   it('AC-AUTH-04 / DSC-2 / P4: Enter with an invalid e-mail does not sign in', async () => {
     const { user } = await renderAtProjectsInfo()
     await user.click(screen.getByRole('button', { name: 'Log in' }))

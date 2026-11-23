@@ -8,7 +8,7 @@ Format (spec §8.4). Ids are cluster-scoped so concurrent reviewers never clash.
 
 ## Summary
 
-Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #24. The rows are unchanged. Updated 2026-11-23 for three later rows, DEV-owner-01..03 (38 rows).
+Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #24. The rows are unchanged. Updated 2026-11-23 for four later rows, DEV-owner-01..04 (39 rows).
 
 **By "Caught by"**
 
@@ -20,15 +20,15 @@ Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #
 | independent legacy audit | 7 | audit-01..07 |
 | CI | 3 | foundation-05, -06, projects-02 |
 | owner, by using the app | 2 | owner-01, -02 |
-| owner, by a breakage they chose | 1 | owner-03 |
+| owner, by a breakage they chose | 2 | owner-03, -04 |
 
-**By severity:** 1 blocking (DEV-foundation-01, a test that could not fail; fixed before merge), 37 non-blocking.
+**By severity:** 1 blocking (DEV-foundation-01, a test that could not fail; fixed before merge), 38 non-blocking.
 
 **By resolution.** Fixed means a code, test or document change closed it. Accepted means it was kept as built, by an owner answer or the reviewer's judgment. Logged means it was recorded for the parity record and needed no decision.
 
 | Resolution | Count | Ids |
 |---|---|---|
-| fixed | 21 | foundation-01, -05, -06, projects-02, admin-projects-01, -06, admin-users-01, -03, audit-01, -02, -03, -04, -05, -08, dashboard-01, -02, sprints-tasks-01, -02, -04, admin-users-02, owner-03 |
+| fixed | 22 | foundation-01, -05, -06, projects-02, admin-projects-01, -06, admin-users-01, -03, audit-01, -02, -03, -04, -05, -08, dashboard-01, -02, sprints-tasks-01, -02, -04, admin-users-02, owner-03, -04 |
 | accepted | 14 | foundation-02, -03, -04, projects-01, admin-projects-02, -04, -05, admin-users-04, -05, audit-07, dashboard-03, -04, owner-01, -02 |
 | logged | 3 | admin-projects-03, audit-06, sprints-tasks-03 |
 
@@ -42,7 +42,7 @@ Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #
 | Wave A legacy audit (PR #15) | 4 | audit-01..04 |
 | After Phase 3: Q-sprints-tasks-3 (PR #22), wave B legacy audit (PR #23), trim fix review (PR #24) | 5 | sprints-tasks-04, audit-05..07, audit-08 |
 | After Phase 4: the owner's notes on the task form (red border, no required messages) | 2 | owner-01, -02 |
-| After Phase 4: breakages chosen by the owner (LinkedIn follow-up) | 1 | owner-03 |
+| After Phase 4: breakages chosen by the owner (LinkedIn follow-up) | 2 | owner-03, -04 |
 
 **Still open:** none. The last open row, DEV-admin-users-02, was closed in the Phase 4 PR (#25) by the one-assertion test it recommended.
 
@@ -86,3 +86,4 @@ Written in Phase 4 (2026-11-22) from the 35 rows below, as they stood after PR #
 | DEV-owner-01 | B4 (parity record) | The owner saw a red border on the task form's Name field. Cause: Bootstrap 2's `input:focus:required:invalid` style, identical in legacy and the port (`forms.less` is byte-identical), applies to the empty, focused Name. The two apps differ in *when* Name is focused. Legacy used the native `autofocus` attribute, which the browser honours once per page load: the first form after a load got the focus (red), but after the login dialog's autofocused E-mail, or on any later form opened by in-app navigation, Name was not focused (grey). The port's React `autoFocus` calls `focus()` on every mount, so every new form opens with a focused, red Name, including straight after sign-in. Measured side by side in Chromium (2026-11-23): the port on `pnpm dev`, legacy as a throwaway page built from its own AngularJS 1.2.0-rc.3, the verbatim `tasks-edit.tpl.html` and its stylesheet compiled from the vendored LESS (the backend cannot run: MongoLab is gone). A filled Name was never red in either app. The same `required` + `autofocus` pattern is on the project, backlog item and sprint forms and the login E-mail (`autoFocus` in 5 port components); only the task form was measured. The wave B audit had drafted this claim and dropped it for lack of a citable browser rule (`spec/reviews/legacy-audit-wave-b.md:218`). | owner (noticed), orchestrator (side-by-side measurement) | non-blocking | Accepted by the owner (2026-11-23): focusing the first field on every form is kept; the red is Bootstrap's standard hint on an empty required field. Matching legacy would mean copying a once-per-page browser quirk; hiding the red would change the legacy CSS (B4). No code change. | this PR |
 | DEV-owner-02 | B4 (parity record) | The owner noticed that the task form gives no feedback when a required field is blank: no message, and the disabled Save (Bootstrap 2's `.btn[disabled]`, opacity .65) looks barely different from an enabled one. This is legacy behaviour, kept: legacy `tasks-edit.tpl.html` has no validation messages, and its `crud-buttons` Save is `ng-disabled="!canSave()"`, as the port's `CrudButtons` is `disabled={!form.canSave}`. The button styles are the same vendored Bootstrap source (`web/src/styles/bootstrap2/` differs from `legacy/client/vendor/bootstrap/` only in `mixins.less` and `navbar.less`, patched for the LESS compiler). In both apps only the user form shows "This field is required."; the project, backlog item and sprint forms behave like the task form. Not recorded before. | owner (noticed) | non-blocking | Accepted by the owner (2026-11-23): no required-field messages are added; the forms stay as legacy. No code change. | this PR |
 | DEV-owner-03 | AC-AUTH-05 | Test gap found by a breakage the owner chose ("if Cancel signed you in, a test should catch it"). Every Cancel test (unit, router and e2e) cancelled with empty fields, so none checked that Cancel leaves you signed out. Mutation M2, Cancel = `onLogin(); cancelLogin()` (signs in with the typed credentials, then closes), passed all 403 unit and 37 Playwright tests. M1 (Cancel = `onLogin`) failed 3 tests, but only incidentally: with empty fields the sign-in fails and the modal stays open. The code was correct; only the regression guard was missing. | owner (chosen breakage), orchestrator (ran it) | non-blocking | Fixed (test only, no source change): `LoginModal.test.tsx` "AC-AUTH-05 / DEV-owner-03: Cancel with valid credentials typed does not sign in" types valid credentials, clicks Cancel, and expects no `POST /login`, the "Log in" button, and no signed-in user link. It fails under M1, M2 and M3 (Cancel = `cancelLogin(); onLogin()`) and passed 8/8 repeated runs unmutated. `pnpm verify` exit 0: 404 unit tests, 37 Playwright. | this PR |
+| DEV-owner-04 | §0.2 P7 (new) / AC-AUTH-04 | The owner chose a breakage: "if pressing Enter twice signed in twice, a test should catch it". It was not a breakage: the port already did it. Neither legacy (`security.login()` posted on every call; Sign in disabled only while the form was invalid, by reading the code) nor the port guarded against a second submit while a sign-in was pending. Measured in Chromium with the `POST /login` reply held for 500 ms: a second Enter 0 or 100 ms after the first sent 2 requests (1 with an instant reply); the user ended signed in once, with no error. The jsdom suite never saw it because the stub replies before the second key. Undocumented legacy behaviour, not a test gap. | owner (chosen breakage), orchestrator (measured) | non-blocking | Fixed (owner, 2026-11-23: "fix it, sign-in only"; spec P7). `LoginModal.tsx` ignores submits while a sign-in is pending (a ref, reset when the request settles either way); Sign in markup unchanged. Tests: "P7 / DEV-owner-04: a second submit while signing in sends no second POST /login" (two `requestSubmit()` in one tick) and "… after a failed sign-in (bad password, then a server error) Sign in works again". Mutations, each alone then reverted: no guard → the first fails; no reset after bad credentials, or after an HTTP error → the second fails. Chromium re-measured with the fix: 1 request in all three timings. Save's double click (DEV-audit-07) is unchanged on purpose. | this PR |
