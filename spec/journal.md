@@ -606,3 +606,19 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "A reader asked who chose the ways to break the fix. The honest answer: the agent that wrote it, then a second agent that wrote its own list and found cases the first had missed. No person picked one. Two agents running the same model can still share a blind spot."
+
+## 2026-11-23: A breakage chosen by a person (DEV-owner-03)
+- **Why.** Two LinkedIn readers pushed on the mutation testing: the agent that wrote the fix chose its own breakages, and the reviewer agent that chose more had seen the diff. So the owner chose one, in plain words, without reading the code: "if Cancel signed you in, a test should catch it."
+- **What happened.** The orchestrator turned it into three code changes and ran the full suite on each:
+
+| Mutation | What it does | Unit (403) | Playwright (37) |
+|---|---|---|---|
+| M1 | Cancel runs the sign-in handler | 3 failed, but only because the empty fields make sign-in fail and the window stay open | not run |
+| M2 | Cancel signs in with the typed credentials, then closes | **all passed** | **all passed** |
+| M3 | Cancel closes, then signs in | (found after the fix; caught by the new test) | not run |
+
+- **Why nothing caught it.** Every Cancel test, unit and browser, pressed Cancel with empty fields. None checked that you are still signed out afterwards.
+- **Fix.** One test, no code change: type valid credentials, press Cancel, and expect no sign-in request, the "Log in" button, and no signed-in user. It fails under M1, M2 and M3, and passed 8 of 8 repeated runs as the code stands. `pnpm verify` exit 0: 404 unit tests, 37 Playwright.
+
+**Moment (article candidate)**
+- "Two agents had chosen 18 ways to break the sign-in fix, and the tests caught them all. The owner chose one more without opening the code: 'what if Cancel signed you in?' All 440 tests stayed green. The agents had tested the code that existed; a person asked about the behaviour they expected."

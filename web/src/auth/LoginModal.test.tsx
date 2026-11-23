@@ -159,6 +159,26 @@ describe('LoginModal', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/projectsinfo')) // '/' → otherwise
   })
 
+  // DEV-owner-03: the other Cancel tests run with empty fields, so a Cancel that also signed in with the
+  // typed credentials passed all 440 tests. This one types valid credentials first.
+  it('AC-AUTH-05 / DEV-owner-03: Cancel with valid credentials typed does not sign in', async () => {
+    const { user } = await renderAtProjectsInfo()
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    const modal = getModal()
+    await user.type(within(modal).getByLabelText('E-mail'), 'po@ascrum.test')
+    await user.type(within(modal).getByLabelText('Password'), 'demo')
+
+    const requests = recordRequests()
+    await user.click(within(modal).getByRole('button', { name: 'Cancel' }))
+
+    expect(document.querySelector('.modal')).toBeNull()
+    // Let any sign-in that was started settle before checking that none happened.
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 50)))
+    expect(requests.filter((r) => r.method === 'POST' && r.pathname === '/login')).toEqual([])
+    expect(screen.getByRole('button', { name: 'Log in' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Paula Owner' })).toBeNull()
+  })
+
   it('AC-AUTH-05: Escape and a backdrop click cancel too (legacy ui-bootstrap dialog behaviour)', async () => {
     const { user } = await renderAtProjectsInfo()
     await user.click(screen.getByRole('button', { name: 'Log in' }))
