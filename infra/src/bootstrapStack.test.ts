@@ -69,8 +69,9 @@ describe('bootstrap stack: OIDC and the deploy role', () => {
     other.hasResourceProperties('AWS::IAM::Role', {
       AssumeRolePolicyDocument: { Statement: [Match.objectLike({ Principal: { Federated: arn } })] },
     })
+    // A plain string: toThrow() then checks for exactly this text, not a pattern.
     expect(() => synth({ existingOidcProviderArn: 'arn:aws:iam::111111111111:oidc-provider/example.com' })).toThrow(
-      /token.actions.githubusercontent.com/,
+      'existingOidcProviderArn must be the token.actions.githubusercontent.com provider',
     )
   })
 

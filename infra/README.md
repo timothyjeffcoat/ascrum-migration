@@ -27,6 +27,11 @@ From `infra/` (dependencies come with `pnpm install` in `web/`, which installs t
 | synth     | `pnpm synth` (placeholders for the deploy-time values; no account, no credentials, no lookups)         |
 | all four  | `pnpm verify`                                                                                          |
 
+The scripts start the dev tools through their own entry files (`node node_modules/eslint/bin/eslint.js`,
+…), not through `node_modules/.bin`: those tools are `link:` entries into `web/node_modules`, and a
+workspace install may link `infra/` before `web/` is populated, in which case pnpm creates no `.bin`
+shims for them (it happened in CI on the first push).
+
 The CI job `infra` runs the same four with every AWS credential source pointed at `/dev/null`.
 
 `pnpm smoke` is the post-deploy test (`smoke/`); it needs a deployed `demo` (`SMOKE_BASE_URL`,

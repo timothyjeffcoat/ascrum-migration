@@ -9,10 +9,10 @@
   "scripts": {
     "cdk": "cdk",
     "synth": "cdk synth --quiet --no-notices -c githubRepository=${GITHUB_REPOSITORY:-example-owner/ascrum-migration}",
-    "lint": "eslint --max-warnings 0 . && prettier --check .",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
-    "smoke": "playwright test -c smoke/playwright.config.ts",
+    "lint": "node node_modules/eslint/bin/eslint.js --max-warnings 0 . && node node_modules/prettier/bin/prettier.cjs --check .",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "test": "node node_modules/vitest/vitest.mjs run",
+    "smoke": "node node_modules/@playwright/test/cli.js test -c smoke/playwright.config.ts",
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm synth"
   },
   "dependencies": {
