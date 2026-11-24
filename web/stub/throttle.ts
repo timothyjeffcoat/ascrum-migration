@@ -1,4 +1,5 @@
 // S-p5-3 / AC-SEC-04 (Q-p5-10 (b)): login throttling, per account and per client IP, answered with 429.
+// The per-IP key is the IPv4 address, or an IPv6 address's /64 (addressKey(), DEV-p5-security-13).
 // A deliberate difference from legacy, which never limited sign-ins; it only changes what an abusive
 // client sees.
 //
@@ -70,9 +71,69 @@ export interface LoginThrottle {
  */
 export function throttleKeys(attempt: LoginAttempt, limits: ThrottleLimits): { key: string; max: number }[] {
   const keys: { key: string; max: number }[] = []
-  if (attempt.ip !== undefined) keys.push({ key: `ip:${attempt.ip}`, max: limits.maxFailuresPerIp })
+  if (attempt.ip !== undefined) keys.push({ key: `ip:${addressKey(attempt.ip)}`, max: limits.maxFailuresPerIp })
   if (attempt.account !== undefined) keys.push({ key: `account:${attempt.account}`, max: limits.maxFailuresPerAccount })
   return keys
+}
+
+/** The address key among an attempt's reserved keys (throttleKeys() made it; at most one). */
+export function reservedAddress(reservation: Reservation): ReservedKey | undefined {
+  return reservation.keys.find((k) => k.key.startsWith('ip:'))
+}
+
+/**
+ * DEV-p5-security-13: the client address as the per-IP limit counts it.
+ *   - IPv4: the address itself.
+ *   - IPv6: its /64 prefix, e.g. `2001:db8:0:1::/64`. One subscriber usually gets a whole /64 and can
+ *     pick a new address in it for every attempt (privacy extensions do so on their own), so keying the
+ *     full address would give an IPv6 client 2^64 allowances instead of one. The price: clients that
+ *     share a /64 (one home, one office LAN) share the allowance, as clients behind one IPv4 NAT do.
+ *   - IPv4-mapped IPv6 (`::ffff:192.0.2.1`, in any spelling): the IPv4 address it carries, so one IPv4
+ *     client has one key whether it arrived on a dual-stack socket or not.
+ * Any spelling of an IPv6 address gives the same key: upper or lower case, leading zeros, `::` anywhere,
+ * an embedded dotted IPv4 tail, square brackets, and a zone id (`fe80::1%eth0`, which names one of our
+ * interfaces, not the client) are all normalised. Anything that is not an IP address is keyed as given
+ * (lower-cased): clientIpOf() passes on what the socket or a trusted proxy said, so this only happens
+ * if a trusted proxy sends something odd, and then that client still has a key of its own.
+ */
+export function addressKey(ip: string): string {
+  const address = ip
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, '$1')
+    .replace(/%.*$/, '')
+  if (!address.includes(':')) return address
+  const groups = ipv6Groups(address)
+  if (!groups) return address
+  const [a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0] = groups
+  if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0xffff) {
+    return [g >> 8, g & 0xff, h >> 8, h & 0xff].join('.')
+  }
+  return `${[a, b, c, d].map((n) => n.toString(16)).join(':')}::/64`
+}
+
+/** The eight 16-bit groups of an IPv6 address, or undefined if `address` is not one. */
+function ipv6Groups(address: string): number[] | undefined {
+  let text = address
+  // A dotted IPv4 tail (::ffff:192.0.2.1) stands for the last two groups.
+  const tail = /:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text)
+  if (tail) {
+    const bytes = tail.slice(1).map(Number)
+    if (bytes.some((n) => n > 255)) return undefined
+    const [w = 0, x = 0, y = 0, z = 0] = bytes
+    text = `${text.slice(0, tail.index)}:${((w << 8) | x).toString(16)}:${((y << 8) | z).toString(16)}`
+  }
+  const halves = text.split('::')
+  if (halves.length > 2) return undefined
+  const split = (part: string | undefined) => (part ? part.split(':') : [])
+  const head = split(halves[0])
+  const rest = split(halves[1])
+  const missing = 8 - head.length - rest.length
+  // `::` stands for at least one group of zeros; without it there must be exactly eight groups.
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return undefined
+  const all = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill('0'), ...rest]
+  if (!all.every((group) => /^[0-9a-f]{1,4}$/.test(group))) return undefined
+  return all.map((group) => parseInt(group, 16))
 }
 
 type Window = { start: number; failures: number }
@@ -117,9 +178,9 @@ export class MemoryLoginThrottle implements LoginThrottle {
   }
 
   async succeeded(reservation: Reservation): Promise<void> {
-    const { account, ip } = reservation.attempt
+    const { account } = reservation.attempt
     if (account !== undefined) this.windows.delete(`account:${account}`)
-    const reservedIp = reservation.keys.find((k) => k.key === `ip:${ip}`)
+    const reservedIp = reservedAddress(reservation)
     const window = reservedIp && this.windows.get(reservedIp.key)
     // Only in the window the attempt was counted in; a newer window never held it.
     if (reservedIp && window && window.start === reservedIp.windowStart) {

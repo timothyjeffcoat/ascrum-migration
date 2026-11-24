@@ -295,6 +295,30 @@ describe('AC-SEC-02 / S-p5-2: cookie flags', () => {
     expect((await send('POST', '/login', CREDENTIALS.po)).status).toBe(429)
   })
 
+  it('AC-SEC-03 / DEV-p5-security-16: startApi() itself refuses allowReset in production mode, before it touches the database', async () => {
+    // loadConfig() refuses ALLOW_RESET=1 in production; a caller that skips it must not get around that.
+    for (const options of [{ allowReset: true }, { allowReset: true, production: true }]) {
+      const schema = await emptySchema()
+      const pool = poolFor(schema)
+      await expect(
+        startApi({ pool, port: 0, scrypt: TEST_SCRYPT, ...options }),
+        JSON.stringify(options),
+      ).rejects.toThrow(/allowReset is not allowed in production mode/)
+      // Nothing was migrated (or seeded): the schema is still empty.
+      const { rows } = await pool.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = $1',
+        [schema],
+      )
+      expect(rows[0]?.n, JSON.stringify(options)).toBe(0)
+      await pool.end()
+    }
+    // The development pair still starts, with the reset route (what compose and CI use).
+    const { base } = await api({ production: false, allowReset: true })
+    const { send } = browser(base)
+    await send('GET', '/current-user')
+    expect((await send('POST', '/__stub/reset')).status).toBe(204)
+  })
+
   it('AC-SEC-02: in development mode (plain http://localhost) the cookies carry no Secure flag; the rest is the same', async () => {
     const { base } = await api(fromEnv({ APP_ENV: 'development' }))
     const { send } = browser(base)

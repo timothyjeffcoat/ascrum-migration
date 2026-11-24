@@ -106,6 +106,60 @@ export function defineSecurityTests(backend: Backend): void {
       expect((await attempt(CREDENTIALS.admin, '203.0.113.9')).res.status).toBe(429)
     })
 
+    // DEV-p5-security-13 (review of #59): the per-IP key was the full address, so one IPv6 client, which
+    // usually holds a whole /64, could use a new address for every attempt. Different accounts each
+    // time, so only the per-IP limit applies.
+    const accounts = ['po', 'sm', 'dev1', 'dev2', 'outsider'] as const
+
+    it('AC-SEC-04 / DEV-p5-security-13: IPv6 addresses in one /64 share the per-IP limit, in any spelling; another /64 does not', async () => {
+      const sameSlash64 = [
+        '2001:db8:7:1::a',
+        '2001:db8:7:1:ffff:ffff:ffff:ffff',
+        '2001:0DB8:0007:0001:0000:0000:0000:0005',
+        '2001:db8:7:1:1234::1%eth0',
+        '[2001:db8:7:1::99]',
+      ]
+      expect(sameSlash64).toHaveLength(LIMITS.maxFailuresPerIp)
+      for (const [i, ip] of sameSlash64.entries()) {
+        expect((await attempt(wrong(accounts[i] ?? 'po'), ip)).res.status, ip).toBe(200)
+      }
+      const blocked = (await attempt(CREDENTIALS.admin, '2001:db8:7:1:abcd::42')).res
+      expect(blocked.status).toBe(429)
+      expect(Number(blocked.headers['Retry-After'])).toBe(LIMITS.windowSeconds)
+      expect(body((await attempt(CREDENTIALS.admin, '2001:db8:7:2::a')).res)).toMatchObject({
+        user: { id: USER.admin },
+      })
+    })
+
+    it('AC-SEC-04 / DEV-p5-security-13: an IPv4-mapped IPv6 address counts as the IPv4 address, in any spelling', async () => {
+      // 203.0.113.20 is cb00:7114 in hex.
+      const sameClient = [
+        '203.0.113.20',
+        '::ffff:203.0.113.20',
+        '::FFFF:cb00:7114',
+        '0:0:0:0:0:ffff:203.0.113.20',
+        '0000:0000:0000:0000:0000:ffff:cb00:7114',
+      ]
+      for (const [i, ip] of sameClient.entries()) {
+        expect((await attempt(wrong(accounts[i] ?? 'po'), ip)).res.status, ip).toBe(200)
+      }
+      expect((await attempt(CREDENTIALS.admin, '203.0.113.20')).res.status).toBe(429)
+      expect((await attempt(CREDENTIALS.admin, '::ffff:203.0.113.20')).res.status).toBe(429)
+      expect(body((await attempt(CREDENTIALS.admin, '203.0.113.21')).res)).toMatchObject({ user: { id: USER.admin } })
+    })
+
+    it('AC-SEC-04 / DEV-p5-security-13: a successful sign-in gives its /64 its count back, from any address in it', async () => {
+      // succeeded() must release the key admit() counted (the /64), not one built from the address as sent.
+      for (let i = 0; i < LIMITS.maxFailuresPerIp - 1; i++) {
+        expect((await attempt(wrong(accounts[i] ?? 'po'), `2001:db8:8:1::${i + 1}`)).res.status).toBe(200)
+      }
+      expect(body((await attempt(CREDENTIALS.dev2, '2001:DB8:8:1:0:0:0:FF')).res)).toMatchObject({
+        user: { id: USER.dev2 },
+      })
+      expect((await attempt(wrong('outsider'), '2001:db8:8:1::77')).res.status).toBe(200) // failure 5 of 5
+      expect((await attempt(CREDENTIALS.admin, '2001:db8:8:1::78')).res.status).toBe(429)
+    })
+
     it('AC-SEC-04: the account key is the e-mail exactly as sent, as the lookup is (DEV-p5-store-08)', async () => {
       for (let i = 0; i < LIMITS.maxFailuresPerAccount; i++) {
         await attempt({ email: 'PO@ascrum.test', password: 'x' }, `192.0.2.${i + 1}`)

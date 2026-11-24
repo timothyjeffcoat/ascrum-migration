@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # The API image (spec §2, AC-CTR-02): Node 24 running api/src/main.ts directly (type stripping, no
 # build step), with production dependencies only, as the unprivileged `node` user.
 #
@@ -25,6 +24,9 @@
 # debugging. Pinned by version and digest, written out on each FROM line (not through an ARG): Dependabot's
 # docker ecosystem reads only literal FROM lines, and bumps the version and digest together there
 # (DEV-p5-containers-09). docker/check-images.sh fails on an unpinned FROM.
+# No `# syntax=` directive: the build runs on the Docker engine's built-in Dockerfile frontend, so no
+# frontend image is pulled (DEV-p5-containers-12). If one is ever added, check-images.sh requires it
+# pinned by version and digest.
 
 # --- deps: the production dependencies of api/ (only `pg` and its own dependencies) ----------------
 FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS deps
