@@ -700,3 +700,25 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "I chose three ways to break the new server and published only their fingerprint. The agents writing the code can't see them. When the reviewer runs them, the text goes public, and anyone can check that it matches the hash committed before a line of server code existed."
+
+## 2026-11-23: Wave A review, the store (p5-store, PR #48)
+- **What was reviewed.** The worker made the stub's handler async over a `Store` and a `Sessions` interface and added PostgreSQL versions of both: a schema with join tables, a migration runner and the API entry point in a new `api/` package. One contract test suite now runs on both stores: 413 unit tests on the memory store (406 before, plus 7 new "store parity" tests) and 35 integration tests on PostgreSQL.
+- **Did the old tests catch anything when the server changed?** No, and the worker says so: the first PostgreSQL run was 35/35 green. The worker had listed what the in-memory arrays gave for free (order, null vs absent, strict equality) and written those tests *before* the PostgreSQL code, then broke its own code 9 ways (8 caught, 1 equivalent).
+- **Gates, checked by planting.** The `api/` folder sits outside `web/`, where every gate lives, so the reviewer planted one violation at a time in `api/`: `it.only` (lint error, and Vitest refuses it), an `eslint-disable` comment, `@ts-expect-error`, `as any`, a type error, a Prettier violation. Each went red. Without `DATABASE_URL` the integration run fails all 3 files (exit 1); it never skips. No audit settings (`auditConfig`, `ignoreGhsas`, `ignoreCves`) in any pnpm config.
+- **Gate results (reviewer, this session).** `pnpm verify` exit 0: lint clean, typecheck clean, unit 41 files / 413 tests, integration 3 files / 35 tests, Playwright 37 passed. CI on the PR: 6/6 green.
+
+**The owner's sealed breakages** (text withheld until the orchestrator publishes it against its SHA-256)
+
+| Pick | One line | Reviewer's version | Result |
+|---|---|---|---|
+| O1 | lists come back in another order | no `ORDER BY` | caught, 1 test |
+| O1 | (subtle) | `ORDER BY ctid`: insertion order on a fresh seed, an edited row moves to the end | caught, the same 1 test |
+| O1 | (per collection) | ordered for tasks only; backlog items, sprints and the rest unordered, or ordered by `ctid` | **survived**, 35/35 |
+| O2 | editing a project drops its team | a project PUT does not rewrite the team rows; or deletes them and does not put them back | **both survived**, 35/35 |
+| O3 | the old session cookie still works after sign-out | the sessions row keeps its user on logout (PostgreSQL only); or logout touches no session (both stores) | caught: 1 test on PostgreSQL; and 1 unit test on the memory store too |
+
+- **The reviewer's own breakages, 11 in all, chosen before running the owner's.** 6 caught: list items in reverse order, string-built SQL for a `q` field name and for a `q` value, no migration lock, reseeding on every start, no NUL check on PUT. 5 survived: list items not ordered by position (no test can see it), a PUT that never updates "has a team" (adding the first member to Legacy Cleanup is lost), case-insensitive e-mail on login, and **login built from a string**, in two versions (in a probe, an injected e-mail signed in as the admin, and all 35 tests passed). The code under review does none of these; the tests would not notice if it did.
+- **Decision.** Verified, not blocking. Every AC has a named test that passes, the code is parameterised and correct on every probe, and no gate was weakened. The survivors are five deviation rows (DEV-p5-store-05..09): four test gaps with test-only fixes, and `integration` not yet a required check. Merging and the order of fixes are the orchestrator's and the owner's call.
+
+**Moment (article candidate)**
+- "The owner chose three ways to break the new database before any of its code existed. One was caught. One was caught in its subtle form and survived in a narrower one. The third, 'editing a project drops its team', survived both ways: every test that edited a project sent back the same team it had read. The code was right. The 35 tests that said so would have said it about broken code too."
