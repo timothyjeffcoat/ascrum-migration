@@ -280,6 +280,21 @@ describe('AC-SEC-02 / S-p5-2: cookie flags', () => {
     }
   })
 
+  it('AC-SEC-02 / AC-SEC-03 / DEV-p5-security-11: startApi() with no settings at all is production: Secure cookies, no reset route, throttling on', async () => {
+    // Every other cookie test passes `production` explicitly, so startApi()'s own default was unpinned.
+    const { base } = await api() // no production, allowReset or throttle: only the pool and port
+    const { send } = browser(base)
+    const res = await send('GET', '/current-user')
+    expect(attributes(res.setCookies, 'sid')).toMatchObject({ httponly: true, secure: true, samesite: 'Lax' })
+    expect(attributes(res.setCookies, 'XSRF-TOKEN')).toMatchObject({ secure: true, samesite: 'Lax' })
+    expect((await send('POST', '/__stub/reset')).status).toBe(404)
+    const wrong = { email: CREDENTIALS.po.email, password: 'not-the-password' }
+    for (let i = 0; i < DEFAULT_THROTTLE.maxFailuresPerAccount; i++) {
+      expect((await send('POST', '/login', wrong)).status, `failure ${i + 1}`).toBe(200)
+    }
+    expect((await send('POST', '/login', CREDENTIALS.po)).status).toBe(429)
+  })
+
   it('AC-SEC-02: in development mode (plain http://localhost) the cookies carry no Secure flag; the rest is the same', async () => {
     const { base } = await api(fromEnv({ APP_ENV: 'development' }))
     const { send } = browser(base)
