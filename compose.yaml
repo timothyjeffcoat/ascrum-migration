@@ -1,19 +1,43 @@
-# Local stack. For now only the database (cluster p5-store); wave B's containers cluster adds the API
-# and the web build. Start it with `docker compose up -d db`, then, from web/:
-#   DATABASE_URL=postgres://ascrum:ascrum@localhost:55436/ascrum pnpm test:integration
+# The whole stack, locally and in CI (spec G4, AC-CTR-01): PostgreSQL, the API image and the web image.
+#
+#   docker compose up --build --wait          then open http://localhost:55430
+#   docker compose down -v                    stop and delete the database volume
+#
+# Only the database, for `pnpm test:integration` (cluster p5-store):
+#   docker compose up -d db
+#   DATABASE_URL=postgres://ascrum:ascrum@localhost:55436/ascrum pnpm test:integration    (from web/)
+#
+# The Playwright suite against this stack (from web/, after `up`): `pnpm e2e:compose`.
+#
+# Host ports (all on 127.0.0.1) move with WEB_PORT, API_PORT, DB_PORT, PROD_WEB_PORT and PROD_API_PORT;
+# IMAGE_TAG names the local images (default `dev`), so parallel checkouts do not overwrite each other's.
+#
+# This file is for a developer's machine and CI only; nothing in it is used in a deployment.
+#   - ALLOW_RESET=1 (api) and ROUTE_STUB_CONTROL=on (web) turn on POST /__stub/reset so the e2e files can
+#     reseed (spec §3.3). Both images default to off; only these two compose services turn them on.
+#     The API refuses ALLOW_RESET=1 in production mode, which is its default (APP_ENV unset, p5-security),
+#     so `api` also sets APP_ENV=development (plain http://localhost, no `Secure` cookies).
+#   - TRUST_PROXY_HOPS=1 on both APIs: each sits behind one nginx (web, web-prod), which appends the
+#     client's address to X-Forwarded-For. The login throttle then keys on that address, not nginx's
+#     (docker/check-client-address.sh). The APIs' host ports skip nginx and are for checks on
+#     127.0.0.1 only; a caller there could choose its throttle key, which is why they stay on localhost.
+#   - The profile `prod-check` adds api-prod and web-prod: the same images with their defaults, i.e. the
+#     production configuration, which the §3.3 test checks (web/e2e/containers/).
+#   - The credentials below are throwaway development values for a database that only listens on
+#     localhost. They are not secrets and are never used outside a developer's machine or CI (S-p5-4:
+#     real secrets come from the cloud secret store).
 #
 # PostgreSQL 18: the newest major that Amazon RDS offers generally (Q-p5-2). 19 was still only in
 # the RDS preview environment when this was written, see spec/worklogs/p5-store.md.
 #
-# The credentials below are throwaway development values for a database that only listens on
-# localhost. They are not secrets and are never used outside a developer's machine or CI (S-p5-4:
-# real secrets come from the cloud secret store).
+# Every image is pinned by version and digest (DEV-p5-containers-09; docker/check-images.sh fails on an
+# unpinned one), and Dependabot's docker-compose ecosystem moves the pin (.github/dependabot.yml).
 services:
   db:
-    image: postgres:18-alpine
+    image: postgres:18.7-alpine3.24@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71
     environment:
       POSTGRES_USER: ascrum
-      POSTGRES_PASSWORD: ascrum
+      POSTGRES_PASSWORD: ascrum # throwaway dev value, see above
       POSTGRES_DB: ascrum
     ports:
       - '127.0.0.1:${DB_PORT:-55436}:5432'
@@ -24,6 +48,84 @@ services:
       retries: 30
     volumes:
       - db-data:/var/lib/postgresql
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    image: ascrum-api:${IMAGE_TAG:-dev}
+    # Node as PID 1 ignores SIGTERM (no handler, and the kernel applies no default to PID 1), so a stop
+    # waited the full 10 s for SIGKILL. An init process forwards the signal and Node exits at once.
+    init: true
+    environment:
+      DATABASE_URL: postgres://ascrum:ascrum@db:5432/ascrum # throwaway dev credentials (db above)
+      PORT: '3000'
+      APP_ENV: development # needed for ALLOW_RESET; never set on api-prod
+      ALLOW_RESET: '1' # local and CI only (spec §3.3); the image itself has no reset route
+      TRUST_PROXY_HOPS: '1' # behind web's nginx
+    ports:
+      - '127.0.0.1:${API_PORT:-55431}:3000'
+    depends_on:
+      db:
+        condition: service_healthy
+    # The test is the image's (GET /healthz, AC-CTR-03); only the timing is tightened, so a stopped
+    # database shows as unhealthy within seconds.
+    healthcheck:
+      interval: 2s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    image: ascrum-web:${IMAGE_TAG:-dev}
+    environment:
+      API_UPSTREAM: http://api:3000
+      ROUTE_STUB_CONTROL: 'on' # local and CI only: lets e2e reach /__stub/reset through the web origin
+    ports:
+      - '127.0.0.1:${WEB_PORT:-55430}:8080'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      interval: 2s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+
+  # The production configuration of both images (profile prod-check): nothing set beyond what a
+  # deployment must set. Shares the database with `api`.
+  api-prod:
+    profiles: [prod-check]
+    image: ascrum-api:${IMAGE_TAG:-dev}
+    pull_policy: never # built by the `api` service above
+    init: true
+    environment:
+      DATABASE_URL: postgres://ascrum:ascrum@db:5432/ascrum # throwaway dev credentials (db above)
+      TRUST_PROXY_HOPS: '1' # behind web-prod's nginx; everything else is the image's production default
+    ports:
+      - '127.0.0.1:${PROD_API_PORT:-55433}:3000'
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy # one container migrates and seeds a new database; the other waits
+
+  web-prod:
+    profiles: [prod-check]
+    image: ascrum-web:${IMAGE_TAG:-dev}
+    pull_policy: never # built by the `web` service above
+    environment:
+      API_UPSTREAM: http://api-prod:3000
+    ports:
+      - '127.0.0.1:${PROD_WEB_PORT:-55432}:8080'
+    depends_on:
+      api-prod:
+        condition: service_healthy
 
 volumes:
   db-data:

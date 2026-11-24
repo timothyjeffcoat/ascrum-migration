@@ -1,0 +1,18 @@
+# Allowlist for docker/web.Dockerfile. Only web/ (without its build output, dependencies, reports and
+# tests) and the header generator reach the build. AC-CTR-02 checks what ends up in the image.
+*
+!web/
+!docker/web/security-headers.ts
+!docker/web/default.conf.template
+web/node_modules
+web/dist
+web/dist-pages
+web/coverage
+web/playwright-report
+web/test-results
+web/e2e
+web/**/*.test.ts
+web/**/*.test.tsx
+web/src/test
+**/.env*
+**/*.local

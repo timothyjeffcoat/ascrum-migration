@@ -14,10 +14,11 @@
     "build:pages": "vite build --mode pages",
     "preview": "vite preview",
     "stub": "node stub/server.ts",
-    "lint": "eslint --max-warnings 0 . ../api && prettier --check . ../api",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint --max-warnings 0 . ../api ../docker && prettier --check . ../api ../docker",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p ../docker/tsconfig.json",
     "test": "vitest run --project unit",
     "e2e": "pnpm build && pnpm build:pages && playwright test",
+    "e2e:compose": "pnpm build:pages && E2E_BASE_URL=http://localhost:${WEB_PORT:-55430} E2E_API_URL=http://localhost:${API_PORT:-55431} E2E_PROD_WEB_URL=http://localhost:${PROD_WEB_PORT:-55432} E2E_PROD_API_URL=http://localhost:${PROD_API_PORT:-55433} playwright test",
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm e2e",
     "test:integration": "vitest run --project integration"
   },

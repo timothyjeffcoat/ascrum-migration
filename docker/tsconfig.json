@@ -1,0 +1,10 @@
+{
+  // The build-time scripts in docker/ get web's strict options (the typecheck gate runs this config too).
+  // Types come from web's install: docker/ has no node_modules of its own.
+  "extends": "../web/tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../web/node_modules/@types"]
+  },
+  "include": ["**/*.ts"]
+}

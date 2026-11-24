@@ -1,0 +1,58 @@
+# nginx for the web image. The official entrypoint fills in ${API_UPSTREAM} and ${ROUTE_STUB_CONTROL}
+# from the environment at start (NGINX_ENVSUBST_FILTER limits it to those two) and writes the result
+# to /etc/nginx/conf.d/default.conf.
+#
+# One origin for the app and the API, as in spec §3.6: the contract's paths go to the API, so the
+# session and XSRF cookies work unchanged; everything else is the production build (`vite build`),
+# with the SPA fallback to index.html.
+server {
+    listen 8080;
+    server_name _;
+    server_tokens off;
+    # DEV-p5-containers-08: nginx's own redirects (a directory without its slash, `/databases` and
+    # `/assets`) were absolute and named the container's port, http://localhost:8080/..., which is wrong
+    # on the published port and behind any proxy. Relative redirects stay on whatever origin was used.
+    absolute_redirect off;
+    root /srv/ascrum;
+
+    # Exactly the map in web/securityHeaders.ts, generated at build time. Declared here once and never
+    # again below: an add_header inside a location would silently replace every one of these (nginx
+    # inherits add_header only into blocks that declare none).
+    include /etc/nginx/ascrum/security-headers.conf;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # The wire contract (spec §3.6): /login, /logout, /current-user and /databases/*.
+    location ~ ^/(login|logout|current-user)$ {
+        proxy_pass ${API_UPSTREAM};
+    }
+    location /databases/ {
+        proxy_pass ${API_UPSTREAM};
+    }
+
+    # /__stub/reset, for e2e against the compose stack only. Off unless ROUTE_STUB_CONTROL=on, and the
+    # API also refuses it without ALLOW_RESET=1 (spec §3.3): two locks, both open only in local/CI.
+    location /__stub/ {
+        if ($ascrum_stub_control != "on") {
+            return 404;
+        }
+        proxy_pass ${API_UPSTREAM};
+    }
+
+    # Hashed build assets: a missing one is a 404, not index.html served as JavaScript.
+    location /assets/ {
+        try_files $uri =404;
+    }
+
+    # Everything else: a file from the build if it exists, otherwise the app (client-side routes).
+    location / {
+        try_files $uri /index.html;
+    }
+}
+
+map "" $ascrum_stub_control {
+    default "${ROUTE_STUB_CONTROL}";
+}

@@ -13,6 +13,7 @@ import { startStubServer } from '../../web/stub/server.ts'
 import type { Clock } from '../../web/stub/session.ts'
 import { DEFAULT_THROTTLE } from '../../web/stub/throttle.ts'
 import { DEFAULT_SWEEP_SECONDS, loadConfig, type ApiSettings } from './config.ts'
+import { addHealthCheck } from './health.ts'
 import { migrate } from './migrate.ts'
 import type { ScryptParams } from './passwords.ts'
 import { PgSessions } from './pgSessions.ts'
@@ -34,6 +35,12 @@ export type ApiOptions = Partial<ApiSettings> & {
  */
 export async function startApi(options: ApiOptions): Promise<Server> {
   const { pool, port, clock = Date.now } = options
+  // Q-p5-containers-1 (b), DEV-p5-containers-01: pg.Pool emits 'error' when the database drops an idle
+  // connection (a restart, a failover, `docker compose stop db`), and an 'error' event without a
+  // listener is an uncaught exception: the process exits. The listener lives here, where the API takes
+  // over the pool, so the process survives whether or not anything else (the health check) is wired
+  // in. The pool discards the dead connection and opens a new one on the next query.
+  pool.on('error', (error) => console.error('[api] lost an idle database connection:', error.message))
   const applied = await migrate(pool)
   const store = new PgStore(pool, { scrypt: options.scrypt })
   if (applied.includes('001')) {
@@ -49,6 +56,7 @@ export async function startApi(options: ApiOptions): Promise<Server> {
     { store, sessions, loginThrottle, allowReset: options.allowReset ?? false },
     { secureCookies: options.production ?? true, trustProxyHops: options.trustProxyHops ?? 0 },
   )
+  addHealthCheck(server, pool) // GET /healthz, ahead of the contract (AC-CTR-03, health.ts)
 
   // DEV-p5-store-03: expired sessions (and ended throttle windows) are deleted on a timer, so rows from
   // cookie-less clients (health checks, crawlers) do not pile up. unref: the timer never keeps the
