@@ -116,13 +116,21 @@ test('AC-CTR-03: the API container answers /healthz with 200 and sets no cookie'
   }
 })
 
-test('§3.3: the production configuration answers 404 to POST /__stub/reset and resets nothing', async () => {
+test('§3.3 / DEV-p5-containers-06: the production configuration answers 404 to POST /__stub/reset and resets nothing', async () => {
   // web-prod: nginx does not route the reset path at all (ROUTE_STUB_CONTROL defaults to off).
   const web = await playwrightRequest.newContext({ baseURL: url('E2E_PROD_WEB_URL') })
   // api-prod: the API image without ALLOW_RESET, reached directly, so nginx cannot hide the answer.
   const api = await playwrightRequest.newContext({ baseURL: url('E2E_PROD_API_URL') })
   try {
-    expect((await web.post('/__stub/reset')).status()).toBe(404)
+    // DEV-p5-containers-06: the 404 must be nginx's own, so the web-side lock is tested on its own. If
+    // web-prod routed /__stub/ to api-prod, api-prod's 404 (the contract's JSON, below) would look the
+    // same by status alone.
+    const viaWeb = await web.post('/__stub/reset')
+    expect(viaWeb.status()).toBe(404)
+    expect(viaWeb.headers()['content-type']).toContain('text/html')
+    const webBody = await viaWeb.text()
+    expect(webBody).toContain('<center>nginx</center>')
+    expect(webBody).not.toContain(JSON_PREFIX)
 
     // Sign in on api-prod, so a reset would show: it truncates the sessions table.
     await api.get('/current-user')
@@ -132,14 +140,16 @@ test('§3.3: the production configuration answers 404 to POST /__stub/reset and 
     })
     expect(login.status()).toBe(200)
 
-    // With a valid session and XSRF header, the request gets past the XSRF check to routing: 404.
+    // With a valid session and XSRF header: 404.
     expect((await api.post('/__stub/reset', { headers: await xsrfHeader(api) })).status()).toBe(404)
-    // Without them, today's handle() stops it at the XSRF check (403) before routing. p5-security makes
-    // that a 404 too (AC-SEC-03); whichever of the two PRs merges second narrows this to 404
-    // (Q-p5-containers-2). Either way it is refused.
+    // Without them, also 404 (AC-SEC-03, p5-security): the route is answered before sessions and XSRF,
+    // with no cookie. Narrowed from "403 or 404" once #59 merged (Q-p5-containers-2).
     const bare = await playwrightRequest.newContext({ baseURL: url('E2E_PROD_API_URL') })
     try {
-      expect([403, 404]).toContain((await bare.post('/__stub/reset')).status())
+      const response = await bare.post('/__stub/reset')
+      expect(response.status()).toBe(404)
+      expect(await response.text()).toBe(`${JSON_PREFIX}{"message":"Not found"}`)
+      expect(response.headersArray().filter((h) => h.name.toLowerCase() === 'set-cookie')).toEqual([])
     } finally {
       await bare.dispose()
     }
@@ -149,5 +159,68 @@ test('§3.3: the production configuration answers 404 to POST /__stub/reset and 
   } finally {
     await web.dispose()
     await api.dispose()
+  }
+})
+
+test('§3.6 / DEV-p5-containers-07: nginx routes exactly the contract, keeps API errors, and gives nothing away', async () => {
+  for (const base of [url('E2E_BASE_URL'), url('E2E_PROD_WEB_URL')]) {
+    const context = await playwrightRequest.newContext({ baseURL: base })
+    try {
+      // A prefix match only with the slash: /databasesX is a client-side path (the app), not the API.
+      const near = await context.get('/databasesX')
+      expect(near.status(), `${base} /databasesX`).toBe(200)
+      expect(await near.text(), `${base} /databasesX`).toContain('<div id="root">')
+
+      // The API's 404s pass through as the API sent them: status, JSON prefix and message. nginx must not
+      // turn them into the app's index.html (proxy_intercept_errors / error_page).
+      for (const [path, message] of [
+        ['/databases/ascrum/collections/nope', 'Unknown database or collection'],
+        ['/databases/ascrum/collections/projects/000000000000000000000000', 'Document not found'],
+      ] as const) {
+        const missing = await context.get(path)
+        expect(missing.status(), `${base} ${path}`).toBe(404)
+        expect(missing.headers()['content-type'], `${base} ${path}`).toContain('application/json')
+        expect(await missing.text(), `${base} ${path}`).toBe(`${JSON_PREFIX}{"message":"${message}"}`)
+      }
+
+      // No version anywhere (server_tokens off): not in the header, not on nginx's own error pages.
+      for (const path of ['/', '/assets/missing-0000.js']) {
+        const response = await context.get(path)
+        expect(response.headers()['server'], `${base} ${path}`).toBe('nginx')
+        expect(await response.text(), `${base} ${path}`).not.toMatch(/nginx\/\d/)
+      }
+
+      // No directory listing (autoindex) for the build's folders.
+      const listing = await context.get('/assets/')
+      expect(listing.status(), `${base} /assets/`).toBe(404)
+      expect(await listing.text(), `${base} /assets/`).not.toContain('Index of')
+    } finally {
+      await context.dispose()
+    }
+  }
+})
+
+test('DEV-p5-containers-08: nginx never redirects to its internal port; redirects stay on the origin used', async () => {
+  for (const base of [url('E2E_BASE_URL'), url('E2E_PROD_WEB_URL')]) {
+    const context = await playwrightRequest.newContext({ baseURL: base })
+    try {
+      // /databases is the one nginx redirects today (to /databases/); the others are directories in the
+      // build. Whatever answers a redirect must keep the caller's origin.
+      const redirects: string[] = []
+      for (const path of ['/databases', '/assets', '/img', '/databases/', '/assets/']) {
+        const response = await context.get(path, { maxRedirects: 0 })
+        const location = response.headers()['location']
+        if (response.status() >= 300 && response.status() < 400) {
+          expect(location, `${base} ${path}`).toBeDefined()
+          expect(location, `${base} ${path}`).not.toContain(':8080')
+          expect(new URL(location ?? '', base + path).origin, `${base} ${path}`).toBe(new URL(base).origin)
+          redirects.push(path)
+        }
+      }
+      // Not vacuous: at least the one known redirect was checked.
+      expect(redirects, base).toContain('/databases')
+    } finally {
+      await context.dispose()
+    }
   }
 })
