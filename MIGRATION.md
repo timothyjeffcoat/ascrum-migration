@@ -24,3 +24,20 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 | 3 | projects + productbacklog | A | merged | [#7](https://github.com/timothyjeffcoat/ascrum-migration/pull/7) | 5/5 ACs; 14/14 reviewer mutations caught; DEV-projects-01 (Q-projects-1, answered (a)) and -02 (CI flake, fixed in #10) non-blocking; merged as a66bf3f |
 | 4 | sprints + tasks | B | merged | [#19](https://github.com/timothyjeffcoat/ascrum-migration/pull/19) | 9/9 ACs; 34/34 reviewer unit mutations caught (e2e 4/5); DEV-sprints-tasks-01 (stale ids, owner question recommended), -02, -03 non-blocking; Q-sprints-tasks-1/2 recommended as implemented; P5 implemented and re-reviewed; merged as b9d1e3c |
 | 5 | dashboard + projectsinfo | B | merged | [#18](https://github.com/timothyjeffcoat/ascrum-migration/pull/18) | 2/2 ACs; 25/27 reviewer mutations caught (DEV-dashboard-01/02, test gaps, non-blocking); Q-dashboard-1 awaits the owner (reviewer recommends (a)); DEV-dashboard-01/02 fixed; merged as eb33b23 |
+
+## Phase 5 (spec `spec/phase5-spec.md`, APPROVED rev 2)
+
+| Gate | Opens when | State |
+|---|---|---|
+| Wave A (p5-store, p5-devsecops) | spec approved | **open** (2026-11-23): owner said "start wave A" |
+| Wave B (p5-security, p5-containers) | wave A `merged` | closed |
+| Wave C (p5-infra) | wave B `merged` and the owner prerequisites in spec §11 | closed |
+
+| Cluster | Wave | Ports (STUB/PREVIEW/PAGES) | Status | PR | Reviewer notes |
+|---|---|---|---|---|---|
+| p5-store | A | 3601/4773/4774, Postgres 55436 | pending | | |
+| p5-devsecops | A | 3701/4873/4874 | pending | | |
+| p5-security | B | | pending | | |
+| p5-containers | B | | pending | | |
+| p5-infra | C | | pending | | |
+
