@@ -660,3 +660,30 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "I read the response to my post as proof that AI migration is the trend. The comments said something narrower: nobody asked how to migrate, every question was how to trust what the agents did. The market is real; the open problem in it is verification."
+
+## 2026-11-23: Phase 5 begins (spec approved)
+- **What.** After the article, the repo still showed a migration against a fake server. Phase 5 replaces it with a real one: a Node API on PostgreSQL that must serve the same wire contract, containers, a deployment to AWS from CI, and security scans as gates (`spec/phase5-spec.md`, PR #37).
+- **Decision.** The owner approved all 12 recommendations. They include managed AWS services (S3 + CloudFront, ECS Fargate, RDS) and a public demo, reseeded nightly. Two were added at approval: a cost alarm (AC-AWS-06), and a rule that agents never hold AWS credentials outside CI (§11).
+- **Deliberately not done.** No microservices. The API has one job and one team, and splitting it would add moving parts without a benefit this app can show (§3.5).
+- **The referee.** The existing tests decide whether the real server matches the fake one: the stub contract tests run against both stores, and the 406 unit and 37 Playwright tests must stay green.
+- **Baseline for the next post** (LinkedIn analytics, 2026-11-23, before the article link was added to the post): post 334 impressions, 12 comments (9 in one thread), 2 reactions; article 35 impressions.
+
+**Questions readers will ask, and the evidence each wave must leave**
+These come from how the first post's comments went: every question was about trust, independence and what was missed, none about the migration itself.
+
+| Likely question | Evidence to capture |
+|---|---|
+| Did the old tests catch anything when the server changed, or did everything just pass? | The contract tests that failed against Postgres before they passed, with the cause (metrics fails, worklog) |
+| Who chose the breakages this time? | Owner-chosen breakages in every wave, next to the agents', with results (spec §12) |
+| Did the agents write the security checks that grade their own code? | A separate reviewer per wave; each scanner's planted finding and its red run (AC-DSO-01) |
+| Did an agent have AWS access? Could it have deleted something? | The deploy role's permissions as written; agents had none outside CI (§11); who ran each deploy |
+| What did it cost? | The AWS bill, measured, not estimated |
+| Why no microservices, when the industry says microservices? | §3.5, and whether anything in Phase 5 argued against it |
+| Mongo documents into Postgres tables: what didn't fit? | DEV-p5 rows: the missing foreign key (D13), unknown fields in `jsonb` (Q-p5-9) |
+| Is a public demo with published passwords safe? | Q-p5-11: no real data, nightly reseed, throttled login (AC-SEC-04), reset route absent (AC-SEC-03) |
+| What did the agent get wrong this time? | Deviations, reverts and wrong turns in the worklogs |
+| How much of it did you do yourself? | Human interventions (spec §10): every answer, override and veto |
+| Would you put this in production? | Honest answer: a demo environment with no real users; which production concerns are still missing |
+
+**Moment (article candidate)**
+- "The first article ended with every test green against a fake server. Phase 5's question: do those same tests still pass against a real database? The old tests are now the referee for the new server."

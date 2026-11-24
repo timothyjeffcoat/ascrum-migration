@@ -1,6 +1,7 @@
 # Phase 5 Spec: from a fake server to production (Node + PostgreSQL, containers, AWS, DevSecOps)
 
-Status: **DRAFT rev 0, not approved.** No worker starts until the owner answers §9 and this line reads APPROVED.
+Status: **APPROVED rev 1** (owner: "approve all" for §9 Q-p5-1..12, 2026-11-23). Workers start only when their wave opens (§4). Wave C also needs the owner prerequisites in §11.
+Revision history: rev 0 (draft, PR #37). Rev 1 records the owner's answers (§9) and adds AC-AWS-06 (a cost alarm, because Q-p5-4 (a) runs up a monthly bill), §11 (owner prerequisites) and §12 (evidence for the article).
 Inputs: `spec/conversion-spec.md` (rev 3, the contract this phase must not break), especially §7 (stub), §10 (metrics) and §12.6 (AC-STUB-*).
 Authority and roles: the same as `conversion-spec.md` (owner, orchestrator, worker, reviewer). Where this spec is silent, `conversion-spec.md` applies; where both are silent, ask (§8).
 
@@ -121,6 +122,7 @@ Waves: **A** = p5-store and p5-devsecops in parallel. **B** = p5-security and p5
 - AC-AWS-03. After a deploy, a smoke test signs in as a seed user over HTTPS and loads the projects list.
 - AC-AWS-04. One documented command destroys the environment, and a second run of it is a no-op.
 - AC-AWS-05. The database is not reachable from the internet.
+- AC-AWS-06. An AWS budget alarm e-mails the owner before the monthly cost of `demo` passes a limit the owner sets. The limit is not written in the repo.
 
 ### 5.5 DevSecOps (p5-devsecops)
 - AC-DSO-01. Each scan in §6 is a required check on `migration`, and a deliberately planted finding of each kind turns it red (the reviewer's breakages, logged).
@@ -149,8 +151,8 @@ The current five checks stay. Added, per Q-p5-7:
 ## 8. Questions during Phase 5
 As in `conversion-spec.md` §8.5: `spec/questions/<cluster>.md`, id `Q-<cluster>-<n>`.
 
-## 9. Open questions for the owner (answer before approval)
-Each has a recommendation; "approve all" accepts the recommendations.
+## 9. Owner decisions (answered 2026-11-23: "approve all")
+Every recommendation below is accepted. Where a recommendation offered two options, the first one applies: Q-p5-4 is **(a)** (S3 + CloudFront, ECS Fargate, RDS), so Q-p5-7 uses ECR scan-on-push. The owner may still switch Q-p5-4 to (b) before wave C opens if the measured cost is too high.
 
 | Id | Question | Options | Recommendation |
 |---|---|---|---|
@@ -172,3 +174,19 @@ Each has a recommendation; "approve all" accepts the recommendations.
 - `pnpm verify` and every check in §6 are green on `migration`.
 - `demo` deployed from CI, smoke test green, destroy command proven once.
 - `spec/deviations.md` has the `DEV-p5-*` rows, and the README gains a Phase 5 section with measured numbers.
+
+## 11. Owner prerequisites (before wave C)
+- An AWS account the owner controls, with billing access.
+- The owner runs the one-time bootstrap: CDK bootstrap and the GitHub OIDC role. Agents never hold AWS console credentials or long-lived keys. They get the deploy role only through CI.
+- The owner sets the budget alarm limit (AC-AWS-06).
+- Account ids, the role ARN and the alarm e-mail stay out of the repo: GitHub repository variables and secrets only.
+
+## 12. Evidence for the article
+The Phase 5 article and post are written from the record, like the first one. Each wave must leave the evidence the readers' questions will need (the list is in `spec/journal.md`, entry "Phase 5 begins"):
+- the stub contract tests that failed against Postgres before they passed, with the reason, from `spec/metrics.jsonl` and the worklogs;
+- breakages chosen by the owner for every wave, not only by agents, with the results;
+- each scanner's planted finding and its red run (AC-DSO-01);
+- the deploy role's permissions as written, and who ran which deploy;
+- the measured AWS cost, from the bill;
+- every human intervention (answers, overrides, vetoes).
+
