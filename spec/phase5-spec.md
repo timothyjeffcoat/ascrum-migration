@@ -93,8 +93,9 @@ Each one is a deliberate difference from the stub, so each gets a D-id-style com
 | p5-containers | Dockerfiles, `compose.yaml`, e2e against the compose stack | p5-store |
 | p5-infra | infrastructure as code, deploy and destroy workflows, OIDC role | p5-containers |
 | p5-devsecops | scanning workflows and required checks (§6) | none; can run first |
+| p5-hardening | the open non-blocking follow-ups from wave B (added 2026-11-24, owner: "start hardening"): DEV-p5-security-13, -15, -16, -17 and DEV-p5-containers-11..14. Owns `api/src/**`, `web/stub/**`, `api/eslint.config.js`, `web/eslint.config.js` (rules may only be added), `docker/**`, `.github/workflows/**`, `.github/actions/**` | waves A and B merged |
 
-Waves: **A** = p5-store and p5-devsecops in parallel. **B** = p5-security and p5-containers. **C** = p5-infra. Each wave opens only when the previous one is merged (the `conversion-spec.md` §8 gate rule). The worker → reviewer → PR workflow is unchanged (§8.2 there).
+Waves: **A** = p5-store and p5-devsecops in parallel. **B** = p5-security and p5-containers. **C** = p5-infra. p5-hardening runs between B and C, alone. Each wave opens only when the previous one is merged (the `conversion-spec.md` §8 gate rule). The worker → reviewer → PR workflow is unchanged (§8.2 there).
 
 ## 5. Acceptance criteria
 ### 5.1 Store (p5-store)
