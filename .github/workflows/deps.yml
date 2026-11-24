@@ -1,0 +1,32 @@
+# Dependency audit gate (Phase 5 spec §6 "deps", Q-p5-7). Fails on any advisory of severity high or
+# critical in web/'s lockfile, the same bar §6 sets for image-scan. Registry errors fail the job too
+# (no --ignore-registry-errors): an audit that could not run is not a pass.
+name: Deps
+
+on:
+  pull_request:
+  push:
+    branches: [migration]
+  schedule:
+    # Advisories are published without any change to the repo, so audit daily as well.
+    - cron: '23 5 * * *'
+
+concurrency:
+  group: deps-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-web
+      - run: pnpm audit --audit-level high

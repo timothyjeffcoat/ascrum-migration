@@ -1,0 +1,40 @@
+# Static analysis gate (Phase 5 spec §6 "codeql", Q-p5-7). Advanced setup, so the repo owns the config.
+# The job uploads SARIF; GitHub then posts a separate "CodeQL" check run on the PR, which fails when the
+# PR adds an alert at or above the repo's code-scanning threshold (default: errors and high/critical
+# security alerts). That "CodeQL" check is the one that goes red on a finding (AC-DSO-01).
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [migration]
+  schedule:
+    # New queries ship with new CodeQL releases, so re-scan weekly even when nothing changed.
+    - cron: '17 4 * * 1'
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Upload results to code scanning. Stated explicitly so Dependabot PRs (read-only token by
+      # default) can upload too.
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      # JS/TS is analysed from source (build-mode none), so no install or build is needed.
+      # `actions` also checks the workflows themselves (for example script injection).
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript, actions
+          build-mode: none
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v4

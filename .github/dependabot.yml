@@ -1,0 +1,30 @@
+# Dependency updates arrive as PRs into `migration` and go through the same required checks as any
+# other PR (Phase 5 spec AC-DSO-02). Nothing here auto-merges.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /web
+    target-branch: migration
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine minor/patch churn; majors stay separate so each can be reviewed.
+      web-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    # `/` covers .github/workflows; the composite action is listed explicitly.
+    directories:
+      - /
+      - /.github/actions/setup-web
+    target-branch: migration
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
