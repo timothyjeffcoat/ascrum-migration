@@ -5,6 +5,11 @@ const CI = Boolean(process.env.CI)
 const STUB_PORT = process.env.STUB_PORT ?? '3001'
 const PREVIEW_PORT = process.env.PREVIEW_PORT ?? '4173'
 const PAGES_PORT = process.env.PAGES_PORT ?? '4174'
+// E2E_BASE_URL: run against a stack that is already running (the compose stack, AC-CTR-01, `pnpm
+// e2e:compose`). Then the `chromium` project uses that URL, Playwright starts only the Pages server (the
+// Pages build is not part of that stack), and the container checks in e2e/containers/ run too; they
+// need a running stack, so the default run leaves them out. Unset: Playwright starts every server.
+const EXTERNAL = process.env.E2E_BASE_URL
 // Servers are never reused: a stub left running on the stub port (e.g. from `pnpm dev`) would carry stale
 // state into the run. If a port is busy, Playwright fails loudly instead (review finding R2-13).
 
@@ -22,8 +27,9 @@ export default defineConfig({
     {
       // The app as `pnpm build` makes it, served by `vite preview`, API proxied to the Node stub.
       name: 'chromium',
-      testIgnore: /pages\//,
-      use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${PREVIEW_PORT}` },
+      // Anchored at e2e/: the checkout's own path may contain "containers/" (this cluster's worktree did).
+      testIgnore: EXTERNAL ? /pages\// : /pages\/|e2e\/containers\//,
+      use: { ...devices['Desktop Chrome'], baseURL: EXTERNAL ?? `http://localhost:${PREVIEW_PORT}` },
     },
     {
       // The GitHub Pages build (MSW in the browser) behind a server that behaves like Pages.
@@ -33,8 +39,12 @@ export default defineConfig({
     },
   ],
   webServer: [
-    { command: 'node stub/server.ts', url: `http://localhost:${STUB_PORT}/current-user` },
-    { command: 'pnpm exec vite preview', url: `http://localhost:${PREVIEW_PORT}` },
+    ...(EXTERNAL
+      ? []
+      : [
+          { command: 'node stub/server.ts', url: `http://localhost:${STUB_PORT}/current-user` },
+          { command: 'pnpm exec vite preview', url: `http://localhost:${PREVIEW_PORT}` },
+        ]),
     {
       command: 'node scripts/pages-server.ts',
       url: `http://localhost:${PAGES_PORT}/ascrum-migration/`,
