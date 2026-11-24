@@ -1,6 +1,13 @@
 # Dependency audit gate (Phase 5 spec §6 "deps", Q-p5-7). Fails on any advisory of severity high or
-# critical in web/'s lockfile, the same bar §6 sets for image-scan. Registry errors fail the job too
-# (no --ignore-registry-errors): an audit that could not run is not a pass.
+# critical, the same bar §6 sets for image-scan. Registry errors fail the job too (no
+# --ignore-registry-errors): an audit that could not run is not a pass.
+#
+# Every pnpm project outside legacy/ is audited, not only web/ (DEV-p5-devsecops-03). The job finds the
+# lockfiles itself, so it works today (web/ only) and needs no edit when a root pnpm-workspace.yaml and
+# api/ arrive (Q-p5-1 (b)): it fails if any package.json is not an importer of an audited lockfile.
+#
+# An audit ignore in any pnpm config fails the job (DEV-p5-devsecops-04): plant #44 showed that
+# `auditConfig.ignoreGhsas` in a pnpm-workspace.yaml turned this gate green without touching this file.
 name: Deps
 
 on:
@@ -18,15 +25,102 @@ concurrency:
 permissions:
   contents: read
 
-defaults:
-  run:
-    working-directory: web
-
 jobs:
   deps:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-web
-      - run: pnpm audit --audit-level high
+
+      - name: No audit ignores in any pnpm config
+        run: |
+          # Tracked files only; legacy/ is the frozen reference app (npm, never audited by pnpm).
+          mapfile -t configs < <(git ls-files -- \
+            ':(glob)**/pnpm-workspace.yaml' ':(glob)**/package.json' ':(glob)**/.npmrc' ':(glob)**/.pnpmrc' \
+            ':(exclude)legacy/**')
+          printf 'checked: %s\n' "${configs[@]}"
+          # auditConfig holds pnpm's ignore lists (ignoreGhsas, ignoreCves, ...). Any spelling, in YAML,
+          # JSON or ini form, counts.
+          if grep -HnEi 'audit[-_]?config|ignore[-_]?(ghsas|cves|unfixable)' -- "${configs[@]}"; then
+            echo "::error::An audit ignore was found in a pnpm config (lines above). Ignoring an advisory mutes the deps gate, so it needs an owner-approved deviation (an answered Q-<cluster>-<n> and a row in spec/deviations.md) and a reviewed change to this workflow, not a config entry."
+            exit 1
+          fi
+
+      - name: Every pnpm project is covered by an audited lockfile
+        id: lockfiles
+        run: |
+          fail=0
+          # Lockfiles that pnpm audit cannot read would be silently unaudited.
+          other=$(git ls-files -- ':(glob)**/package-lock.json' ':(glob)**/npm-shrinkwrap.json' \
+            ':(glob)**/yarn.lock' ':(glob)**/bun.lock' ':(glob)**/bun.lockb' ':(exclude)legacy/**')
+          if [ -n "$other" ]; then
+            echo "::error::Lockfiles outside legacy/ that pnpm audit cannot read: $other"
+            fail=1
+          fi
+          mapfile -t locks < <(git ls-files -- ':(glob)**/pnpm-lock.yaml' ':(exclude)legacy/**')
+          if [ ${#locks[@]} -eq 0 ]; then
+            echo "::error::No pnpm-lock.yaml outside legacy/, so nothing would be audited."
+            exit 1
+          fi
+          # Each package.json must be an importer of the nearest tracked pnpm-lock.yaml at or above it.
+          while IFS= read -r pkg; do
+            dir=$(dirname "$pkg")
+            lockdir=$dir
+            until git ls-files --error-unmatch "$lockdir/pnpm-lock.yaml" >/dev/null 2>&1; do
+              if [ "$lockdir" = . ]; then lockdir=; break; fi
+              lockdir=$(dirname "$lockdir")
+            done
+            if [ -z "$lockdir" ]; then
+              echo "::error file=$pkg::$pkg has no pnpm-lock.yaml at or above it, so it is not audited."
+              fail=1
+              continue
+            fi
+            if [ "$lockdir" = "$dir" ]; then
+              rel=.
+            elif [ "$lockdir" = . ]; then
+              rel=$dir
+            else
+              rel=${dir#"$lockdir"/}
+            fi
+            # Importer keys are the entries under `importers:` with a two-space indent.
+            if awk -v want="$rel" '
+                /^importers:/ { inside = 1; next }
+                inside && /^[^ ]/ { inside = 0 }
+                inside && /^  [^ ]/ { key = $0; sub(/^  /, "", key); sub(/:$/, "", key); gsub(/["\047]/, "", key); if (key == want) found = 1 }
+                END { exit found ? 0 : 1 }' "$lockdir/pnpm-lock.yaml"; then
+              echo "$pkg: importer '$rel' of $lockdir/pnpm-lock.yaml"
+            else
+              echo "::error file=$pkg::$pkg is not an importer of $lockdir/pnpm-lock.yaml, so it is not audited."
+              fail=1
+            fi
+          done < <(git ls-files -- ':(glob)**/package.json' ':(exclude)legacy/**')
+          [ "$fail" -eq 0 ] || exit 1
+          echo "dirs=$(printf '%s\n' "${locks[@]}" | xargs -n1 dirname | sort -u | paste -sd' ')" >> "$GITHUB_OUTPUT"
+
+      # pnpm and Node versions come from the repo root once it declares them, otherwise from web/.
+      - name: Pick the pnpm and Node version files
+        id: versions
+        run: |
+          if [ -f package.json ] && jq -e '.packageManager' package.json >/dev/null; then pj=package.json; else pj=web/package.json; fi
+          if [ -f .nvmrc ]; then nv=.nvmrc; else nv=web/.nvmrc; fi
+          echo "package_json=$pj" >> "$GITHUB_OUTPUT"
+          echo "nvmrc=$nv" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: ${{ steps.versions.outputs.package_json }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: ${{ steps.versions.outputs.nvmrc }}
+
+      # The audit reads the lockfile only, so no install is needed.
+      - name: pnpm audit --audit-level high, per lockfile
+        env:
+          DIRS: ${{ steps.lockfiles.outputs.dirs }}
+        run: |
+          fail=0
+          for d in $DIRS; do
+            echo "::group::pnpm audit in $d"
+            (cd "$d" && pnpm audit --audit-level high) || { echo "::error::pnpm audit failed in $d"; fail=1; }
+            echo "::endgroup::"
+          done
+          exit $fail
