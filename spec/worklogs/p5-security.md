@@ -322,3 +322,64 @@ $ tsc --noEmit -p tsconfig.json
 ✓ built in 395ms                     # dist-pages
   40 passed (24.9s)                  # Playwright
 ```
+
+## 2026-11-23, session 2 continued (worker): owner answers and the test gaps DEV-p5-security-09..12
+
+The owner answered "approve all" (relayed by the orchestrator). Tests only: no production code changed
+in this part (two comments now cite the answers).
+
+### Owner answers (`1bb88ae`)
+Q-p5-security-1 = (a), Gravatar images only. Q-p5-security-2 = (a), rotate only `sid`. Both are recorded
+in `spec/questions/p5-security.md`, and the comments in `web/securityHeaders.ts` and `web/stub/handlers.ts`
+now cite the answers instead of an open question.
+
+### Red, then green: each mutant passes the old tests and fails the new one
+Method: apply the reviewer's breakage alone, run the existing tests (old) and the new test (new), then restore.
+- For -09: Playwright `e2e/security.spec.ts`, chromium, after `pnpm build`.
+- For the others: the integration files, with the new tests excluded by name for "old".
+
+| DEV | Breakage | Old tests | New test | New test name |
+|---|---|---|---|---|
+| -09 | R8 style-src `'unsafe-inline'` | 3 passed | failed | `AC-SEC-05 / DEV-p5-security-09: the served CSP is exactly the expected policy: no unsafe-* source, no wildcard, images from self and Gravatar only` |
+| -09 | R9 script-src `'unsafe-eval'` | 3 passed | failed | same |
+| -09 | R10 `connect-src *` | 3 passed | failed | same |
+| -10 | R15 `if (!match) return stored.length > 0` | 72 passed | failed | `AC-SEC-01 / DEV-p5-security-10: malformed, truncated, wrong-length and out-of-range values reject every password, the "right" one included` |
+| -11 | R14 `secureCookies: options.production ?? false` | 72 passed | failed | `AC-SEC-02 / AC-SEC-03 / DEV-p5-security-11: startApi() with no settings at all is production: Secure cookies, no reset route, throttling on` |
+| -12 | R1 hex-string compare instead of `timingSafeEqual` | 72 passed | failed | `AC-SEC-01 / DEV-p5-security-12: each verification compares the two 32-byte keys with timingSafeEqual, and its answer decides` |
+| -12 | R20 decoy line removed | 72 passed | failed | `AC-SEC-01 / DEV-p5-security-12: PgStore.findLogin runs exactly one verification for an unknown e-mail, as for a known one with a wrong password` |
+
+With no mutant, every test is green.
+
+### What each test does, and its limits
+- **-09** (`web/e2e/security.spec.ts`):
+  - The expected policy is written out in the test, not imported, and the served header is parsed and compared with it, directive by directive.
+  - It also asserts the rules any future policy must keep: no `'unsafe-*'` or `'wasm-unsafe-eval'` source, no `*`, no bare scheme, `data:` only in `img-src`, and `img-src` limited to `'self'`, `data:` and `https://www.gravatar.com`.
+  - Changing the policy now means changing the test on purpose.
+- **-10** (`api/src/passwords.test.ts`):
+  - 18 malformed values, each with the "right" and with an empty password: plain text, truncated or lengthened key or salt, another or upper-case name, whitespace, an extra field, a non-base64url character, `log2N` 0 and 21, `r` 0, `p` 0 and a negative `r`.
+  - A well-formed hash in the same test is the control.
+  - **Not done:** the reviewer also suggested capping `r` and `p` the way `log2N` is capped. That is a code change, and this step was tests only, so it stays open in -10. I did not test large `r`/`p` either: today they would make scrypt allocate gigabytes, which is exactly the problem.
+- **-11** (`api/src/security.test.ts`): `startApi()` gets only a pool and a port (and the cheap test hash). The test asserts `Secure` on both cookies, a 404 reset route, and the default throttle (5 failures, then 429).
+  - The other half of -11's suggestion, refusing `production && allowReset` inside `startApi()`, is a code change and stays open.
+- **-12, structural only and labelled as such.** The reviewer logged -12 as untestable by timing, and I agree: no test here measures time.
+  - R1: `vi.mock('node:crypto')` wraps the real `timingSafeEqual` with a spy. The test asserts that each verification calls it on two 32-byte buffers, and that its answer decides: forced `false`, the right password fails; forced `true`, a wrong one passes.
+    - This proves the constant-time primitive decides the result. It does not prove the function is constant-time end to end; for example, the length check before it is not covered.
+  - R20: `vi.mock('./passwords.ts')` wraps the real `verifyPassword` with a spy. `PgStore.findLogin` makes exactly one verification for a known e-mail with a wrong password, and exactly one for an unknown e-mail, twice (the decoy is cached after the first).
+    - It counts work, not time. The decoy's own `hashPassword` on the first unknown e-mail is an extra scrypt run once per process, which is not counted. I noticed it here and did not change it.
+  - Both mocks wrap the real functions, so the code under test runs unchanged. Nothing in `web/src/api` is mocked.
+
+### Mistakes and wrong turns
+- My first `passwords.test.ts` typed the hoisted spies with `undefined as unknown as …` casts. I replaced them with typed `vi.fn<typeof …>()` plus `mockImplementation(real)` before committing, so the file has no type assertion.
+
+### Gates (from `web/`, `DATABASE_URL` on the cluster's Postgres, ports 3801/4973/4974)
+`pnpm verify` on `47acc6d`, exit 0:
+```
+All matched files use Prettier code style!
+ Test Files  41 passed (41)
+      Tests  435 passed (435)        # unit, unchanged
+ Test Files  5 passed (5)            # integration, +1 file (passwords.test.ts)
+      Tests  76 passed (76)          # was 72: +3 passwords.test.ts, +1 startApi default
+✓ built in 408ms
+✓ built in 428ms
+  41 passed (24.7s)                  # Playwright, was 40: +1 CSP pin
+```
