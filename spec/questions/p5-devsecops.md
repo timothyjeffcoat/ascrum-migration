@@ -21,6 +21,8 @@ Options:
 (c) A home-grown `grep` job for key-shaped strings. No new tool, but weak and easy to miss things.
 *Recommended: (b)*, because it is the only option that meets AC-DSO-01 as written (required, and shown red).
 
+**Answer: (b).** Add a CI job `secrets` running Gitleaks, make it required, and prove it red on a realistic fake key. Follow-up worker work after the review; the secrets part of AC-DSO-01 is "answered, pending implementation" (DEV-p5-devsecops-01). Answer: owner, relayed by the orchestrator, 2026-11-23; recorded by the reviewer.
+
 **Q-p5-devsecops-2. Which CodeQL check name to require.** (does not block the PR; the orchestrator applies it)
 Context: the `codeql` workflow job runs the analysis and uploads results; it stays green even when it finds
 something. GitHub then posts a separate check run named `CodeQL` (app `github-advanced-security`), which is
@@ -32,6 +34,8 @@ the merge, but with a "waiting" state rather than a red one); (c) rename the job
 `codeql-analyze`) so the two names do not differ only by case, then (a).
 *Recommended: (a)*; (c) is a cosmetic follow-up if the owner prefers it.
 
+**Answer: (a).** Require both `CodeQL` (the result check) and `codeql` (the job). Reviewer note: pin `CodeQL` to its app (`github-advanced-security`, id 57789) when requiring it (DEV-p5-devsecops-02). Answer: owner, relayed by the orchestrator, 2026-11-23; recorded by the reviewer.
+
 **Q-p5-devsecops-3. Three repo security settings are off.** (does not block; settings are the owner's)
 Context, checked with `gh api` on 2026-11-23: Dependabot alerts are disabled (`vulnerability-alerts` 404),
 Dependabot security updates are disabled, and private vulnerability reporting is disabled. Dependabot
@@ -41,3 +45,5 @@ vulnerability reporting) is off, and a personal e-mail is not allowed in the rep
 Options: (a) the owner enables all three, and a later PR adds `SECURITY.md` pointing to private reporting;
 (b) leave them off and rely on the `deps` job and version updates.
 *Recommended: (a)*. Alerts and security PRs are free on public repos and add a second, non-CI signal.
+
+**Answer: (a), done.** The orchestrator enabled Dependabot alerts, Dependabot security updates and private vulnerability reporting through the GitHub API (the reviewer re-read all three as enabled). A `SECURITY.md` pointing to GitHub private vulnerability reporting is now possible and is follow-up worker work. Answer: owner, relayed by the orchestrator, 2026-11-23; recorded by the reviewer.
