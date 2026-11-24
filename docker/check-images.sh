@@ -2,10 +2,12 @@
 # AC-CTR-02 and the image checks around it. Checks the built images themselves (their config, history and
 # every file in them), plus the static pins they are built from:
 #   - non-root; no dev dependencies, test files or .env files (AC-CTR-02);
-#   - every FROM in docker/*.Dockerfile and every pulled compose image pinned by version and digest
-#     (DEV-p5-containers-09);
+#   - every image docker/*.Dockerfile uses (FROM, COPY --from, RUN --mount from, the # syntax= frontend;
+#     any keyword case) and every pulled compose image pinned by version and digest (DEV-p5-containers-09,
+#     -12);
 #   - no secret in any layer's command, build argument, ENV or label: the image history and config are
-#     scanned with Gitleaks, and no ENV name looks like a credential (DEV-p5-containers-09);
+#     scanned with Gitleaks, no ENV name looks like a credential (DEV-p5-containers-09), and no value
+#     holds a URL with a password (DEV-p5-containers-13);
 #   - the API image holds exactly the source files the API loads, they all load (an import smoke test),
 #     its CMD is `node api/src/main.ts`, and it actually starts against PostgreSQL and answers /healthz
 #     (DEV-p5-containers-05: an image that crashed at start used to pass here).
@@ -81,18 +83,89 @@ trap cleanup EXIT
 # `latest` or `alpine`). Dependabot moves the tag and the digest together (.github/dependabot.yml).
 PINNED='^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]*[0-9][A-Za-z0-9._-]*@sha256:[0-9a-f]{64}$'
 
-# --- Static: every base image and every pulled compose image is pinned ------------------------------
+# --- Static: every image a Dockerfile uses and every pulled compose image is pinned ---------------
+# DEV-p5-containers-12: Dockerfile keywords are case-insensitive (`from node:24` builds), an instruction
+# can be split over lines with `\`, and images also come in through `COPY --from=<image>` and
+# `RUN --mount=...,from=<image>`, not only through FROM. So each file is read as Docker reads it, one
+# logical instruction at a time, and every image reference in it is checked: FROM, COPY/ADD --from= and
+# RUN --mount from=. A reference to an earlier stage (by name in any case, or by index) is fine; anything
+# else must be pinned. The `# syntax=` parser directive names the frontend image that runs the build, so
+# it must be pinned too; this repo's Dockerfiles have none and use the engine's built-in frontend
+# (spec/worklogs/p5-hardening.md). An `# escape=` directive would change the continuation character this
+# reader relies on, so it is refused.
+
+# One logical instruction per line: comment lines dropped (also inside a continuation, as Docker does),
+# `\` continuations joined, blank lines inside a continuation skipped.
+instructions() {
+  awk '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ && buf != "" { next }
+    {
+      line = $0
+      if (sub(/\\[[:space:]]*$/, "", line)) { buf = buf line " "; next }
+      print buf line
+      buf = ""
+    }
+    END { if (buf != "") print buf }' "$1"
+}
+
+pin_findings=$findings
+declare -A runtime_base # Dockerfile -> the image its last FROM names (check_secrets compares histories)
 for dockerfile in docker/*.Dockerfile; do
-  stages=()
-  while read -r image alias; do
-    if [[ " ${stages[*]} " == *" $image "* ]]; then
-      : # FROM an earlier stage of this file
-    elif [[ ! $image =~ $PINNED ]]; then
-      fail "$dockerfile: FROM $image is not pinned by version and digest (written out, not through an ARG)"
+  stages=() # stage names so far, lower-cased (Docker matches them case-insensitively)
+  # A reference is fine when it names an earlier stage (by name or by index) or is pinned.
+  check_ref() {
+    local what=$1 ref=$2 stage
+    for stage in "${stages[@]}"; do [[ ${ref,,} != "$stage" ]] || return 0; done
+    if [[ $ref =~ ^[0-9]+$ ]] && ((ref < ${#stages[@]})); then return 0; fi
+    [[ $ref =~ $PINNED ]] ||
+      fail "$dockerfile: $what $ref is not pinned by version and digest (written out, not through an ARG)"
+  }
+  while IFS='=' read -r name value; do
+    case ${name,,} in
+      syntax) [[ $value =~ $PINNED ]] ||
+        fail "$dockerfile: the # syntax= frontend image $value is not pinned by version and digest" ;;
+      escape) fail "$dockerfile: an # escape= parser directive is not supported by this check" ;;
+    esac
+  done < <(sed -nE 's/^#[[:space:]]*([A-Za-z]+)[[:space:]]*=[[:space:]]*([^[:space:]]*).*/\1=\2/p' "$dockerfile")
+  froms=0
+  while read -r keyword rest; do
+    keyword=${keyword^^}
+    if [[ $keyword == ONBUILD ]]; then
+      read -r keyword rest <<< "$rest"
+      keyword=${keyword^^}
     fi
-    [[ -z $alias ]] || stages+=("$alias")
-  done < <(sed -nE 's/^[[:space:]]*FROM[[:space:]]+(--[^[:space:]]+[[:space:]]+)*([^[:space:]]+)([[:space:]]+[Aa][Ss][[:space:]]+([^[:space:]]+))?.*/\2 \4/p' "$dockerfile")
-  ((${#stages[@]} > 0)) || fail "$dockerfile: no FROM line found"
+    read -ra words <<< "$rest"
+    case $keyword in
+      FROM)
+        froms=$((froms + 1))
+        i=0
+        while [[ ${words[i]:-} == --* ]]; do i=$((i + 1)); done
+        check_ref FROM "${words[i]:-<none>}"
+        runtime_base[$dockerfile]=${words[i]:-}
+        as=${words[i + 1]:-}
+        # An unnamed stage still takes an index (COPY --from=0).
+        if [[ ${as^^} == AS && -n ${words[i + 2]:-} ]]; then stages+=("${words[i + 2],,}"); else stages+=("#$froms"); fi
+        ;;
+      COPY | ADD)
+        for word in "${words[@]}"; do
+          [[ $word == --* ]] || break
+          if [[ ${word,,} == --from=* ]]; then check_ref "$keyword --from=" "${word#*=}"; fi
+        done
+        ;;
+      RUN)
+        for word in "${words[@]}"; do
+          [[ $word == --* ]] || break
+          [[ ${word,,} == --mount=* ]] || continue
+          IFS=, read -ra options <<< "${word#*=}"
+          for option in "${options[@]}"; do
+            if [[ ${option,,} == from=* ]]; then check_ref "RUN --mount from=" "${option#*=}"; fi
+          done
+        done
+        ;;
+    esac
+  done < <(instructions "$dockerfile")
+  ((froms > 0)) || fail "$dockerfile: no FROM line found"
 done
 compose_json=$(docker compose --profile prod-check config --format json)
 # Built here (a `build` section), or the image of a service that is built here and never pulled.
@@ -101,7 +174,9 @@ while IFS=$'\t' read -r service image pull; do
   if [[ $pull == never ]] && grep -qxF "$image" <<< "$built"; then continue; fi
   [[ $image =~ $PINNED ]] || fail "compose.yaml: service $service uses $image, not pinned by version and digest"
 done < <(jq -r '.services | to_entries[] | select(.value.build == null) | [.key, .value.image, (.value.pull_policy // "")] | @tsv' <<< "$compose_json")
-echo "pins: every FROM and every pulled compose image is pinned by version and digest"
+if ((findings == pin_findings)); then
+  echo "pins: every image the Dockerfiles use (FROM, COPY --from, RUN --mount from) and every pulled compose image is pinned by version and digest"
+fi
 
 # The API runs through main.ts, which reads its settings with loadConfig() (and so refuses ALLOW_RESET in
 # production mode, DEV-p5-security-16): in the image, and in every compose service that uses the image.
@@ -112,15 +187,17 @@ overrides=$(jq -r --arg img "$api_image" '.services | to_entries[]
 [[ -z $overrides ]] || fail "compose.yaml: services that override the API image's command or entrypoint: $(tr '\n' ' ' <<< "$overrides")"
 
 # --- Secrets in layers, build arguments, ENV and labels (both images) ------------------------------
+# scheme://, a user (may be empty), `:`, a password of at least one character, `@`.
+URL_WITH_PASSWORD='[A-Za-z][A-Za-z0-9+.-]*://[^/?#@[:space:]":]*:[^/?#@[:space:]"]+@'
 check_secrets() {
-  local image=$1 dockerfile=$2 dir base ours names
+  local image=$1 dockerfile=$2 dir base ours names urls before=$findings
   dir="$work/secrets-$(tr -c 'a-zA-Z0-9\n' '_' <<< "$image")"
   mkdir -p "$dir"
   # The layers this repo's Dockerfile adds: the image's history minus its base image's (the runtime
   # stage's FROM, pinned above). The base layers are the upstream's: nginx's own history, for one,
   # holds the SHA-512 of its signing key, which Gitleaks' generic rule takes for an API key. Those are
   # for the image scan (wave C); this check is about what we add.
-  base=$(sed -nE 's/^[[:space:]]*FROM[[:space:]]+(--[^[:space:]]+[[:space:]]+)*([^[:space:]]+).*/\2/p' "$dockerfile" | tail -1)
+  base=${runtime_base[$dockerfile]}
   docker image inspect "$base" > /dev/null 2>&1 || docker pull -q "$base" > /dev/null
   docker history --no-trunc --format '{{.CreatedBy}}' "$image" > "$dir/all.txt"
   docker history --no-trunc --format '{{.CreatedBy}}' "$base" > "$work/base.txt"
@@ -143,7 +220,19 @@ check_secrets() {
   names=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | cut -d= -f1 |
     grep -iE 'pass(word|wd)?|secret|token|credential|private|api_?key|access_?key' || true)
   [[ -z $names ]] || fail "$image: ENV names that look like credentials: $(tr '\n' ' ' <<< "$names")"
-  echo "$image: no secret in its $ours own history entries or the image config"
+  # DEV-p5-containers-13: a URL that carries a password (scheme://user:password@host) is a credential
+  # whatever its variable is called and whatever its entropy: DATABASE_URL=postgres://app:<pw>@db/app has
+  # no telltale name and a shape Gitleaks' default rules do not flag. Any ENV value, label or other config
+  # field, and any of our own history lines (RUN lines show their build arguments). Printed without the
+  # password. A value with no name and no shape to go by (a bare random ENV or ARG) is beyond any pattern
+  # check; that is for the image scan and review (wave C).
+  urls=$(grep -ohE "$URL_WITH_PASSWORD" "$dir/history.txt" "$dir/inspect.json" |
+    sed -E 's#^([^:]+://[^:@]*):[^@]*@#\1:<redacted>@#' | sort -u || true)
+  [[ -z $urls ]] || fail "$image: URLs with a password in the image's own layers or its config: $(tr '\n' ' ' <<< "$urls")"
+  # The summary only when this image passed every check above.
+  if ((findings == before)); then
+    echo "$image: no secret in its $ours own history entries or the image config"
+  fi
 }
 
 # --- API ---------------------------------------------------------------------------------------

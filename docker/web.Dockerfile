@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # The web image (spec §2, G4): the production build (`vite build`, not the Pages build) behind nginx,
 # which also routes the contract's paths to the API so both share one origin (spec §3.6).
 #
@@ -17,6 +16,9 @@
 
 # Both bases are pinned by version and digest, written out on each FROM line (not through an ARG):
 # Dependabot's docker ecosystem reads only literal FROM lines (DEV-p5-containers-09).
+# No `# syntax=` directive: the build runs on the Docker engine's built-in Dockerfile frontend, so no
+# frontend image is pulled (DEV-p5-containers-12). If one is ever added, check-images.sh requires it
+# pinned by version and digest.
 # nginx 1.30 (the stable line) from nginx's own unprivileged image: runs as uid 101 and listens on 8080,
 # so no root step is needed anywhere.
 
