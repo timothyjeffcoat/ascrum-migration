@@ -8,7 +8,8 @@
 // Both spies run the real functions (mockImplementation(real)), so the code under test runs unchanged.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CREDENTIALS } from '../../web/stub/seed.ts'
-import { hashPassword, verifyPassword } from './passwords.ts'
+import { hashPassword, PRODUCTION_SCRYPT, verifyPassword } from './passwords.ts'
+import { PgStore } from './pgStore.ts'
 import { pgContext, TEST_SCRYPT } from './testDb.ts'
 
 const spies = vi.hoisted(() => ({
@@ -67,6 +68,27 @@ describe('AC-SEC-01 / DEV-p5-security-10: a malformed stored hash never matches 
   })
 })
 
+describe('AC-SEC-01 / DEV-p5-security-15: scrypt r and p are capped, like log2N', () => {
+  it('AC-SEC-01 / DEV-p5-security-15: a hash made with r over 32 or p over 16 rejects even its own password; r 32 and p 16 still verify', async () => {
+    // Real hashes at those parameters (a small log2N keeps them cheap), so without the cap each would verify:
+    // the rejection can only come from the cap, not from a key that does not match.
+    const cases: [string, { log2N: number; r: number; p: number }, boolean][] = [
+      ['r 32, p 1 (at the cap)', { log2N: 10, r: 32, p: 1 }, true],
+      ['r 8, p 16 (at the cap)', { log2N: 10, r: 8, p: 16 }, true],
+      ['r 33 (over the cap)', { log2N: 10, r: 33, p: 1 }, false],
+      ['p 17 (over the cap)', { log2N: 10, r: 8, p: 17 }, false],
+      ['log2N 1, p 16 (in range: the memory limit covers p)', { log2N: 1, r: 8, p: 16 }, true],
+      ['r 99 and p 99 (the old limit)', { log2N: 4, r: 99, p: 99 }, false],
+    ]
+    for (const [what, params, verifies] of cases) {
+      const stored = await hashPassword('demo', params)
+      expect(stored.split('$').slice(1, 4), what).toEqual([params.log2N, params.r, params.p].map(String))
+      expect(await verifyPassword('demo', stored), what).toBe(verifies)
+      expect(await verifyPassword('wrong', stored), `${what}, wrong password`).toBe(false)
+    }
+  })
+})
+
 describe('AC-SEC-01 / DEV-p5-security-12: the comparison is timingSafeEqual (structural, R1)', () => {
   it('AC-SEC-01 / DEV-p5-security-12: each verification compares the two 32-byte keys with timingSafeEqual, and its answer decides', async () => {
     const stored = await hashPassword('demo', TEST_SCRYPT)
@@ -97,5 +119,34 @@ describe('AC-SEC-01 / DEV-p5-security-12: an unknown e-mail costs a verification
     expect(await verifications(CREDENTIALS.po.email, 'not-the-password')).toBe(1)
     expect(await verifications('nobody@nowhere.test', 'not-the-password')).toBe(1)
     expect(await verifications('nobody@nowhere.test', CREDENTIALS.po.password)).toBe(1) // and again (cached decoy)
+  })
+
+  it('AC-SEC-01 / DEV-p5-security-17: the decoy costs what a real check costs: it is hashed with the store’s own scrypt parameters', async () => {
+    // The count above cannot see a cheaper decoy (one hashed at log2N 10 instead of the store's cost
+    // passed it). So the decoy's parameters are pinned to the store's, for two stores whose costs no
+    // constant in the code matches: the cheap test cost, and one that differs from both it and
+    // PRODUCTION_SCRYPT in every value.
+    const { store: testStore } = await pgContext({ allowReset: true })
+    const odd = { log2N: 11, r: 4, p: 2 }
+    expect([odd.log2N, odd.r, odd.p]).not.toContain(TEST_SCRYPT.log2N)
+    expect([
+      odd.log2N !== PRODUCTION_SCRYPT.log2N,
+      odd.r !== PRODUCTION_SCRYPT.r,
+      odd.p !== PRODUCTION_SCRYPT.p,
+    ]).toEqual([true, true, true])
+    const oddStore = new PgStore(testStore.pool, { scrypt: odd })
+    for (const store of [testStore, oddStore]) {
+      spies.verifyPassword.mockClear()
+      expect(await store.findLogin('nobody@nowhere.test', 'not-the-password')).toBeUndefined()
+      expect(spies.verifyPassword).toHaveBeenCalledTimes(1)
+      const decoy = String(spies.verifyPassword.mock.calls[0]?.[1])
+      const { log2N, r, p } = store.scrypt
+      expect(decoy.split('$').slice(0, 4), `decoy of a store at ${JSON.stringify(store.scrypt)}`).toEqual([
+        'scrypt',
+        String(log2N),
+        String(r),
+        String(p),
+      ])
+    }
   })
 })

@@ -35,6 +35,12 @@ export type ApiOptions = Partial<ApiSettings> & {
  */
 export async function startApi(options: ApiOptions): Promise<Server> {
   const { pool, port, clock = Date.now } = options
+  // DEV-p5-security-16 / AC-SEC-03: the same rule loadConfig() applies to the environment, here too, so
+  // no caller of startApi() can build a production API with the reset route. Before anything touches
+  // the database: a refused start changes nothing.
+  if ((options.production ?? true) && options.allowReset === true) {
+    throw new Error('allowReset is not allowed in production mode (pass production: false for local runs)')
+  }
   // Q-p5-containers-1 (b), DEV-p5-containers-01: pg.Pool emits 'error' when the database drops an idle
   // connection (a restart, a failover, `docker compose stop db`), and an 'error' event without a
   // listener is an uncaught exception: the process exits. The listener lives here, where the API takes
