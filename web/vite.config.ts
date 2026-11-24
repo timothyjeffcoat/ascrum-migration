@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { copyFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { securityHeaders } from './securityHeaders.ts'
 
 // Ports default to 3001 (stub) / 4173 (preview). STUB_PORT and PREVIEW_PORT override them, so parallel
 // worktrees can each run `pnpm e2e` without colliding (see CLAUDE.md, wave A).
@@ -32,7 +33,9 @@ export default defineConfig(({ mode }) => {
       postcss: { plugins: [dropIeStarHacks()] },
     },
     server: { port: 5173, strictPort: true, proxy },
-    preview: { port: PREVIEW_PORT, strictPort: true, proxy },
+    // AC-SEC-05: the production build is previewed (and tested by Playwright) with the headers the web
+    // image serves. Not on the dev server: Vite's HMR client needs inline scripts and eval.
+    preview: { port: PREVIEW_PORT, strictPort: true, proxy, headers: securityHeaders },
     build: { outDir: pages ? 'dist-pages' : 'dist' },
   }
 })
