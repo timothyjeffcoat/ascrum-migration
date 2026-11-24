@@ -20,6 +20,11 @@ outlives the database dropping its connections, and /healthz recovers" (`api/src
 `docker/check-health.sh` (container stays `running`). (b) is the tidier home if the owner prefers it;
 the test stays the same.
 
+*Answer (2026-11-23, owner, relayed by the orchestrator): (b)*: move the pool's `'error'` listener into
+the API's own start-up, so the process survives dropped connections whether or not the health module
+is loaded; keep the test. Done in session 2: the listener is in `startApi()` (`api/src/main.ts`), and
+`addHealthCheck()` no longer attaches one.
+
 **Q-p5-containers-2. Merge order with p5-security (not blocking; a dependency to sequence).**
 Context: two things on this branch depend on p5-security's work.
 1. The web image serves exactly `web/securityHeaders.ts` (`export const securityHeaders:
@@ -36,6 +41,12 @@ and the bare-POST assertion is narrowed to 404 in the same commit; (b) this PR m
 *Recommended: (a).* `e2e-compose` then never merges red, and the narrowing is done by the cluster that
 owns the test file.
 
+*Answer (2026-11-23, owner, relayed by the orchestrator): (a), extended.* #59 merged first (`ae6405a`);
+this branch merged `migration` in and made the integration fixes the review found (DEV-p5-containers-05):
+the API image takes its source files from the real import graph, `check-images.sh` starts the image,
+`APP_ENV: development` beside `ALLOW_RESET`, `TRUST_PROXY_HOPS: 1` behind nginx, and the bare-POST
+assertion narrowed to 404. Done in session 2 (worklog).
+
 **Q-p5-containers-3. MSW's service worker in the production build (not blocking; left out of the
 image).**
 Context: `vite build` copies all of `web/public/` into `dist/`, including `mockServiceWorker.js`, which
@@ -45,6 +56,8 @@ Options: (a) delete it from `dist/` in the web image's build stage (my file); (b
 skip it outside the Pages/msw modes (not my path; would also change what `vite preview` serves in e2e).
 *Recommended and implemented: (a)*; `docker/check-images.sh` fails if it comes back. (b) is the cleaner
 long-term place.
+
+*Answer (2026-11-23, owner, relayed by the orchestrator): (a)*, keep as implemented.
 
 **Q-p5-containers-4. How the health check is put in front of the contract (not blocking; implemented).**
 Context: the API is the contract's Node adapter, `startStubServer()` in `web/stub/server.ts` (not my
@@ -57,3 +70,8 @@ port for health only.
 *Recommended and implemented: (a)*, commented in `api/src/health.ts` and pinned by four tests (path
 exact, other paths pass through, no session row, wiring in `startApi`). (b) is tidier if `web/stub/`
 changes for another reason; (c) would add a port to every load balancer and task definition.
+
+*Answer (2026-11-23, owner, relayed by the orchestrator): (a)*, keep as implemented.
+
+The owner also asked for the test gaps DEV-p5-containers-06, -07, -08 and -09 to be closed before
+merge (DEV-10 stays accepted). Done in session 2 (worklog).

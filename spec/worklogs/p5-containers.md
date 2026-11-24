@@ -214,3 +214,210 @@ order with p5-security (recommended: p5-security first).
 
 ### Legacy-case table
 Not applicable: spec §9 assigns no legacy test cases to Phase 5 clusters.
+
+## 2026-11-23, session 2 (worker, after the review of #60 blocked on DEV-p5-containers-05)
+
+### What was done
+- **Merged `origin/migration`** (#59, p5-security, `ae6405a`) into the branch. Conflicts: `MIGRATION.md`,
+  `spec/journal.md`, `spec/deviations.md` (bookkeeping, both sides kept: the p5-security rows and
+  summary counts plus this cluster's ten rows; the summary now counts 84 rows) and `api/src/main.ts`
+  (#59's `startApi()` with the health check kept right after `startStubServer()`).
+- **Owner answers recorded** in `spec/questions/p5-containers.md`: Q-1 (b), Q-2 (a) extended, Q-3 (a),
+  Q-4 (a), and close DEV-06..-09 before merge.
+- **DEV-05, the integration fixes.**
+  - *Which `web/stub/` files reach the API image: derived from the real import graph.*
+    `docker/api/import-graph.ts` loads `api/src/main.ts` under a `module.registerHooks()` resolve hook and
+    prints every file Node resolved under the app root (outside `node_modules`). The `.dockerignore` now
+    lets in all non-test `api/src/*.ts` and `web/stub/*.ts`; a build stage runs the script and copies
+    exactly that list into the image. Why this over "all non-test `web/stub/*.ts`": that rule would also
+    ship `contractTests.ts`, `securityTests.ts` (test helpers that are not `*.test.ts`) and `msw.ts`, and
+    would need a name list to keep them out, which drifts the same way the old allowlist did. The import
+    graph is what the process loads, so a new contract file gets in by itself, and a new helper stays out
+    by itself. Type-only imports are erased by type stripping and are (correctly) not listed. Today's
+    graph: 9 files in `api/src`, 7 in `web/stub` (with `throttle.ts`).
+  - *The check that let it through.* `check-images.sh` now (a) runs the same script **inside the built
+    image** (`--network none`, script bind-mounted): an import smoke test that fails on
+    `ERR_MODULE_NOT_FOUND`, and the loaded list must equal the `.ts` files present (none missing, none
+    extra); (b) **starts the API image** with only `DATABASE_URL` against a throwaway PostgreSQL (the
+    compose `db` image) on a private `--internal` network, waits for Docker's health status `healthy`
+    and asks `/healthz` itself (200 `{"status":"ok"}`); (c) checks the API image's `CMD` is
+    `["node","api/src/main.ts"]` and that no compose service using the image overrides `command` or
+    `entrypoint` (so every container goes through `loadConfig()`, the condition attached to
+    DEV-p5-security-16). The `/app` allowlist no longer names `web/stub/` files; the graph decides.
+  - *Compose.* `api`: `APP_ENV: development` beside `ALLOW_RESET: '1'`, and `TRUST_PROXY_HOPS: '1'`.
+    `api-prod`: `TRUST_PROXY_HOPS: '1'` only (production mode by default, no `ALLOW_RESET`). Both sit
+    behind one nginx, which sets `X-Forwarded-For $proxy_add_x_forwarded_for` (appends the address it
+    saw), and the API reads the n-th entry from the right, so a client can only prepend entries it
+    cannot make count.
+  - *The throttle sees distinct clients through nginx:* new `docker/check-client-address.sh` (CI step
+    after the Playwright run). 20 failed sign-ins from the host through `web`, each for another account
+    and with another forged `X-Forwarded-For` (198.51.100.x), then the 21st gets 429; `login_throttle`
+    holds one per-address row (`ip:172.20.0.1 20`) and none of the forged ones; then a second client at
+    another address (the `api` container calling `http://web:8080`) signs in at once (200). Reset before
+    and after.
+  - *§3.3 narrowed to 404 only*, and the bare POST's body (`{"message":"Not found"}`) and absence of
+    cookies pinned too (AC-SEC-03).
+- **Q-1 (b).** The pool's `'error'` listener moved from `addHealthCheck()` to the top of `startApi()`
+  (before `migrate()`), with a comment; `health.ts` now only points there. The test is unchanged
+  (comment updated).
+- **DEV-06.** The §3.3 test asserts web-prod's 404 is nginx's own: `text/html`, `<center>nginx</center>`,
+  no `)]}',` prefix. If web-prod routed `/__stub/` to api-prod, the 404 would be the API's JSON.
+- **DEV-07.** New test "§3.6 / DEV-p5-containers-07" on both web configurations: `/databasesX` is the
+  app; two API 404s (unknown collection, unknown document) pass through with status, JSON type, prefix
+  and message; `Server` is exactly `nginx` and no page shows `nginx/<version>`; `/assets/` is 404 and no
+  `Index of`.
+- **DEV-08 (bug fixed).** `absolute_redirect off;` in the nginx template. New test "DEV-p5-containers-08"
+  on both web configurations: `/databases`, `/assets`, `/img`, `/databases/`, `/assets/` without
+  following redirects; every 3xx `Location` must not contain `:8080` and must resolve to the caller's
+  origin, and `/databases` must be among the redirects (so the test cannot pass vacuously).
+- **DEV-09.**
+  - `db` pinned: `postgres:18.7-alpine3.24@sha256:0115267a…` (the multi-arch index digest; same digest as
+    `18-alpine` today, `PG_VERSION` 18.7, Alpine 3.24.4 read from the image).
+  - Both Dockerfiles now write each pin out on its `FROM` line instead of `FROM ${NODE_IMAGE}`:
+    Dependabot's docker parser matches literal `FROM` lines only (`FROM_LINE` regex in dependabot-core's
+    `docker/lib/dependabot/docker/file_parser.rb`, which has no ARG substitution). Session 1's comment
+    "Dependabot's docker ecosystem can bump both together" was wrong for the ARG form.
+  - `.github/dependabot.yml`: a `docker` entry for `/docker` (grouped) and a `docker-compose` entry for
+    `/`, both into `migration`, prefix `deps`. Source: GitHub Docs, "Dependabot supported ecosystems and
+    repositories" (docs.github.com/en/code-security/dependabot/ecosystems-supported-by-dependabot/supported-ecosystems-and-repositories):
+    `docker` (v1) and `docker-compose` (v2, v3) both list version updates as supported and
+    **security updates as "Not supported"**; "Dependabot supports Docker Compose in a similar way to
+    Docker". The fetcher picks files whose name matches `/dockerfile|containerfile/i`, which also
+    matches `api.Dockerfile.dockerignore`; it has no `FROM` line, so it should yield no dependency. Worth
+    watching on the first Dependabot run. Existing entries and comments unchanged.
+  - `check-images.sh`: every `FROM` in `docker/*.Dockerfile` (except earlier stage names) and every
+    compose image not built here must match `name:<tag with a digit>@sha256:<64 hex>`; compose services
+    with `pull_policy: never` are exempt only if their image is one a `build` service produces.
+  - `check-images.sh`, secrets: for both images, the history entries **our** Dockerfile adds (the image's
+    history minus its runtime base's, pulled by its pinned ref; the script refuses if the tail does not
+    match) and the full `docker image inspect` JSON (Env, Labels, Cmd, Entrypoint, Healthcheck) go into a
+    temp folder scanned by `gitleaks dir --redact --ignore-gitleaks-allow` with its default rules
+    (`GITLEAKS_CONFIG*` unset). Plus a name rule: no `ENV` name like `PASSWORD`, `SECRET`, `TOKEN`,
+    `CREDENTIAL`, `PRIVATE`, `API_KEY`, `ACCESS_KEY`. CI installs Gitleaks in `e2e-compose` exactly as
+    `secrets.yml` does (version 8.30.1, release tarball, SHA-256 check); the comment says to move both
+    together. No new tool.
+- **CI (`e2e-compose`).** New steps: install Gitleaks; the client-address check after Playwright. The
+  check-images step name lists what it now covers.
+
+### Red before, green after
+Each breakage alone, then restored (`git diff` clean against the change). nginx breakages were applied by
+mounting a modified template over `/etc/nginx/templates/default.conf.template` through a compose
+override file in my scratch folder; image breakages were small Dockerfiles `FROM ascrum-api:p5c` built
+in my scratch folder (never in the repo). "Old" = the checks on `30ea63a` (the merge, before this
+session's changes); for the e2e rows, the old spec narrowed to 404 as the reviewer did.
+
+| Gap | Breakage | Old checks | New checks |
+|---|---|---|---|
+| DEV-05 start-up | API image built from session 1's Dockerfile and allowlist (no `throttle.ts`) | `check-images.sh` exit 0 (`AC-CTR-02: both images …`); the container exits `ERR_MODULE_NOT_FOUND … /app/web/stub/throttle.ts` | red, 2 findings: import graph fails (`ERR_MODULE_NOT_FOUND`), start-up `exited unhealthy` |
+| DEV-05 start-up | `ENV ALLOW_RESET=1` in the API image (loads, crashes at start in production mode) | (not checked) | red: does not start (`config.ts:62`) |
+| DEV-05 extra file | `contractTests.ts` copied into `/app/web/stub/` | red (named in the old allowlist) | red: `> web/stub/contractTests.ts` present but never loaded |
+| DEV-p5-security-16 | API image `CMD` replaced by a plain HTTP server | (not checked) | red: CMD finding; and start-up red (no `/healthz`) |
+| DEV-p5-security-16 | compose `api-prod` with `command:` override | (not checked) | red: services that override … `api-prod` |
+| TRUST_PROXY_HOPS | `api` with `TRUST_PROXY_HOPS: '0'` | (no check) | red: second client gets `429 not-signed-in` |
+| TRUST_PROXY_HOPS | nginx `X-Forwarded-For $http_x_forwarded_for` (passes the client's header) | (no check) | red: 21st sign-in 200, forged header trusted |
+| TRUST_PROXY_HOPS | `api` with `TRUST_PROXY_HOPS: '2'` | (no check) | red: 21st sign-in 200 |
+| TRUST_PROXY_HOPS | nginx sets no `X-Forwarded-For` | (no check) | red: 21st sign-in 200 |
+| Q-1 (b) | listener removed from `startApi()` | — | red: integration run exit 1, "Errors 1 error" (unhandled `57P01` from the terminated backend; the 5 assertions themselves pass) |
+| DEV-06 | B8: `ROUTE_STUB_CONTROL: 'on'` on `web-prod` | green, 4/4 (survived, as in the review) | red: §3.3 test, `content-type` `application/json`, not `text/html` |
+| DEV-07 | B10: `location /databases` (no slash) | green 4/4 | red: `/databasesX` 404, not 200 (and DEV-08's test) |
+| DEV-07 | B11: `proxy_intercept_errors on; error_page 404 = /index.html` | green 4/4 | red: unknown collection 200, not 404 |
+| DEV-07 | B12: `server_tokens on` | green 4/4 | red: DEV-07 test (`Server`) and §3.3 (error page shows `nginx/1.30.6`) |
+| DEV-07 | B13 as the reviewer described it: `autoindex on` in `location /assets/` | green 4/4 | **green 6/6: an equivalent mutant.** `try_files $uri =404` answers before the index module, so the listing is unreachable (`/assets/` is still 404) |
+| DEV-07 | B13 made effective: `autoindex on` plus `try_files $uri $uri/ =404` | green 4/4 | red: `/assets/` 200, not 404 |
+| DEV-08 | template without `absolute_redirect off` (the shipped config of session 1) | green 4/4 | red: `/databases` `Location` contains `:8080` |
+| DEV-09 | B15: `FROM node:24-alpine` | green | red: not pinned |
+| DEV-09 | pin through `ARG NODE_IMAGE=…@sha256:…` / `FROM ${NODE_IMAGE}` | green | red: not written out (Dependabot cannot read it) |
+| DEV-09 | `FROM node:alpine@sha256:…` (digest, no version) | green | red |
+| DEV-09 | compose `db: postgres:18-alpine` | green | red: service db not pinned |
+| DEV-09 | B14: `ARG DB_PASSWORD=<random 32>` + `ENV DATABASE_PASSWORD=$DB_PASSWORD` | green | red: Gitleaks (generic-api-key in `inspect.json` and twice in `history.txt`) and the name rule |
+| DEV-09 | `ENV APP_OPTS="api_key=<random 32>"` (harmless name) | green | red: Gitleaks only |
+| DEV-09 | `ARG BUILD_HELPER_TOKEN=<random 32>` used by a `RUN` (visible only in history) | green | red: Gitleaks (history) |
+| DEV-09 | `LABEL …="ghp_<random 36>"` (GitHub token shape) | green | red: Gitleaks `github-pat` |
+| DEV-09 | `ENV PGPASSWORD=ascrum` (low entropy) | green | red: name rule only |
+
+The planted values were random strings generated for the run (no real credential), lived only in my
+scratch folder and in throwaway local images (`ascrum-api:p5c-r*`, removed at the end), and were never
+committed or pushed; no draft PR was needed.
+
+### Decisions
+- **Import graph over a broader glob** (above). The cost: the build stage needs `pg` installed before it
+  can list the graph (it already has it), and a module loaded only through a computed dynamic `import()`
+  would not be listed; the start-up check would catch that.
+- **Gitleaks scans our layers, not the base's.** The first run on the web image found a
+  `generic-api-key` in the *nginx base image's* history: the `KEY_SHA512=…` of nginx's package signing
+  key, which is public. Base layers are the upstream's and the image scan's (wave C) business; this
+  check is about what our Dockerfiles add. The script proves the split: it fails if the image history
+  does not end with the base's history exactly.
+- **The name rule beside Gitleaks**, because Gitleaks' generic rule needs entropy and a keyword, and
+  skips values that contain a stopword (below).
+- **The start-up check uses no host port**: private `--internal` network, Docker's own health status,
+  and `docker exec` for `/healthz`. Its containers and network are removed by an `EXIT` trap, also on
+  failure.
+- **The client-address check is a script, not Playwright**: the second client must come from another
+  address, which only a container on the compose network has. `api` has Node, so no extra image.
+- **The direct API ports** (`API_PORT`, `PROD_API_PORT`) skip nginx; with `TRUST_PROXY_HOPS: 1` a caller
+  there could pick its throttle key. They are bound to 127.0.0.1 and exist for `/healthz` and §3.3
+  checks; noted in `compose.yaml`.
+
+### Mistakes and wrong turns
+- **"FAKE" made the secret invisible.** My first planted values were `FAKE<random>`, to look obviously
+  fake. Gitleaks found none of them: its generic rule ignores a match that contains a stopword, and
+  "fake" is one. Only the name rule caught the `DATABASE_PASSWORD` variant. Rerun with plain random
+  strings: all red. A check proven only with a "FAKE"-prefixed plant would have looked weaker than it is;
+  a real secret has no such word.
+- **The questions file.** I first inserted each owner answer before the *next* question's heading, which
+  put Q-2's answer under Q-1 and Q-1's under Q-2. Caught on reading it back, before committing.
+- **The import-graph stage** first had a leftover `cp`/`rm` line from an earlier idea; removed before the
+  first build.
+- **`/assets` did not redirect in my probe** (200, the SPA fallback, because `try_files $uri` does not
+  match a directory); only `/databases` redirected to `:8080`. The test checks all of `/databases`,
+  `/assets`, `/img` and the slash forms anyway.
+- **B13 as described is an equivalent mutant** (table): the reviewer's "survived" was right, but no test
+  could have turned it red, since the shipped `try_files` hides the listing either way.
+
+### Gate results (this session, from `web/`, Node 24.22.3, `STUB_PORT=3901 PREVIEW_PORT=5073 PAGES_PORT=5074`, `DATABASE_URL` → the compose db on 55439)
+- `pnpm verify` → exit 0:
+  ```
+  All matched files use Prettier code style!
+   Test Files  41 passed (41)
+        Tests  435 passed (435)
+   Test Files  6 passed (6)
+        Tests  81 passed (81)
+    41 passed (24.0s)
+  ```
+- Compose stack, project `ascrum-p5-containers`, ports 55439–55443, from an empty volume (`down --volumes`
+  first), on the tree as committed:
+  ```
+  docker compose --profile prod-check build             → exit 0
+  docker/check-images.sh ascrum-api:p5c ascrum-web:p5c  → exit 0
+    pins: every FROM and every pulled compose image is pinned by version and digest
+    ascrum-api:p5c: USER=node, runs as uid 1000
+    ascrum-api:p5c: no secret in its 12 own history entries or the image config
+    ascrum-api:p5c: main.ts loads exactly the 16 .ts files in /app
+    ascrum-api:p5c: starts with only DATABASE_URL and answers /healthz: 200 {"status":"ok"}; [api] listening on http://localhost:3000 (production mode)
+    ascrum-web:p5c: USER=101, runs as uid 101
+    ascrum-web:p5c: no secret in its 6 own history entries or the image config
+    check-images: AC-CTR-02 (non-root, no dev dependencies, test files or .env), pins, no secrets in layers or config, the API loads and starts
+  docker compose --profile prod-check up --wait          → exit 0, 5/5 healthy in 11 s
+  pnpm e2e:compose                                       → 47 passed (38.2s)
+  docker/check-client-address.sh                         → exit 0 (per-address rows: ip:172.20.0.1 20; second client 200 signed-in)
+  docker/check-health.sh                                 → AC-CTR-03: probes create no session; unhealthy without the database; healthy again when it is back
+  ```
+  `api` logs `development mode`, `api-prod` logs `production mode`.
+- `shellcheck` 0.10.0 on the three scripts and `actionlint` 1.7.7 on `ci.yml` (from their images, removed
+  afterwards): no findings.
+
+### AC → test (changes only)
+| Item | Test / check |
+|---|---|
+| §3.3 | `compose.spec.ts` › "§3.3 / DEV-p5-containers-06: …" (404 only; nginx's own 404 on web-prod; API's JSON 404 without cookies on api-prod) |
+| AC-CTR-01 / §3.6 | `compose.spec.ts` › "§3.6 / DEV-p5-containers-07: …", "DEV-p5-containers-08: …" |
+| AC-CTR-02 + DEV-05/-09 | `docker/check-images.sh` (pins, secrets, import graph, start-up, CMD) |
+| AC-SEC-04 behind nginx | `docker/check-client-address.sh` (CI step in `e2e-compose`) |
+| AC-CTR-03 / Q-1 (b) | `api/src/health.test.ts` › "AC-CTR-03: the API outlives the database dropping its connections …" (listener now in `startApi()`) |
+
+### For the re-reviewer
+- `spec/deviations.md` and `MIGRATION.md` changed only by the merge (both sides kept); no edit of mine.
+- The `docker-compose` Dependabot ecosystem and the `.dockerignore` files matching the docker fetcher's
+  filename pattern can only be confirmed by Dependabot's first run on `migration`.
+- The Gitleaks version now lives in two workflows (`secrets.yml`, `ci.yml`); nothing checks that they agree.
