@@ -36,6 +36,21 @@ updates:
     commit-message:
       prefix: deps
 
+  # The CDK app (p5-infra), its own lockfile like api/. Its dev tools are links into web/'s install, so
+  # only aws-cdk-lib, constructs and the aws-cdk CLI move here; the library and the CLI are bumped
+  # together, because the CLI must understand the cloud assembly the library writes.
+  - package-ecosystem: npm
+    directory: /infra
+    target-branch: migration
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      infra-cdk:
+        patterns: ['aws-cdk', 'aws-cdk-lib', 'constructs']
+    commit-message:
+      prefix: deps
+
   - package-ecosystem: github-actions
     # `/` covers .github/workflows; the composite action is listed explicitly.
     directories:
