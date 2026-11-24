@@ -62,7 +62,7 @@ All in `web/src/app/routerDataMode.test.tsx` (real composition via `bootApp`, th
   route, and legacy's `otherwise` did, which matters because cancel and logout navigate to `/`.
 - **Escape and a backdrop click cancel the login** (legacy ui-bootstrap `$dialog` closed on both,
   and `security.js` treated a close without success as a cancel). Ported for parity.
-- **The login form's labels gained `for`/`id`** so the fields have accessible names: Q-foundation-1.
+- **The login form's labels gained `for`/`id`** so the fields have accessible names (Q-foundation-1).
 - **A failed logout is swallowed and the user stays logged in** (D19, legacy parity).
 - **`ApiError(0)`** for a network failure, as AngularJS reported status 0; `RouteError` treats it as
   a route change error.
