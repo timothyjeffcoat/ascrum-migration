@@ -127,12 +127,22 @@ export class DemoStack extends Stack {
     dbSg.addIngressRule(apiSg, ec2.Port.tcp(5432), 'from the API tasks')
 
     // --- Database (AC-AWS-05: isolated subnets, not publicly accessible) --------------------------------
+    // Fixed names (src/names.ts) wherever an ARN carries one: the execution policy names these ARNs
+    // instead of "*" (DEV-p5-infra-05).
+    const dbSubnets = new rds.SubnetGroup(this, 'DatabaseSubnets', {
+      subnetGroupName: NAMES.dbSubnetGroup,
+      description: 'Demo database: isolated subnets (no route out)',
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      removalPolicy: RemovalPolicy.DESTROY,
+    })
     const db = new rds.DatabaseInstance(this, 'Database', {
+      instanceIdentifier: NAMES.dbInstance,
       // Q-p5-2: the newest major RDS offers generally, as compose.yaml and CI use (PostgreSQL 18).
       engine: rds.DatabaseInstanceEngine.postgres({ version: rds.PostgresEngineVersion.VER_18 }),
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.MICRO),
       vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      subnetGroup: dbSubnets,
       securityGroups: [dbSg],
       publiclyAccessible: false,
       multiAz: false,
@@ -156,7 +166,11 @@ export class DemoStack extends Stack {
     const dbSecret = secretsmanager.Secret.fromSecretCompleteArn(this, 'DatabaseSecret', dbSecretArn)
 
     // --- API on ECS Fargate ---------------------------------------------------------------------------------
-    const cluster = new ecs.Cluster(this, 'Cluster', { vpc, containerInsightsV2: ecs.ContainerInsights.DISABLED })
+    const cluster = new ecs.Cluster(this, 'Cluster', {
+      clusterName: NAMES.cluster,
+      vpc,
+      containerInsightsV2: ecs.ContainerInsights.DISABLED,
+    })
     const logGroup = new logs.LogGroup(this, 'ApiLogs', {
       logGroupName: NAMES.apiLogGroup,
       retention: logs.RetentionDays.ONE_WEEK,
@@ -164,6 +178,7 @@ export class DemoStack extends Stack {
     })
 
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'ApiTask', {
+      family: NAMES.taskFamily,
       cpu: 256,
       memoryLimitMiB: 512,
       runtimePlatform: {
@@ -229,6 +244,7 @@ export class DemoStack extends Stack {
 
     // --- Load balancer (reachable from CloudFront only) ---------------------------------------------------
     const alb = new elbv2.ApplicationLoadBalancer(this, 'LoadBalancer', {
+      loadBalancerName: NAMES.loadBalancer,
       vpc,
       internetFacing: true,
       securityGroup: albSg,
@@ -242,6 +258,7 @@ export class DemoStack extends Stack {
       defaultAction: elbv2.ListenerAction.fixedResponse(403, { contentType: 'text/plain', messageBody: 'Forbidden' }),
     })
     const targets = new elbv2.ApplicationTargetGroup(this, 'ApiTargets', {
+      targetGroupName: NAMES.targetGroup,
       vpc,
       port: API_PORT,
       protocol: elbv2.ApplicationProtocol.HTTP,
@@ -282,6 +299,7 @@ export class DemoStack extends Stack {
     })
 
     const spaFallback = new cloudfront.Function(this, 'SpaFallback', {
+      functionName: NAMES.spaFunction,
       code: cloudfront.FunctionCode.fromInline(SPA_FALLBACK_FUNCTION),
       runtime: cloudfront.FunctionRuntime.JS_2_0,
       comment: 'Client-side routes get index.html (as nginx try_files)',

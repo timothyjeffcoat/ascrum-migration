@@ -24,11 +24,18 @@ export async function awsJson(aws: Aws, args: string[]): Promise<unknown> {
 export type Sleep = (ms: number) => Promise<void>
 export const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * CloudFormation's one answer that means "no such stack". Anything else that fails (AccessDenied, an
+ * expired token, throttling, a network error) is not proof of absence and must stop the caller:
+ * otherwise destroy and the leftover check would both pass while the stacks still stand (S22).
+ */
+export const STACK_DOES_NOT_EXIST = /\(ValidationError\)[^\n]*Stack with id \S+ does not exist/
+
 /** CloudFormation status of a stack, or null when it does not exist (or was deleted). */
 export async function stackStatus(aws: Aws, stack: string, region: string): Promise<string | null> {
   const result = await aws(['cloudformation', 'describe-stacks', '--stack-name', stack, '--region', region])
   if (result.code !== 0) {
-    if (/does not exist/.test(result.stderr)) return null
+    if (STACK_DOES_NOT_EXIST.test(result.stderr)) return null
     throw new Error(`describe-stacks ${stack} failed: ${result.stderr.trim()}`)
   }
   const body = JSON.parse(result.stdout) as { Stacks?: { StackStatus?: string }[] }

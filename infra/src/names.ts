@@ -17,9 +17,6 @@ export const DEPLOY_BRANCH = 'migration'
 /** The two workflow files that may assume the deploy role (Q-p5-infra-1). */
 export const DEPLOY_WORKFLOWS = ['.github/workflows/deploy-demo.yml', '.github/workflows/destroy-demo.yml'] as const
 
-/** CDK bootstrap qualifier (`cdk bootstrap --qualifier`), so this repo's CDK roles are its own. */
-export const CDK_QUALIFIER = 'ascrum'
-
 export const STACK = {
   /** Deployed once by the owner (spec §11); never by CI, never destroyed by the workflows. */
   bootstrap: 'AscrumBootstrap',
@@ -46,13 +43,24 @@ export const TAG = {
 
 export const NAMES = {
   deployRole: 'ascrum-github-deploy',
-  /** Managed policy for `cdk bootstrap --cloudformation-execution-policies`. */
+  /** The role CloudFormation uses for the demo stacks (bootstrap stack; no `cdk bootstrap`). */
+  cfnExecutionRole: 'ascrum-cfn-exec',
+  /** Its managed policy: what CloudFormation may create, change and delete for the demo. */
   cfnExecutionPolicy: 'ascrum-cdk-cfn-execution',
   /** Permissions boundary on every role the demo stacks create. */
   roleBoundary: 'ascrum-demo-role-boundary',
   apiRepository: 'ascrum-demo-api',
   apiLogGroup: '/ascrum/demo/api',
   budget: 'ascrum-demo-monthly',
+  // Fixed names for the demo's resources whose ARNs carry their name, so the execution policy can name
+  // them instead of "*" (DEV-p5-infra-05). Each run creates them after the previous run deleted them.
+  loadBalancer: 'ascrum-demo',
+  targetGroup: 'ascrum-demo-api',
+  cluster: 'ascrum-demo',
+  taskFamily: 'ascrum-demo-api',
+  dbInstance: 'ascrum-demo-db',
+  dbSubnetGroup: 'ascrum-demo-db',
+  spaFunction: 'ascrum-demo-spa-fallback',
 } as const
 
 /** Region-unique bucket name for the web build; the account id and region are filled in at deploy time. */

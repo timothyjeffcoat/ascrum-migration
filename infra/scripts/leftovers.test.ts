@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { fakeAws, type FakeWorld } from './fakeAws.ts'
-import { findLeftovers, formatReport } from './leftovers.ts'
+import { findLeftovers, formatReport, isGhost } from './leftovers.ts'
 
 const REGION = 'eu-west-1'
 const ACCOUNT = '123456789012'
@@ -94,5 +94,62 @@ describe('AC-AWS-04: the final leftover check', () => {
   it('AC-AWS-04: the report never prints an account id (spec §11)', async () => {
     const { report } = await check({ stacks: {}, tagged: { [REGION]: { [ALB]: demo, [ROLE_POLICY]: bootstrap } } })
     expect(formatReport(report).join('\n')).not.toContain(ACCOUNT)
+  })
+
+  it('AC-AWS-04 (S20): a failed get-resources fails the check; it is never read as "nothing tagged"', async () => {
+    const world: FakeWorld = {
+      stacks: {},
+      tagged: {},
+      taggingError: {
+        'us-east-1': 'An error occurred (AccessDeniedException) when calling the GetResources operation',
+      },
+    }
+    await expect(check(world)).rejects.toThrow('get-resources in us-east-1 failed')
+  })
+
+  it('AC-AWS-04 (S22): a describe-stacks AccessDenied fails the check; only "does not exist" means absent', async () => {
+    const world: FakeWorld = {
+      stacks: {},
+      tagged: {},
+      describeStacksError: {
+        AscrumDemoRegistry: 'An error occurred (AccessDenied) when calling the DescribeStacks operation',
+      },
+    }
+    await expect(check(world)).rejects.toThrow('describe-stacks AscrumDemoRegistry failed')
+  })
+
+  it('AC-AWS-04 / O4 (S14): only ECS task definitions, ECS clusters and secrets can be ghosts; RDS, EC2, ELB, CloudFront, S3, logs and ECR are leftovers without asking', async () => {
+    const billable = [
+      `arn:aws:rds:${REGION}:${ACCOUNT}:db:ascrum-demo-db`,
+      `arn:aws:rds:${REGION}:${ACCOUNT}:subgrp:ascrum-demo-db`,
+      `arn:aws:ec2:${REGION}:${ACCOUNT}:vpc/vpc-0abc`,
+      `arn:aws:ec2:${REGION}:${ACCOUNT}:security-group/sg-0abc`,
+      ALB,
+      DISTRIBUTION,
+      'arn:aws:s3:::ascrum-demo-web-bucket',
+      `arn:aws:logs:${REGION}:${ACCOUNT}:log-group:/ascrum/demo/api`,
+      `arn:aws:ecr:${REGION}:${ACCOUNT}:repository/ascrum-demo-api`,
+      `arn:aws:ecs:${REGION}:${ACCOUNT}:service/ascrum-demo/AscrumDemo-ApiService`,
+    ]
+    const { aws, calls } = fakeAws({ stacks: {} })
+    for (const arn of billable) expect(await isGhost(aws, arn), arn).toBe(false)
+    expect(calls).toEqual([])
+    const { report } = await check({
+      stacks: {},
+      tagged: { [REGION]: Object.fromEntries(billable.map((a) => [a, demo])) },
+    })
+    expect(report.ok).toBe(false)
+    expect(report.remaining).toEqual(billable)
+  })
+
+  it('AC-AWS-04 (S19): a secret that is not pending deletion is a leftover', async () => {
+    const { report } = await check({ stacks: {}, tagged: { [REGION]: { [SECRET]: demo } }, secretDeleted: {} })
+    expect(report.ok).toBe(false)
+    expect(report.remaining).toEqual([SECRET])
+  })
+
+  it('AC-AWS-04: an active cluster is a leftover', async () => {
+    const { report } = await check({ stacks: {}, tagged: { [REGION]: { [CLUSTER]: demo } } })
+    expect(report.remaining).toEqual([CLUSTER])
   })
 })

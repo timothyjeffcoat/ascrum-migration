@@ -11,12 +11,13 @@
 //
 // Without demoDeploy, the demo stack synthesises with placeholders, so `cdk synth` (CI, unit tests)
 // needs no AWS account, no credentials and no lookups.
-import { App, CliCredentialsStackSynthesizer, DefaultStackSynthesizer, Tags, type Stack } from 'aws-cdk-lib'
+import { App, Tags, type Stack } from 'aws-cdk-lib'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import { BootstrapStack } from './bootstrapStack.ts'
 import { DemoStack } from './demoStack.ts'
-import { CDK_QUALIFIER, NAMES, STACK, TAG } from './names.ts'
+import { NAMES, STACK, TAG } from './names.ts'
 import { RegistryStack } from './registryStack.ts'
+import { InlineTemplateSynthesizer } from './synthesizer.ts'
 
 export const PLACEHOLDER = {
   imageTag: 'synth-only',
@@ -57,15 +58,22 @@ export function buildStacks(app: App, env: Record<string, string | undefined> = 
   const deploy = deployFlag === true || deployFlag === 'true'
 
   const bootstrap = new BootstrapStack(app, STACK.bootstrap, {
-    description: 'ascrum-migration: one-time bootstrap (GitHub OIDC, deploy role, budget). Deployed by the owner only.',
-    synthesizer: new CliCredentialsStackSynthesizer(),
+    description:
+      'ascrum-migration: one-time bootstrap (GitHub OIDC, deploy role, CloudFormation execution role, budget). Deployed by the owner only.',
+    // The owner's own credentials, template inline: nothing has to exist before it.
+    synthesizer: new InlineTemplateSynthesizer(),
     githubRepository,
     existingOidcProviderArn: text(context, 'existingOidcProviderArn'),
     terminationProtection: true,
   })
   tag(bootstrap, TAG.bootstrap)
 
-  const demoSynthesizer = () => new DefaultStackSynthesizer({ qualifier: CDK_QUALIFIER })
+  // The deploy role's own credentials (no CDK bootstrap role to assume); CloudFormation acts with the
+  // bootstrap stack's execution role (DEV-p5-infra-01, src/synthesizer.ts).
+  const demoSynthesizer = () =>
+    new InlineTemplateSynthesizer({
+      cloudFormationExecutionRoleArn: `arn:\${AWS::Partition}:iam::\${AWS::AccountId}:role/${NAMES.cfnExecutionRole}`,
+    })
   const registry = new RegistryStack(app, STACK.registry, {
     description: 'ascrum-migration demo: API image repository (created and deleted by each deploy run)',
     synthesizer: demoSynthesizer(),

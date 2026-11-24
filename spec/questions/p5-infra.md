@@ -69,6 +69,13 @@ protection required it before merging; every other check must be on the commit i
 *Recommended and implemented: (a).* Only `success` counts (not `skipped` or `neutral`), every run of a
 name must pass (CI's `build` and the Pages `build` share a name), and the commit must be the head of
 `migration`. Tests: `infra/scripts/requiredChecks.test.ts`.
+*Corrected 2026-11-24 (DEV-p5-infra-02):* the first implementation applied the fallback to **every**
+missing check, not only to `CodeQL`, so a commit with no push runs at all (a dispatch before the runs
+exist, or a `[skip ci]` squash message) passed on the PR head's results. The fallback is now limited to
+an explicit list, `PR_ONLY_CHECKS` = `CodeQL` from app 57789 (name **and** app id must match); every other
+required check missing on the commit refuses the deploy. Named tests: the reviewer's probe (no run on the
+commit, all green on the PR head: refused), a `[skip ci]`-style commit, one push check missing, and a
+`CodeQL` from another app.
 
 **Q-p5-infra-6. Choices the spec leaves open (region, names, sizes).**
 - Region: the owner's choice, as the `aws-demo` environment variable `AWS_REGION`; nothing in the code
@@ -99,3 +106,22 @@ the required checks from branch protection, so once `infra` is required, a deplo
 Options: (a) the reviewer or owner adds `infra` to `migration`'s required checks after merge (as with
 `integration` and `e2e-compose`); (b) leave it optional.
 *Recommended: (a).*
+
+**Q-p5-infra-9. How the demo stacks are deployed without CDK's bootstrap roles (DEV-p5-infra-01).**
+Context: the reviewer found that the deploy role's `sts:AssumeRole` on CDK's `cdk-ascrum-deploy-role`
+reached every stack in the account (CDK's bootstrap template grants CloudFormation writes, deletes and
+`UpdateTerminationProtection` on `*`), and the owner's account is shared. The owner asked for a code fix.
+Options: (a) the deploy role makes the CloudFormation calls itself, scoped to `AscrumDemo*` stacks, and
+hands CloudFormation an execution role the bootstrap stack creates; no `cdk bootstrap` at all; (b) keep
+`cdk bootstrap` and put a permissions boundary on CDK's roles; (c) a dedicated account only.
+*Implemented: (a), plus (c) as the README's recommendation.* The demo stacks use a small synthesizer
+(`infra/src/synthesizer.ts`) whose manifest names no role to assume and the execution role
+`ascrum-cfn-exec`; the CLI sends each template inline (all are well under 51,200 bytes, pinned). The
+deploy role may only `CreateChangeSet` on `AscrumDemo*` with `cloudformation:RoleArn` = that role, pass
+that role only to CloudFormation, and is explicitly denied termination protection, stack policies,
+refactors and anything on `AscrumBootstrap`/`CDKToolkit*`. (b) was rejected: CDK's roles would still
+exist, broader than needed, and their boundary would be one more thing to keep in step with CDK's
+template versions. Unverifiable offline, so watch the first live run: whether CloudFormation authorises
+`DescribeChangeSet`/`ExecuteChangeSet`/`DeleteChangeSet` against the stack ARN (granted) or a change-set
+ARN (not granted; the run would fail closed with AccessDenied naming it), and whether each EC2 create
+passes its tags in the create call (needed for the tag-on-create rule; worklog, round 3).

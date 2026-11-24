@@ -128,4 +128,27 @@ describe('AC-AWS-04: destroy', () => {
     world.stacks.AscrumDemo = { states: ['CREATE_IN_PROGRESS'] }
     await expect(run(world, { timeoutMs: 10 })).rejects.toThrow(/still CREATE_IN_PROGRESS/)
   })
+
+  it('AC-AWS-04 (S13): a failed `s3 rm` stops the destroy; the bucket is never taken as emptied', async () => {
+    const world = deployed()
+    world.s3RmError = { [BUCKET]: 'An error occurred (AccessDenied) when calling the ListObjectsV2 operation' }
+    const { aws, calls } = fakeAws(world)
+    await expect(destroyDemo({ aws, region: REGION, sleep: noSleep, log: () => {}, pollMs: 1 })).rejects.toThrow(
+      'emptying s3://ascrum-demo-web-***-eu-west-1 failed',
+    )
+    expect(deleteCalls(calls)).toEqual([])
+  })
+
+  it('AC-AWS-04 (S22): a describe-stacks error that is not "does not exist" (AccessDenied) fails the destroy', async () => {
+    const world = deployed()
+    world.describeStacksError = {
+      AscrumDemo:
+        'An error occurred (AccessDenied) when calling the DescribeStacks operation: User is not authorized to perform: cloudformation:DescribeStacks',
+    }
+    const { aws, calls } = fakeAws(world)
+    await expect(destroyDemo({ aws, region: REGION, sleep: noSleep, log: () => {}, pollMs: 1 })).rejects.toThrow(
+      'describe-stacks AscrumDemo failed',
+    )
+    expect(deleteCalls(calls)).toEqual([])
+  })
 })

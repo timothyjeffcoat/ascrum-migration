@@ -8,9 +8,18 @@
 // check missing, pending, or anything but `success`, or a commit that is not the branch head, all refuse.
 //
 // One required check only runs on pull requests: `CodeQL` (app 57789, code scanning's PR check). A
-// squash merge's commit on `migration` never gets it. For a check missing on the commit, the head commit
-// of the pull request that was merged *as this commit* (merge_commit_sha) is consulted instead; branch
-// protection required exactly that check there before it allowed the merge (Q-p5-infra-5).
+// squash merge's commit on `migration` never gets it. For that check alone (PR_ONLY_CHECKS), when it is
+// missing on the commit, the head commit of the pull request that was merged *as this commit*
+// (merge_commit_sha) is consulted instead; branch protection required exactly that check there before it
+// allowed the merge (Q-p5-infra-5). Every other required check must have run on the commit itself: a
+// missing CI, deps, codeql or secrets run (a dispatch before the push runs exist, a `[skip ci]` squash
+// message) refuses, never borrows the PR head's result (DEV-p5-infra-02).
+
+/** Required checks that GitHub never runs on a push, only on pull requests: name and app id. */
+export const PR_ONLY_CHECKS: readonly { context: string; app_id: number }[] = [{ context: 'CodeQL', app_id: 57789 }]
+
+const prOnly = (check: RequiredCheck) =>
+  PR_ONLY_CHECKS.some((only) => only.context === check.context && only.app_id === check.app_id)
 
 export type GitHubGet = (path: string) => Promise<unknown>
 
@@ -77,7 +86,7 @@ export async function verifyRequiredChecks(options: {
   let ok = true
   for (const check of required) {
     let found: Found = { where: 'commit', verdicts: find(check, runs, states) }
-    if (found.verdicts.length === 0) {
+    if (found.verdicts.length === 0 && prOnly(check)) {
       if (prHead === undefined) {
         const pulls = (await github(`/repos/${repo}/commits/${sha}/pulls`)) as unknown[]
         const merged = (Array.isArray(pulls) ? pulls : []).find(
@@ -106,7 +115,11 @@ export async function verifyRequiredChecks(options: {
     const name = `${check.context}${check.app_id === null ? '' : ` (app ${check.app_id})`}`
     if (found.verdicts.length === 0) {
       ok = false
-      lines.push(`missing  ${name}: no run on the commit or on the merged pull request's head`)
+      lines.push(
+        prOnly(check)
+          ? `missing  ${name}: no run on the commit or on the merged pull request's head`
+          : `missing  ${name}: no run on the commit (only ${PR_ONLY_CHECKS.map((c) => c.context).join(', ')} may come from the merged pull request)`,
+      )
     } else if (found.verdicts.every((verdict) => verdict === 'success')) {
       lines.push(`passed   ${name}: ${found.verdicts.join(', ')} (${found.where})`)
     } else {

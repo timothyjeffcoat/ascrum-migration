@@ -152,6 +152,55 @@ describe('AC-AWS-01: the deploy gate (required checks on the commit)', () => {
     expect(result.ok).toBe(false)
   })
 
+  it('AC-AWS-01 / DEV-p5-infra-02: no run on the commit at all, all green on the PR head: refused', async () => {
+    // The reviewer's probe: only CodeQL may come from the merged pull request's head.
+    const result = await verify({
+      commitRuns: [],
+      pulls: [mergedPr],
+      prRuns: [...green, run('CodeQL', 'success', CODE_SCANNING)],
+    })
+    expect(result.ok).toBe(false)
+    expect(result.lines).toContain(
+      'missing  lint (app 15368): no run on the commit (only CodeQL may come from the merged pull request)',
+    )
+    expect(result.lines).toContain(
+      'missing  e2e (app 15368): no run on the commit (only CodeQL may come from the merged pull request)',
+    )
+    expect(result.lines).toContain('passed   CodeQL (app 57789): success (PR #67 head bbbbbbb)')
+  })
+
+  it('AC-AWS-01 / DEV-p5-infra-02: a [skip ci] squash commit (no push runs, one unrelated check) is refused', async () => {
+    const result = await verify({
+      commitRuns: [run('build', 'success')],
+      pulls: [{ ...mergedPr, title: 'docs: typo [skip ci]' }],
+      prRuns: [...green, run('CodeQL', 'success', CODE_SCANNING)],
+    })
+    expect(result.ok).toBe(false)
+    expect(result.lines.at(-1)).toBe('REFUSED: not every required check passed.')
+  })
+
+  it('AC-AWS-01 / DEV-p5-infra-02: one push check missing on the commit is not borrowed from the PR head', async () => {
+    const result = await verify({
+      commitRuns: [run('lint', 'success')],
+      pulls: [mergedPr],
+      prRuns: [...green, run('CodeQL', 'success', CODE_SCANNING)],
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  it('AC-AWS-01 / DEV-p5-infra-02: a check named CodeQL from another app gets no PR fallback', async () => {
+    const result = await verify({
+      protection: {
+        enabled: true,
+        required_status_checks: { checks: [...required.slice(0, 2), { context: 'CodeQL', app_id: ACTIONS }] },
+      },
+      commitRuns: green,
+      pulls: [mergedPr],
+      prRuns: [run('CodeQL', 'success', ACTIONS)],
+    })
+    expect(result.ok).toBe(false)
+  })
+
   it('AC-AWS-01: a required legacy commit status (no app) is read from the status API', async () => {
     const result = await verify({
       protection: { enabled: true, required_status_checks: { checks: [{ context: 'ci/legacy', app_id: null }] } },

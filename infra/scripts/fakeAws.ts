@@ -18,6 +18,12 @@ export type FakeWorld = {
   taskDefinitionStatus?: Record<string, string>
   clusterStatus?: Record<string, string>
   secretDeleted?: Record<string, boolean>
+  /** stderr of a failing describe-stacks per stack (an AccessDenied, an expired token, …). */
+  describeStacksError?: Record<string, string>
+  /** stderr of a failing `s3 rm` per bucket. */
+  s3RmError?: Record<string, string>
+  /** stderr of a failing get-resources per region. */
+  taggingError?: Record<string, string>
 }
 
 const ok = (body: unknown): AwsResult => ({
@@ -37,6 +43,8 @@ export function fakeAws(world: FakeWorld): { aws: Aws; calls: string[][] } {
     const [service, command] = args
     if (service === 'cloudformation') {
       const name = arg(args, '--stack-name')
+      const denied = world.describeStacksError?.[name]
+      if (command === 'describe-stacks' && denied !== undefined) return fail(denied)
       const stack = world.stacks[name]
       const gone = () =>
         fail(
@@ -90,11 +98,15 @@ export function fakeAws(world: FakeWorld): { aws: Aws; calls: string[][] } {
     }
     if (service === 's3' && command === 'rm') {
       const bucket = (args[2] ?? '').replace('s3://', '')
+      const error = world.s3RmError?.[bucket]
+      if (error !== undefined) return fail(error)
       if (world.bucketObjects && bucket in world.bucketObjects) world.bucketObjects[bucket] = 0
       else return fail('An error occurred (NoSuchBucket)')
       return ok(undefined)
     }
     if (service === 'resourcegroupstaggingapi') {
+      const error = world.taggingError?.[arg(args, '--region')]
+      if (error !== undefined) return fail(error)
       const index = world.tagged?.[arg(args, '--region')] ?? {}
       return ok({
         ResourceTagMappingList: Object.entries(index).map(([arn, tags]) => ({

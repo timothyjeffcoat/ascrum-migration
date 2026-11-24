@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { App } from 'aws-cdk-lib'
 import { Template } from 'aws-cdk-lib/assertions'
+import type { CloudAssembly } from 'aws-cdk-lib/cx-api'
 import { buildStacks, type AscrumStacks } from './app.ts'
 
 export const TEST_REPOSITORY = 'example-owner/ascrum-migration'
@@ -14,11 +15,13 @@ const cdkJson = JSON.parse(readFileSync(new URL('../cdk.json', import.meta.url),
 export function synth(context: Record<string, unknown> = {}): {
   stacks: AscrumStacks
   templates: Record<keyof AscrumStacks, Template>
+  assembly: CloudAssembly
 } {
   const app = new App({ context: { ...cdkJson.context, githubRepository: TEST_REPOSITORY, ...context } })
   const stacks = buildStacks(app, {})
   return {
     stacks,
+    assembly: app.synth(),
     templates: {
       bootstrap: Template.fromStack(stacks.bootstrap),
       registry: Template.fromStack(stacks.registry),

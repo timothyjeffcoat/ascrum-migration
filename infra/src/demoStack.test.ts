@@ -87,6 +87,20 @@ describe('demo stack: only CloudFront reaches the API', () => {
     }
   })
 
+  it('§3.6 (R30): no security group admits any address range, IPv4 or IPv6, inline or as a separate rule', () => {
+    const inline = ofType(demo, 'AWS::EC2::SecurityGroup').flatMap(
+      ([, sg]) => (sg.Properties?.SecurityGroupIngress as Record<string, unknown>[] | undefined) ?? [],
+    )
+    const separate = ofType(demo, 'AWS::EC2::SecurityGroupIngress').map(([, r]) => r.Properties ?? {})
+    expect(inline).toEqual([])
+    for (const rule of separate) {
+      expect(rule).not.toHaveProperty('CidrIp')
+      expect(rule).not.toHaveProperty('CidrIpv6')
+      expect(Boolean(rule.SourceSecurityGroupId) || Boolean(rule.SourcePrefixListId)).toBe(true)
+    }
+    expect(JSON.stringify(demo.toJSON())).not.toContain('::/0')
+  })
+
   it('§3.6: without the per-run origin header, the listener answers 403; with it, it forwards to the API', () => {
     demo.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', {
       Port: 80,

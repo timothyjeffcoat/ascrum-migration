@@ -9,11 +9,11 @@ viewer ─HTTPS─▶ CloudFront ─┬─ /login /logout /current-user /databas
                             └─ everything else ─OAC─▶ S3 (vite build)
 ```
 
-| Stack                | Deployed by                                           | Contents                                                                                        |
-| -------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `AscrumBootstrap`    | the owner, **once**, with the owner's own credentials | GitHub OIDC provider, deploy role, CloudFormation execution policy, role boundary, budget alarm |
-| `AscrumDemoRegistry` | each deploy run (deleted by the same run)             | ECR repository `ascrum-demo-api`, scan on push                                                  |
-| `AscrumDemo`         | each deploy run (deleted by the same run)             | VPC (no NAT), RDS, ECS cluster and service, ALB, S3 bucket, CloudFront                          |
+| Stack                | Deployed by                                           | Contents                                                                                      |
+| -------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `AscrumBootstrap`    | the owner, **once**, with the owner's own credentials | GitHub OIDC provider, deploy role, CloudFormation execution role, role boundary, budget alarm |
+| `AscrumDemoRegistry` | each deploy run (deleted by the same run)             | ECR repository `ascrum-demo-api`, scan on push                                                |
+| `AscrumDemo`         | each deploy run (deleted by the same run)             | VPC (no NAT), RDS, ECS cluster and service, ALB, S3 bucket, CloudFront                        |
 
 ## Commands (no AWS needed)
 
@@ -45,9 +45,21 @@ account id, region, budget limit, e-mail.
 You need the AWS CLI v2 signed in to your account, Node 24, pnpm (from `web/`: `corepack enable`,
 `pnpm install`) and `gh` signed in to GitHub.
 
+### 0. Where: a dedicated account (recommended)
+
+Run all of this in an AWS account that holds nothing but this demo: a member account of an AWS
+Organizations organization, created for it (Organizations → Add an AWS account), signed in to through
+IAM Identity Center or the organization's access role. The roles below are scoped to the demo's stacks
+and names, and the policy tests pin that scope, but a few calls cannot be scoped by name or tag
+(CloudFront distributions, ECS task definitions; see "What a deploy run may do"). In an account of its
+own, they reach nothing else, the budget alarm measures only the demo, and closing the account removes
+every trace. The code is written to be safe in a shared account too; the dedicated account is the
+second wall.
+
 ### 1. Deploy the bootstrap stack
 
-It needs no CDK bootstrap (it has no assets and is deployed with your CLI credentials).
+It needs nothing before it: no `cdk bootstrap`, no CDK staging bucket. Its template goes to
+CloudFormation inline, with your own credentials.
 
 ```sh
 cd infra
@@ -61,24 +73,16 @@ pnpm exec cdk deploy AscrumBootstrap -c githubRepository="$REPO" \
 If the account already has a GitHub OIDC provider (an account can have only one per URL), add
 `-c existingOidcProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com`.
 
-The stack has termination protection. Its outputs: `DeployRoleArn`, `CfnExecutionPolicyArn`,
+The stack has termination protection. Its outputs: `DeployRoleArn`, `CfnExecutionRoleArn`,
 `RoleBoundaryArn`.
 
-### 2. CDK bootstrap, with this repo's qualifier and the execution policy
+### 2. No `cdk bootstrap`
 
-`--cloudformation-execution-policies` replaces CDK's default (AdministratorAccess) with the policy from
-step 1, so a deploy can only create what the demo stacks need. The qualifier keeps these roles apart from
-any other CDK app in the account. The tags let the final leftover check recognise the bootstrap as
-something that stays.
-
-```sh
-POLICY_ARN=$(aws cloudformation describe-stacks --stack-name AscrumBootstrap \
-  --query "Stacks[0].Outputs[?OutputKey=='CfnExecutionPolicyArn'].OutputValue" --output text)
-pnpm exec cdk bootstrap "aws://<account>/$AWS_REGION" -c githubRepository="$REPO" \
-  --qualifier ascrum --toolkit-stack-name CDKToolkit-ascrum \
-  --cloudformation-execution-policies "$POLICY_ARN" \
-  --tags project=ascrum-migration --tags ascrum-env=bootstrap
-```
+Do not run `cdk bootstrap` for this app. The demo stacks are deployed with the deploy role's own
+credentials and the execution role from step 1 (`src/synthesizer.ts`); CDK's bootstrap roles
+(`cdk-*-deploy-role` and the rest) would be broader than the deploy role and are never used. If you ran
+`cdk bootstrap --qualifier ascrum` for an earlier revision of this README, delete the `CDKToolkit-ascrum`
+stack (empty its `cdk-ascrum-assets-…` bucket first).
 
 ### 3. GitHub: OIDC subject, environment, variable and secret
 
@@ -92,8 +96,12 @@ gh api -X PUT "repos/$REPO/actions/oidc/customization/sub" --input - <<'EOF'
 EOF
 ```
 
-The environment, limited to `migration` (add yourself as a required reviewer if you want to approve
-each run):
+The environment, limited to `migration`. **Do not add required reviewers or a wait timer to it**: the
+`destroy` job runs in the same environment (the deploy role trusts only that environment), so it would
+wait for its own approval while the demo stays up and is billed (DEV-p5-infra-06). Who may start a
+deploy is already narrow: only people with write access can dispatch a workflow, only on `migration`, and
+only when every required check passed on its head (AC-AWS-01). If you add reviewers anyway, approve the
+`destroy` job the moment it asks, or run **Destroy demo (AWS)**.
 
 ```sh
 gh api -X PUT "repos/$REPO/environments/aws-demo" --input - <<'EOF'
@@ -132,19 +140,25 @@ watches the whole account (Q-p5-infra-4).
 
 ### Removing everything for good
 
-Run **Destroy demo (AWS)**, then with your own credentials: delete `CDKToolkit-ascrum` (empty its
-`cdk-ascrum-assets-…` bucket first), turn off termination protection on `AscrumBootstrap` and delete it,
-and reset the OIDC subject (`{"use_default": true}`).
+Run **Destroy demo (AWS)**, then with your own credentials: turn off termination protection on
+`AscrumBootstrap` and delete it, and reset the OIDC subject (`{"use_default": true}`). In a dedicated
+member account, closing the account does all of it.
 
 ## What a deploy run may do
 
-| Who                                                              | Can                                                                                                                                                                                                                                                                    | Cannot                                                                                       |
-| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| deploy role (`ascrum-github-deploy`, OIDC only)                  | assume `cdk-ascrum-deploy-role` and `-file-publishing-role`; push to and read scans of `ascrum-demo-api`; write the web bucket; describe and delete `AscrumDemo*` stacks; read-only checks (prefix list, tagged resources, ECS and secret status, the API's log group) | any IAM write; any other stack, bucket or repository; read a secret's value                  |
-| CloudFormation, for the demo stacks (`ascrum-cdk-cfn-execution`) | create and delete exactly the resource types the demo uses (named actions, this region); roles named `AscrumDemo*` only, and only with the boundary below                                                                                                              | `*` actions; IAM users, groups, keys or policies; remove a boundary; read any secret's value |
-| the demo's own roles (boundary `ascrum-demo-role-boundary`)      | pull the API image, write the API's logs, read RDS-managed secrets                                                                                                                                                                                                     | anything else, whatever a template grants                                                    |
+The workflows hold one AWS identity, the deploy role. It assumes no other role: no CDK bootstrap role
+exists, and it has no `sts:AssumeRole`. CloudFormation acts for it with the execution role, which the
+deploy role may hand over only to CloudFormation, and only in a change set on an `AscrumDemo*` stack.
 
-Unit tests pin each of these (`src/bootstrapStack.test.ts`).
+| Who                                                                                             | Can                                                                                                                                                                                                                                                                                                                                                                                                                                         | Cannot                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| deploy role (`ascrum-github-deploy`, OIDC only)                                                 | create and run change sets on `AscrumDemo*` stacks, each with the execution role and no other; describe, cancel the update of, and delete `AscrumDemo*` stacks; pass the execution role to CloudFormation; push to and read scans of `ascrum-demo-api`; write the web bucket; read-only checks (prefix list, tagged resources, ECS and secret status, the API's log group)                                                                  | assume any role; any other stack (an explicit deny covers `AscrumBootstrap` and `CDKToolkit*`); create or update a stack directly; change termination protection or a stack policy (explicit deny); any IAM write; any other bucket or repository; read a secret's value                                                                                                     |
+| CloudFormation, for the demo stacks (role `ascrum-cfn-exec`, policy `ascrum-cdk-cfn-execution`) | create, change and delete the demo's resources, this region only: load balancer, target group, listener, rule, ECS cluster and service, DB instance and subnet group, log group, bucket, repository and CloudFront function **by name**; VPC, subnets, route tables, gateway and security groups only when tagged `project=ascrum-migration`, a tag it can set only while creating; roles named `AscrumDemo*` only, with the boundary below | `*` actions; change or delete a network resource without the demo's tag, or add that tag to one; IAM users, groups, keys or policies; remove a boundary; read any secret's value. Not scoped (no name in the ARN, no tag condition): ECS task definition (de)registration in this region, and CloudFront distributions, origin access controls and response headers policies |
+| the demo's own roles (boundary `ascrum-demo-role-boundary`)                                     | pull the API image, write the API's logs, read RDS-managed secrets                                                                                                                                                                                                                                                                                                                                                                          | anything else, whatever a template grants                                                                                                                                                                                                                                                                                                                                    |
+
+Unit tests pin each of these (`src/bootstrapStack.test.ts`: the exact allow-lists, every resource, every
+condition, the denies, and the stack manifests that name no role to assume), and what the workflow files
+do (`scripts/workflows.test.ts`, `scripts/entrypoints.test.ts`).
 
 ## Design notes and open questions
 
