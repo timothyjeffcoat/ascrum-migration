@@ -175,6 +175,9 @@ importers:
 
   .:
     dependencies:
+      lodash:
+        specifier: 4.17.20
+        version: 4.17.20
       react:
         specifier: ^19.3.1
         version: 19.3.1
@@ -1265,6 +1268,9 @@ packages:
 
   lodash.merge@4.6.2:
     resolution: {integrity: sha512-0KpjqXRVvrYyCsX1swR/XTK0va6VQkQM6MNo7PqW77ByjAhoARA8EfrP1N4+KlKj8YS0ZUCtRT/YUuhyYDujIQ==}
+
+  lodash@4.17.20:
+    resolution: {integrity: sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA==}
 
   lru-cache@11.5.3:
     resolution: {integrity: sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==}
@@ -2735,6 +2741,8 @@ snapshots:
 
   lodash.merge@4.6.2:
     optional: true
+
+  lodash@4.17.20: {}
 
   lru-cache@11.5.3: {}
 
