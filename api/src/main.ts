@@ -9,6 +9,7 @@
 import type { Server } from 'node:http'
 import pg from 'pg'
 import { startStubServer } from '../../web/stub/server.ts'
+import { addHealthCheck } from './health.ts'
 import { migrate } from './migrate.ts'
 import { PgSessions } from './pgSessions.ts'
 import { PgStore } from './pgStore.ts'
@@ -24,7 +25,9 @@ export async function startApi({ pool, port, allowReset }: ApiOptions): Promise<
   const applied = await migrate(pool)
   const store = new PgStore(pool)
   if (applied.includes('001')) await store.reset() // a brand-new database: load the seed once
-  return startStubServer(port, { store, sessions: new PgSessions(pool), allowReset })
+  const server = await startStubServer(port, { store, sessions: new PgSessions(pool), allowReset })
+  addHealthCheck(server, pool) // GET /healthz, ahead of the contract (AC-CTR-03, health.ts)
+  return server
 }
 
 if (import.meta.main) {
