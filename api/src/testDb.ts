@@ -5,11 +5,13 @@
 // throws, so every integration file fails loudly.
 import { afterAll } from 'vitest'
 import pg from 'pg'
-import type { Backend } from '../../web/stub/contractTests.ts'
+import type { Backend, ContextOptions } from '../../web/stub/contractTests.ts'
 import type { StubContext } from '../../web/stub/handlers.ts'
 import { migrate } from './migrate.ts'
+import type { ScryptParams } from './passwords.ts'
 import { PgSessions } from './pgSessions.ts'
 import { PgStore } from './pgStore.ts'
+import { PgLoginThrottle } from './pgThrottle.ts'
 
 const url = process.env.DATABASE_URL
 if (!url) {
@@ -39,13 +41,26 @@ export async function emptySchema(): Promise<string> {
   return schema
 }
 
-/** A migrated, seeded PgStore and PgSessions in a fresh schema. */
-export async function pgContext(opts: { allowReset: boolean }): Promise<StubContext<PgStore, PgSessions>> {
+/**
+ * A cheap scrypt cost for the contract tests, which reset and sign in hundreds of times: the same code
+ * and format as production, at 1/128 of the work. The AC-SEC-01 tests in security.test.ts run the API
+ * with its production default (PRODUCTION_SCRYPT).
+ */
+export const TEST_SCRYPT: ScryptParams = { log2N: 10, r: 8, p: 1 }
+
+/** A migrated, seeded PgStore and PgSessions (and PgLoginThrottle if asked for) in a fresh schema. */
+export async function pgContext(opts: ContextOptions): Promise<StubContext<PgStore, PgSessions>> {
   const pool = poolFor(await emptySchema())
   await migrate(pool)
-  const store = new PgStore(pool)
+  const store = new PgStore(pool, { scrypt: TEST_SCRYPT })
   await store.reset()
-  return { store, sessions: new PgSessions(pool), allowReset: opts.allowReset }
+  const clock = opts.clock ?? Date.now
+  return {
+    store,
+    sessions: new PgSessions(pool, { idleSeconds: opts.sessionIdleSeconds, clock }),
+    allowReset: opts.allowReset,
+    ...(opts.throttle ? { loginThrottle: new PgLoginThrottle(pool, opts.throttle, clock) } : {}),
+  }
 }
 
 export const pgBackend: Backend = { name: 'PgStore', createContext: pgContext }

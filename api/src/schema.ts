@@ -9,7 +9,12 @@ import type { CollectionName, Fields, WireDoc } from '../../web/stub/store.ts'
 
 export type Kind = 'text' | 'number' | 'boolean' | 'id'
 
-export type Column = { wire: string; column: string; kind: Kind }
+/**
+ * `secret`: written, never read back (S-p5-1: users.password_hash). A SELECT leaves it out, so no
+ * document a store returns holds a password hash, and a value that does not fit is dropped instead of
+ * being kept in `extra` as readable data.
+ */
+export type Column = { wire: string; column: string; kind: Kind; secret?: true }
 
 /** A list of ids kept in a join table, with a flag that tells an empty list from an absent one. */
 export type ListField = { wire: string; table: string; owner: string; item: string; flag: string }
@@ -28,7 +33,8 @@ export const TABLES: Record<CollectionName, Table> = {
     table: 'users',
     fields: [
       col('email', 'email', 'text'),
-      col('password', 'password', 'text'),
+      // S-p5-1: PgStore puts the scrypt hash of the sent password here (migration 002), never the text.
+      { wire: 'password', column: 'password_hash', kind: 'text', secret: true },
       col('firstName', 'first_name', 'text'),
       col('lastName', 'last_name', 'text'),
       col('admin', 'admin', 'boolean'),
@@ -96,6 +102,8 @@ export const TABLES: Record<CollectionName, Table> = {
 export const isListField = (field: Column | ListField): field is ListField => 'table' in field
 
 export const columnsOf = (t: Table): Column[] => t.fields.filter((f): f is Column => !isListField(f))
+/** The columns a SELECT reads: all but the secret ones. */
+export const readableColumnsOf = (t: Table): Column[] => columnsOf(t).filter((f) => !f.secret)
 export const listOf = (t: Table): ListField | undefined => t.fields.find(isListField)
 
 const HEX_ID = /^[0-9a-f]{24}$/
@@ -137,6 +145,8 @@ export function toRow(t: Table, fields: Fields): Row {
       else if (present) extra[field.wire] = value
     } else if (present && fits(field.kind, value)) {
       columns.push(value)
+    } else if (field.secret) {
+      columns.push(null) // never into extra
     } else {
       columns.push(null)
       if (present) extra[field.wire] = value
@@ -154,6 +164,7 @@ export function toDoc(t: Table, row: StoredRow, items: string[]): WireDoc {
   const entries: [string, unknown][] = [['_id', { $oid: row.id }]]
   const extra = row.extra
   for (const field of t.fields) {
+    if (!isListField(field) && field.secret) continue
     if (isListField(field)) {
       if (row[field.flag] === true) entries.push([field.wire, items])
       else if (Object.hasOwn(extra, field.wire)) entries.push([field.wire, extra[field.wire]])

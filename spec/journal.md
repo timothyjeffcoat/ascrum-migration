@@ -773,3 +773,29 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Wave A doubled the gates from five to ten. The most useful finding still came from outside the agents: one of three breakages the owner sealed before the code existed went straight through 35 green database tests."
+
+## 2026-11-23: Wave B review, security (p5-security, PR #59)
+- **What the PR does.** Hashed passwords (scrypt, a random salt per user), `Secure` and `SameSite` cookies, production mode as the default when nothing is configured, a 404 for the test-reset route in production, sessions that expire after 8 idle hours and change id at sign-in, login throttling with `429`, and security headers with a Content-Security-Policy. It also closes the two test gaps wave A handed over (DEV-p5-store-10, -11).
+- **Gates (reviewer, this session, ports 3801/4973/4974, PostgreSQL on 55438).** `pnpm verify` exit 0: unit 41 files / 430 tests (416 on `migration`), integration 4 files / 65 tests (38), Playwright 40 passed (37). The gate-weakening `rg` finds only the known `import { routes as x }` lines; no config, audit ignore or allowlist changed. CI on the head commit: 10/10 green.
+- **Breakages.** 24, each alone, restored after. 16 went red. 8 survived: one equivalent mutant, two that only a timing measurement could see (a non-constant-time compare and the anti-enumeration decoy), three weaker CSPs (`'unsafe-eval'`, inline styles, `connect-src *`, all green because the header test compares the served map with itself), a password check that accepts any malformed stored hash, and an API started without settings that drops `Secure`. All are test gaps in correct code: DEV-p5-security-09..12, non-blocking.
+- **The blocking finding came from a probe, not a mutation.** The throttle asks "is this account blocked?" before the password check and counts the failure after it, and the password check takes a quarter of a second by design. A throwaway script sent 100 wrong passwords for one account at the same moment, with every production default: all 100 were checked, none got `429`, against a limit of 5. Every throttle test sends its attempts one after another, so the suite was green. DEV-p5-security-08, blocking; the row stays `converted` and goes back to the worker with a fix and a concurrent test.
+- **Decisions for the owner.** Q-p5-security-1 (allow Gravatar images in the CSP) and Q-p5-security-2 (keep the XSRF token at sign-in, rotate only the session id): the reviewer recommends (a) for both, as implemented.
+
+**Moment (article candidate)**
+- "The security cluster's tests were thorough: 24 deliberate breakages, 16 caught. The flaw that mattered was in none of them. The rate limit worked perfectly for an attacker who waits for each answer. One who sends a hundred guesses at once got all hundred, because the slow password hash, the thing that makes guessing expensive, was also the window in which nobody had counted the guess yet."
+
+## 2026-11-23: Wave B re-review, the throttle under fire (p5-security, PR #59)
+- **What changed.** The worker turned "ask, check the password, then count" into "count, then check": each sign-in takes one failure off the allowance of its address and its account in a single database statement before the password is checked, and a right password gives it back. Then, at the owner's choice, tests for the four test gaps (DEV-p5-security-09..12) and the owner's answers to both questions, (a) and (a).
+- **Measured by the re-reviewer's own probe** (a throwaway script, not the worker's; `node api/src/main.ts` with `APP_ENV` unset, every production default, a fresh database per scenario), counting the sign-ins that reached the password check, before (`d13e310`) → after:
+  - 100 wrong passwords for one account at once: 100 → 5;
+  - 100 wrong sign-ins from one address over 100 accounts: 100 → 20;
+  - 30 for one account, a third of them with the right password: 30 → 5;
+  - 100 for one account split across two API processes on one database: 100 → 5;
+  - a 2-second window under waves of 20 every 200 ms for 5 s: 120 → 15 (5 per window).
+- **Mutations.** 7 aimed at the fix (limit dropped from the SQL, counting after the check again, an `await` slipped between check and count, each give-back dropped or misapplied): all red. The 7 survivors from the first review: all red now. 8 new breakages aimed at the new tests: 7 red. The survivor is a decoy hash at a cheaper cost; the test counts verifications, not what they cost (DEV-p5-security-17, logged; the code is right by reading).
+- **The price of the fix, measured.** Six right passwords for one account sent at once: five sign in, the sixth gets `429` with `Retry-After: 900`, and a retry a moment later succeeds (DEV-p5-security-18, accepted: it takes five simultaneous sign-ins of one account).
+- **Gates (re-reviewer, this session, ports 3801/4973/4974, PostgreSQL on 55438).** `pnpm verify` exit 0: unit 41 files / 435 tests, integration 5 files / 76 tests, Playwright 41 passed. Gate-weakening `rg`: only the known `import { routes as x }` lines. Test files since the first review: additions only.
+- **Decision.** DEV-p5-security-08..12 fixed; row `verified`. Two hardening items stay open and non-blocking (-15, cap scrypt `r`/`p` for corrupt rows; -16, `startApi()` refusing production with reset), with IPv6 (-13) for wave C.
+
+**Moment (article candidate)**
+- "The first fix for a race is usually a smaller race. This one was not: the check and the count became the same SQL statement, and the database's row lock does the queueing. A hundred simultaneous guesses got five answers, whether they hit one server or two."

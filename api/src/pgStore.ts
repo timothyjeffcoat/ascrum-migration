@@ -3,6 +3,10 @@
 //
 // SQL safety (AC-PG-05): every value, including field names from `q`, is a bind parameter. The only
 // text spliced into SQL is table and column names from the constant map in schema.ts.
+//
+// Passwords (S-p5-1, AC-SEC-01): a users write stores the scrypt hash of `password` in password_hash
+// (passwords.ts) and never the text; reads never return the hash (schema.ts `secret`); login compares
+// in findLogin(). The in-memory store keeps plain text on purpose (store.ts explains why).
 import pg from 'pg'
 import type { Condition, Query } from '../../web/stub/query.ts'
 import { seedCollections } from '../../web/stub/seed.ts'
@@ -15,14 +19,37 @@ import {
   type Store,
   type WireDoc,
 } from '../../web/stub/store.ts'
-import { columnsOf, fits, isHexId, listOf, TABLES, toDoc, toRow, type StoredRow, type Table } from './schema.ts'
+import { hashPassword, PRODUCTION_SCRYPT, verifyPassword, type ScryptParams } from './passwords.ts'
+import {
+  columnsOf,
+  fits,
+  isHexId,
+  listOf,
+  readableColumnsOf,
+  TABLES,
+  toDoc,
+  toRow,
+  type StoredRow,
+  type Table,
+} from './schema.ts'
 
 type Db = pg.Pool | pg.PoolClient
 
+export type PgStoreOptions = {
+  /** Hash cost. Production uses PRODUCTION_SCRYPT; the contract tests a cheap one (testDb.ts). */
+  scrypt?: ScryptParams
+}
+
 export class PgStore implements Store {
   readonly pool: pg.Pool
-  constructor(pool: pg.Pool) {
+  readonly scrypt: ScryptParams
+  /** Seed passwords hashed once per process, so a reset (dev and CI only) does not pay scrypt again. */
+  private readonly seedHashes = new Map<string, Promise<string>>()
+  private decoy: Promise<string> | undefined
+
+  constructor(pool: pg.Pool, options: PgStoreOptions = {}) {
     this.pool = pool
+    this.scrypt = options.scrypt ?? PRODUCTION_SCRYPT
   }
 
   async list(c: CollectionName, query: Query): Promise<WireDoc[]> {
@@ -36,10 +63,11 @@ export class PgStore implements Store {
   async insert(c: CollectionName, fields: Fields): Promise<WireDoc> {
     // Checked before the counter moves, so a refused write leaves the next id unchanged (AC-STUB-15).
     assertStorable(fields)
+    const stored = c === 'users' ? await this.hashed(fields) : fields
     return this.transaction(async (client) => {
       const { rows } = await client.query<{ n: string }>("SELECT nextval('wire_id_counter') AS n")
       const id = idFromCounter(Number(rows[0]?.n))
-      await insertRow(client, TABLES[c], id, fields)
+      await insertRow(client, TABLES[c], id, stored)
       return mustGet(client, TABLES[c], id)
     })
   }
@@ -48,12 +76,19 @@ export class PgStore implements Store {
     if (!isHexId(id)) return undefined
     assertStorable(fields)
     const t = TABLES[c]
+    // S8: a users PUT without `password` keeps the stored hash (the column is left out of the SET).
+    const keepPassword = c === 'users' && !Object.hasOwn(fields, 'password')
+    const stored = c === 'users' ? await this.hashed(fields) : fields
     return this.transaction(async (client) => {
-      const row = toRow(t, fields)
-      const columns = columnsOf(t)
+      const row = toRow(t, stored)
       const list = listOf(t)
-      const sets = columns.map((f, i) => `${f.column} = $${i + 2}`)
-      const params: unknown[] = [id, ...row.columns]
+      const sets: string[] = []
+      const params: unknown[] = [id]
+      columnsOf(t).forEach((f, i) => {
+        if (keepPassword && f.secret) return
+        params.push(row.columns[i])
+        sets.push(`${f.column} = $${params.length}`)
+      })
       if (list) {
         params.push(row.list.present)
         sets.push(`${list.flag} = $${params.length}`)
@@ -82,8 +117,61 @@ export class PgStore implements Store {
     })
   }
 
-  async usersByEmail(email: string): Promise<WireDoc[]> {
-    return select(this.pool, TABLES.users, [{ kind: 'eq', field: 'email', value: email }])
+  async findLogin(email: string, password: string): Promise<WireDoc | undefined> {
+    // DEV-p5-store-10: the e-mail is a bind parameter, never part of the SQL text (security.test.ts
+    // records every statement a sign-in sends and checks exactly that).
+    const { rows } = await this.pool.query<{ id: string; password_hash: string | null }>(
+      'SELECT id, password_hash FROM users WHERE email = $1 ORDER BY seq',
+      [email],
+    )
+    let checked = 0
+    for (const row of rows) {
+      if (row.password_hash === null) continue
+      checked += 1
+      if (await verifyPassword(password, row.password_hash)) return getById(this.pool, TABLES.users, row.id)
+    }
+    // An unknown e-mail would otherwise answer at once, while a known one costs a scrypt run: the
+    // response time would tell which e-mails have accounts. Pay for one hash either way.
+    if (checked === 0) await verifyPassword(password, await this.decoyHash())
+    return undefined
+  }
+
+  /**
+   * Rows written before migration 002 hold a plain-text password in `users.password`. Hashes them into
+   * password_hash and empties the old column; returns how many. main.ts runs it on every start (a no-op
+   * once done), because SQL cannot compute scrypt.
+   */
+  async hashPlainPasswords(): Promise<number> {
+    return this.transaction(async (client) => {
+      const { rows } = await client.query<{ id: string; password: string }>(
+        'SELECT id, password FROM users WHERE password IS NOT NULL FOR UPDATE',
+      )
+      for (const row of rows) {
+        const hash = await hashPassword(row.password, this.scrypt)
+        await client.query('UPDATE users SET password_hash = $2, password = NULL WHERE id = $1', [row.id, hash])
+      }
+      return rows.length
+    })
+  }
+
+  /** `fields` with `password` replaced by its hash; a non-string password (it can never sign in) is dropped. */
+  private async hashed(fields: Fields, seedId?: string): Promise<Fields> {
+    if (!Object.hasOwn(fields, 'password')) return fields
+    const { password, ...rest } = fields
+    if (typeof password !== 'string') return rest
+    if (seedId === undefined) return { ...rest, password: await hashPassword(password, this.scrypt) }
+    const key = `${seedId}:${password}`
+    let hash = this.seedHashes.get(key)
+    if (!hash) {
+      hash = hashPassword(password, this.scrypt) // each seed user still gets a salt of its own
+      this.seedHashes.set(key, hash)
+    }
+    return { ...rest, password: await hash }
+  }
+
+  private decoyHash(): Promise<string> {
+    this.decoy ??= hashPassword(crypto.randomUUID(), this.scrypt)
+    return this.decoy
   }
 
   async reset(): Promise<void> {
@@ -96,7 +184,10 @@ export class PgStore implements Store {
       await client.query('ALTER SEQUENCE wire_id_counter RESTART WITH 1')
       const seed = seedCollections()
       for (const c of COLLECTIONS) {
-        for (const doc of seed[c]) await insertRow(client, TABLES[c], doc._id.$oid, doc)
+        for (const doc of seed[c]) {
+          const fields = c === 'users' ? await this.hashed(doc, doc._id.$oid) : doc
+          await insertRow(client, TABLES[c], doc._id.$oid, fields)
+        }
       }
     })
   }
@@ -159,7 +250,12 @@ async function select(db: Db, t: Table, query: Query, lock = ''): Promise<WireDo
   const params: unknown[] = []
   const conditions = query.map((condition) => sqlCondition(t, condition, params))
   const list = listOf(t)
-  const columns = ['t.id', ...columnsOf(t).map((f) => `t.${f.column}`), ...(list ? [`t.${list.flag}`] : []), 't.extra']
+  const columns = [
+    't.id',
+    ...readableColumnsOf(t).map((f) => `t.${f.column}`),
+    ...(list ? [`t.${list.flag}`] : []),
+    't.extra',
+  ]
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
   const { rows } = await db.query<StoredRow>(
     `SELECT ${columns.join(', ')} FROM ${t.table} t ${where} ORDER BY t.seq ${lock}`,
