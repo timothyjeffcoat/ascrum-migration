@@ -197,3 +197,88 @@ All matched files use Prettier code style!
 ✓ built in 388ms
   37 passed (13.0s)
 ```
+
+## 2026-11-23: session 3 (Dependabot and `legacy/`, owner answer to Q-6)
+
+### Dependabot must stop proposing changes under `legacy/`
+What GitHub's current docs say (read this session):
+- Options reference, https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference :
+  `exclude-paths` exists ("paths of directories and files that Dependabot should ignore when scanning
+  for manifests", globs relative to the entry's `directory`), but its heading carries only the
+  **"Version updates only"** icon. Options that also affect security updates carry the
+  "Security updates" icon ("All options marked with a [Security updates] icon also change how
+  Dependabot creates pull requests for security updates, except where `target-branch` is used").
+  `ignore` and `directories` carry it; `open-pull-requests-limit`, `schedule` and `target-branch` are
+  version-updates only. `target-branch`: "Options defined for this `package-ecosystem` no longer apply
+  to security updates".
+- Changelog that introduced `exclude-paths` (2025-08-26),
+  https://github.blog/changelog/2025-08-26-dependabot-can-now-exclude-automatic-pull-requests-for-manifests-in-selected-subdirectories/ :
+  says excluded paths are not listed, parsed or given PRs, but does not say whether that covers
+  security updates. The reference is the more specific source, so I did not rely on it.
+- Controlling dependencies,
+  https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/controlling-dependencies-updated :
+  "you can configure Dependabot to ignore those dependencies when it opens pull requests for version
+  updates and security updates", via `ignore` in `dependabot.yml`.
+- Configuring security updates,
+  https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/configure-security-updates :
+  "You can override the default behavior of Dependabot security updates by adding a `dependabot.yml`
+  file"; `open-pull-requests-limit: 0` prevents version updates for that ecosystem. Security updates
+  are otherwise switched on or off only per repository (or org); there is no per-directory switch.
+- Customizing security PRs,
+  https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/customizing-dependabot-security-prs :
+  same pattern (an entry with `open-pull-requests-limit: 0` so its customisation applies to security
+  updates only).
+
+So `exclude-paths` alone would not stop the security PRs that started this (#47). The supported way
+is Q-6 option (b): a `legacy/` entry whose `ignore` matches every dependency.
+
+**Change** (`.github/dependabot.yml`, a third entry, nothing else touched): `package-ecosystem: npm`,
+`directories: [/legacy/client, /legacy/server]` (the only manifests under `legacy/`, checked with
+`git ls-files`; both are npm), `schedule.interval: weekly` (a required key),
+`open-pull-requests-limit: 0` (no version updates), `ignore: [{dependency-name: '*'}]` (no security
+updates). No `target-branch`, on purpose (see the quote above). Alerts still appear for `legacy/`;
+that is intended, and they are dismissed by the owner.
+
+**What proves it, after merge** (Dependabot reads the config only from the default branch, so nothing
+on this PR exercises it):
+1. Repo Insights → Dependency graph → Dependabot: the `/legacy/client` and `/legacy/server` npm jobs
+   run without a config error, and list no PRs.
+2. The next new advisory against a `legacy/` dependency raises an alert but no Dependabot PR. Fastest
+   check: on any dismissed `legacy/` alert, reopen it and watch for a security PR (none should appear;
+   the alert page should say updates are ignored by the config), then dismiss it again.
+3. `gh pr list --author app/dependabot --state all` shows no new PR touching `legacy/`.
+If a security PR still appears, `ignore` does not cover this case, and the next step is a question
+(the only remaining switch is repo-wide: turning security updates off).
+
+### `secrets` on PR #41
+- On a45156c (the orchestrator's reword of `spec/worklogs/foundation.md`) `secrets` was still **red**:
+  https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45310849823 . The foundation line was
+  gone, but **my own** Q-4 entry and session 2 of this worklog quoted the flagged phrase verbatim, and
+  Gitleaks flagged those two lines (commit e8f2576). A mistake of mine: quoting a false positive in
+  full reproduces it.
+- 061365a rewords both quotes (meaning kept, exact text not repeated). Local tree scan with the same
+  Gitleaks 8.30.1: "no leaks found", exit 0.
+- On 061365a `secrets` is still **red**:
+  https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45311238358 . Tree scan **green**
+  ("no leaks found"); commit scan red ("8 commits scanned", "leaks found: 2", both in e8f2576). The
+  commit scan reads the whole PR range, so e8f2576 keeps it red on #41 whatever later commits do.
+  Not silenced, not force-pushed; raised as **Q-p5-devsecops-7**.
+
+### Findings, mistakes and wrong turns
+- Quoting the Gitleaks false positive in my own logs (above).
+- `prettier --check` outside `web/` still wants double quotes in `.github/*.yml`; the new entry
+  follows the file's existing single-quote style. Not a gate (the `lint` gate covers `web/` only).
+
+### Questions
+- Q-p5-devsecops-7 (`secrets` red on #41 from commit e8f2576).
+
+### Gates (run in this session, from `web/`, ports 3701/4873/4874)
+No app code changed. `pnpm verify`, exit 0 (log checked to be this worktree's run):
+```
+All matched files use Prettier code style!
+ Test Files  41 passed (41)
+      Tests  406 passed (406)
+✓ built in 364ms
+✓ built in 416ms
+  37 passed (13.3s)
+```
