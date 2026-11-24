@@ -1,0 +1,19 @@
+# Allowlist for docker/api.Dockerfile (BuildKit reads <Dockerfile>.dockerignore before the root one).
+# Everything is excluded, then only what the API runs is let back in. AC-CTR-02 checks the result.
+*
+!web/package.json
+!api/package.json
+!api/pnpm-lock.yaml
+!api/migrations/*.sql
+!api/src/*.ts
+# The shared contract (web/stub/), and only the files the API imports at run time.
+!web/stub/handlers.ts
+!web/stub/server.ts
+!web/stub/store.ts
+!web/stub/session.ts
+!web/stub/query.ts
+!web/stub/seed.ts
+# Never: tests and test helpers, even when they match a pattern above.
+**/*.test.ts
+api/src/testDb.ts
+**/.env*
