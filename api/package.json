@@ -1,0 +1,6 @@
+{
+  "name": "plant-api",
+  "private": true,
+  "description": "PLANT (review, do not merge): a top-level api/ package (spec Q-p5-1 (b)) with a vulnerable dependency.",
+  "dependencies": { "lodash": "4.17.20" }
+}
