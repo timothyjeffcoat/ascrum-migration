@@ -783,3 +783,19 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "The security cluster's tests were thorough: 24 deliberate breakages, 16 caught. The flaw that mattered was in none of them. The rate limit worked perfectly for an attacker who waits for each answer. One who sends a hundred guesses at once got all hundred, because the slow password hash, the thing that makes guessing expensive, was also the window in which nobody had counted the guess yet."
+
+## 2026-11-23: Wave B re-review, the throttle under fire (p5-security, PR #59)
+- **What changed.** The worker turned "ask, check the password, then count" into "count, then check": each sign-in takes one failure off the allowance of its address and its account in a single database statement before the password is checked, and a right password gives it back. Then, at the owner's choice, tests for the four test gaps (DEV-p5-security-09..12) and the owner's answers to both questions, (a) and (a).
+- **Measured by the re-reviewer's own probe** (a throwaway script, not the worker's; `node api/src/main.ts` with `APP_ENV` unset, every production default, a fresh database per scenario), counting the sign-ins that reached the password check, before (`d13e310`) → after:
+  - 100 wrong passwords for one account at once: 100 → 5;
+  - 100 wrong sign-ins from one address over 100 accounts: 100 → 20;
+  - 30 for one account, a third of them with the right password: 30 → 5;
+  - 100 for one account split across two API processes on one database: 100 → 5;
+  - a 2-second window under waves of 20 every 200 ms for 5 s: 120 → 15 (5 per window).
+- **Mutations.** 7 aimed at the fix (limit dropped from the SQL, counting after the check again, an `await` slipped between check and count, each give-back dropped or misapplied): all red. The 7 survivors from the first review: all red now. 8 new breakages aimed at the new tests: 7 red. The survivor is a decoy hash at a cheaper cost; the test counts verifications, not what they cost (DEV-p5-security-17, logged; the code is right by reading).
+- **The price of the fix, measured.** Six right passwords for one account sent at once: five sign in, the sixth gets `429` with `Retry-After: 900`, and a retry a moment later succeeds (DEV-p5-security-18, accepted: it takes five simultaneous sign-ins of one account).
+- **Gates (re-reviewer, this session, ports 3801/4973/4974, PostgreSQL on 55438).** `pnpm verify` exit 0: unit 41 files / 435 tests, integration 5 files / 76 tests, Playwright 41 passed. Gate-weakening `rg`: only the known `import { routes as x }` lines. Test files since the first review: additions only.
+- **Decision.** DEV-p5-security-08..12 fixed; row `verified`. Two hardening items stay open and non-blocking (-15, cap scrypt `r`/`p` for corrupt rows; -16, `startApi()` refusing production with reset), with IPv6 (-13) for wave C.
+
+**Moment (article candidate)**
+- "The first fix for a race is usually a smaller race. This one was not: the check and the count became the same SQL statement, and the database's row lock does the queueing. A hundred simultaneous guesses got five answers, whether they hit one server or two."
