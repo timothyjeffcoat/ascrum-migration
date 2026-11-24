@@ -36,7 +36,7 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 | Cluster | Wave | Ports (STUB/PREVIEW/PAGES) | Status | PR | Reviewer notes |
 |---|---|---|---|---|---|
 | p5-store | A | 3601/4773/4774, Postgres 55436 | pending | | |
-| p5-devsecops | A | 3701/4873/4874 | pending | | |
+| p5-devsecops | A | 3701/4873/4874 | verified | [#41](https://github.com/timothyjeffcoat/ascrum-migration/pull/41) | No blocking findings. AC-DSO-01: CodeQL and deps red on plants (#42, #43, reviewer #46); secrets answered Q-1 (b), pending a Gitleaks job (DEV-p5-devsecops-01); checks to require after merge per Q-2 (DEV-02). Reviewer plants #44 (audit ignore) and #45 (`api/` lockfile) passed every check: DEV-03/-04, follow-up before `api/` lands. AC-DSO-02 provable only after merge (first Dependabot PR). Q-3 done; `SECURITY.md` follow-up |
 | p5-security | B | | pending | | |
 | p5-containers | B | | pending | | |
 | p5-infra | C | | pending | | |
