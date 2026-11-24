@@ -1,0 +1,17 @@
+{
+  "name": "ascrum-api",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "vitest": "link:../web/node_modules/vitest"
+  },
+  "prettier": "../web/.prettierrc.json"
+}

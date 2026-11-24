@@ -1,0 +1,8 @@
+# Two packages, one install (Q-p5-1 (b)): `web/` (the app, its stub and every gate's config) and `api/`
+# (the PostgreSQL-backed server). `pnpm install` in either folder installs both, so CI's existing
+# setup step (install in web/) also brings in api/'s `pg`. Each package keeps its own lockfile, so
+# web/pnpm-lock.yaml stays where CI's cache key expects it.
+packages:
+  - web
+  - api
+sharedWorkspaceLockfile: false
