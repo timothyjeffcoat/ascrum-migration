@@ -902,3 +902,9 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "In round 3 the code said 'CloudFront supports no resource-tag condition', and a test pinned the unscoped grant as the expected state. That made every breakage against it pointless: you cannot turn a test red by removing scope that was never there. One read of AWS's own permission reference showed the claim was false. The worker's lesson: an 'AWS doesn't support X' claim needs a citation before it gets a test. The reviewer made the same kind of mistake in the advice for that very finding, naming `CreateDistributionWithTags` as an IAM action. It is only an API name, and the worker caught it by checking the same reference."
+
+## 2026-11-24: Wave C merged, nothing deployed yet (orchestrator)
+- **Merged.** p5-infra as `472274a` (#69), owner: "merge 69", with all 12 checks green on the reviewer's final head (`gh pr checks 69`).
+- **What exists now.** Code only. No AWS resource has been created: every synth, test and breakage in the cluster ran with no AWS credentials. AC-AWS-05 passes on the template; AC-AWS-01..04, -06 and -07 are built and wait for the owner's one-time bootstrap and the first live runs.
+- **Owner's decision during the review.** The owner's AWS profile is a general account, so the demo moved to a dedicated AWS Organizations member account, and the code was still required to be safe in a shared one (the reason round 2 blocked on CloudFront and RDS secrets).
+- **Next, in order.** The owner deploys the bootstrap stack into the member account, customises the repository's OIDC subject and re-runs Pages by hand (DEV-p5-infra-07), and sets up the `aws-demo` environment. Then a normal deploy, a deliberately failed one and a cancelled one, and a standalone destroy, checked against the reviewer's 11-point list; items 1-4 are the owner's breakage O4.
