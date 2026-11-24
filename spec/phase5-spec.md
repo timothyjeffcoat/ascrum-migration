@@ -91,7 +91,7 @@ Each one is a deliberate difference from the stub, so each gets a D-id-style com
 | p5-store | `Store`/`Sessions` interfaces, `PgStore`, `PgSessions`, schema, migrations, contract tests over both stores | none |
 | p5-security | §3.4: hashing, cookie flags, throttling, headers | p5-store (interfaces) |
 | p5-containers | Dockerfiles, `compose.yaml`, e2e against the compose stack | p5-store |
-| p5-infra | infrastructure as code, deploy and destroy workflows, OIDC role | p5-containers |
+| p5-infra | infrastructure as code, deploy and destroy workflows, OIDC role (written as a bootstrap stack the owner deploys once, §11) | p5-containers |
 | p5-devsecops | scanning workflows and required checks (§6) | none; can run first |
 | p5-hardening | the open non-blocking follow-ups from wave B (added 2026-11-24, owner: "start hardening"): DEV-p5-security-13, -15, -16, -17 and DEV-p5-containers-11..14. Owns `api/src/**`, `web/stub/**`, `api/eslint.config.js`, `web/eslint.config.js` (rules may only be added), `docker/**`, `.github/workflows/**`, `.github/actions/**` | waves A and B merged |
 
@@ -181,6 +181,7 @@ Every recommendation below is accepted. Where a recommendation offered two optio
 ## 11. Owner prerequisites (before wave C)
 - An AWS account the owner controls, with billing access.
 - The owner runs the one-time bootstrap: CDK bootstrap and the GitHub OIDC role. Agents never hold AWS console credentials or long-lived keys. They get the deploy role only through CI.
+- *Clarified 2026-11-24 (owner: "yes", when opening wave C).* §4 gives p5-infra the OIDC role and this section gives the owner its bootstrap; they split this way. p5-infra writes the GitHub OIDC provider and the deploy role as a CDK bootstrap stack in the repo, and its permissions are reviewed like any other code. The owner deploys that stack once, with the owner's own credentials, after `cdk bootstrap`. The role is never created by hand in the console. Until it exists, the worker proves what it can without AWS (synth, type checks, unit tests on the stacks); AC-AWS-01..04 and -07 are proven by the first deploy run after the owner's one-time deploy.
 - The owner sets the budget alarm limit (AC-AWS-06).
 - Account ids, the role ARN and the alarm e-mail stay out of the repo: GitHub repository variables and secrets only.
 
