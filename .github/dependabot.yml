@@ -50,6 +50,33 @@ updates:
     commit-message:
       prefix: ci
 
+  # The container images (p5-containers, DEV-p5-containers-09). Every base image and the compose `db` image
+  # is pinned by version and digest (docker/check-images.sh fails otherwise), so without these entries the
+  # pins would never move. Both ecosystems are version updates only ("Security updates: Not supported" for
+  # `docker` and `docker-compose` in GitHub's "Dependabot supported ecosystems and repositories"); the
+  # image scan is wave C's. Dependabot's docker parser reads literal FROM lines only, not an ARG default
+  # (dependabot-core docker/lib/dependabot/docker/file_parser.rb), which is why the Dockerfiles write
+  # each pin out on its FROM line. `docker` looks in /docker (api.Dockerfile, web.Dockerfile);
+  # `docker-compose` in / (compose.yaml).
+  - package-ecosystem: docker
+    directory: /docker
+    target-branch: migration
+    schedule:
+      interval: weekly
+    groups:
+      docker-images:
+        patterns: ['*']
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: docker-compose
+    directory: /
+    target-branch: migration
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+
   # `legacy/` is the frozen reference app (never modified, never built or deployed), so Dependabot must
   # not propose changes there (Q-p5-devsecops-6). `exclude-paths` is not enough: the options reference
   # marks it "version updates only". And a directory with no entry here gets security PRs
