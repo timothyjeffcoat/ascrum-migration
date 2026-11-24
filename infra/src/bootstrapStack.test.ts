@@ -174,7 +174,15 @@ describe('bootstrap stack: OIDC and the deploy role', () => {
       ARN('cloudformation', 'stack/AscrumBootstrap/*'),
       ARN('cloudformation', 'stack/CDKToolkit*/*'),
     ])
-    expect(deny.filter((s) => s.Condition !== undefined)).toEqual([])
+    expect(deny.filter((s) => s.Condition !== undefined).map((s) => s.Sid)).toEqual(['NeverImportResources'])
+  })
+
+  it('DEV-p5-infra-10: no change set may import an existing resource into a demo stack', () => {
+    const deny = deployRolePolicy().filter((s) => s.Effect === 'Deny')
+    const imports = deny.find((s) => s.Sid === 'NeverImportResources') as Statement
+    expect(actionsOf(imports)).toEqual(['cloudformation:CreateChangeSet'])
+    expect(imports.Resource).toBe('*')
+    expect(imports.Condition).toEqual({ Null: { 'cloudformation:ImportResourceTypes': 'false' } })
   })
 
   it('DEV-p5-infra-01: the execution role is trusted by CloudFormation only and holds only the execution policy', () => {
@@ -373,7 +381,8 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
         'ecs:UntagResource',
         'ecs:UpdateService',
       ],
-      TaskDefinitions: ['ecs:DeregisterTaskDefinition', 'ecs:RegisterTaskDefinition'],
+      RegisterDemoTaskDefinition: ['ecs:RegisterTaskDefinition'],
+      DeregisterTaskDefinitions: ['ecs:DeregisterTaskDefinition'],
       ApiRepository: [
         'ecr:BatchDeleteImage',
         'ecr:CreateRepository',
@@ -432,17 +441,17 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
         'cloudfront:PublishFunction',
         'cloudfront:UpdateFunction',
       ],
-      Cdn: [
-        'cloudfront:CreateDistribution',
-        'cloudfront:CreateDistributionWithTags',
-        'cloudfront:CreateOriginAccessControl',
-        'cloudfront:CreateResponseHeadersPolicy',
+      CdnDistributionCreate: ['cloudfront:CreateDistribution', 'cloudfront:TagResource'],
+      CdnDistributionChangeTagged: [
         'cloudfront:DeleteDistribution',
-        'cloudfront:DeleteOriginAccessControl',
-        'cloudfront:DeleteResponseHeadersPolicy',
-        'cloudfront:TagResource',
         'cloudfront:UntagResource',
         'cloudfront:UpdateDistribution',
+      ],
+      CdnUnscopable: [
+        'cloudfront:CreateOriginAccessControl',
+        'cloudfront:CreateResponseHeadersPolicy',
+        'cloudfront:DeleteOriginAccessControl',
+        'cloudfront:DeleteResponseHeadersPolicy',
         'cloudfront:UpdateOriginAccessControl',
         'cloudfront:UpdateResponseHeadersPolicy',
       ],
@@ -465,7 +474,7 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
     expect(Object.fromEntries(allow.map((s) => [s.Sid, actionsOf(s).sort()]))).toEqual(expected)
   })
 
-  it('DEV-p5-infra-05: a write on "*" only with its condition: region, tag-on-create, the demo tag, a service; CloudFront is the one unscoped exception', () => {
+  it('DEV-p5-infra-05/-10: a write on "*" only with its condition: region, tag-on-create, the demo tag in the request, a service; only origin access controls and response headers policies have none', () => {
     const conditioned: Record<string, unknown> = {
       NetworkCreate: { StringEquals: region },
       NetworkTagOnCreate: {
@@ -481,7 +490,8 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
         },
       },
       NetworkChangeTagged: { StringEquals: { ...region, 'aws:ResourceTag/project': 'ascrum-migration' } },
-      TaskDefinitions: { StringEquals: region },
+      DeregisterTaskDefinitions: { StringEquals: region },
+      CdnDistributionCreate: { StringEquals: { 'aws:RequestTag/project': 'ascrum-migration' } },
       ManagedKeysThroughRdsAndSecretsManager: {
         StringEquals: {
           'kms:ViaService': [
@@ -497,14 +507,43 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
       },
     }
     const onStar = allow.filter((s) => s.Resource === '*' && !actionsOf(s).every(isRead))
-    expect(onStar.map((s) => s.Sid).sort()).toEqual([...Object.keys(conditioned), 'Cdn'].sort())
+    expect(onStar.map((s) => s.Sid).sort()).toEqual([...Object.keys(conditioned), 'CdnUnscopable'].sort())
     for (const statement of onStar) {
-      if (statement.Sid === 'Cdn') {
-        expect(actionsOf(statement).every((a) => a.startsWith('cloudfront:'))).toBe(true)
+      if (statement.Sid === 'CdnUnscopable') {
+        expect(
+          actionsOf(statement).every((a) => /^cloudfront:\w+(OriginAccessControl|ResponseHeadersPolicy)$/.test(a)),
+        ).toBe(true)
         continue
       }
       expect(statement.Condition, statement.Sid).toEqual(conditioned[statement.Sid ?? ''])
     }
+  })
+
+  it('DEV-p5-infra-10: a CloudFront distribution is created only with the demo tag and changed, deleted or untagged only when it carries it', () => {
+    const create = sid('CdnDistributionCreate')
+    expect(actionsOf(create).sort()).toEqual(['cloudfront:CreateDistribution', 'cloudfront:TagResource'])
+    expect(create.Condition).toEqual({ StringEquals: { 'aws:RequestTag/project': 'ascrum-migration' } })
+    const change = sid('CdnDistributionChangeTagged')
+    expect(resourcesOf(change)).toEqual(['arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*'])
+    expect(change.Condition).toEqual({ StringEquals: { 'aws:ResourceTag/project': 'ascrum-migration' } })
+    // No other statement grants a distribution write, and none names CreateDistributionWithTags: that is
+    // an API operation, which IAM authorises as CreateDistribution plus TagResource (worklog).
+    const distributionWrites = allow.filter((s) =>
+      actionsOf(s).some((a) => /^cloudfront:(\w+Distribution\w*|TagResource|UntagResource)$/.test(a) && !isRead(a)),
+    )
+    expect(distributionWrites.map((s) => s.Sid).sort()).toEqual([
+      'CdnDistributionChangeTagged',
+      'CdnDistributionCreate',
+    ])
+    // The demo's distribution carries the tag the conditions ask for.
+    templates.demo.hasResourceProperties('AWS::CloudFront::Distribution', {
+      Tags: Match.arrayWith([{ Key: 'project', Value: 'ascrum-migration' }]),
+    })
+  })
+
+  it('DEV-p5-infra-10: task definitions are registered only in the demo family', () => {
+    expect(resourcesOf(sid('RegisterDemoTaskDefinition'))).toEqual([ARN('ecs', 'task-definition/ascrum-demo-api:*')])
+    expect(sid('RegisterDemoTaskDefinition').Condition).toBeUndefined()
   })
 
   it('DEV-p5-infra-05 (R26): every EC2 write is region-bound; deletes and changes need the demo tag, and the tag can only be set while creating', () => {
@@ -625,6 +664,21 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
       'secretsmanager:GetSecretValue',
     ])
     expect(json(boundary)).toContain('secret:rds!*')
+  })
+
+  it('DEV-p5-infra-10: the boundary reads only the demo DB’s RDS-managed secret, by the instance ARN RDS tags it with', () => {
+    const [, boundary] = managedPolicy('ascrum-demo-role-boundary')
+    const secret = boundary.find((s) => s.Sid === 'DatabaseSecret') as Statement
+    expect(actionsOf(secret).sort()).toEqual(['secretsmanager:DescribeSecret', 'secretsmanager:GetSecretValue'])
+    expect(resourcesOf(secret)).toEqual([ARN('secretsmanager', 'secret:rds!*')])
+    expect(Object.keys(secret.Condition ?? {})).toEqual(['StringEquals'])
+    const owner = secret.Condition?.StringEquals ?? {}
+    expect(Object.keys(owner)).toEqual(['aws:ResourceTag/aws:rds:primaryDBInstanceArn'])
+    expect(flat(owner['aws:ResourceTag/aws:rds:primaryDBInstanceArn'])).toBe(ARN('rds', 'db:ascrum-demo-db'))
+    templates.demo.hasResourceProperties('AWS::RDS::DBInstance', {
+      DBInstanceIdentifier: NAMES.dbInstance,
+      ManageMasterUserPassword: true,
+    })
   })
 })
 

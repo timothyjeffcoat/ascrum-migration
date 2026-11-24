@@ -125,3 +125,16 @@ template versions. Unverifiable offline, so watch the first live run: whether Cl
 `DescribeChangeSet`/`ExecuteChangeSet`/`DeleteChangeSet` against the stack ARN (granted) or a change-set
 ARN (not granted; the run would fail closed with AccessDenied naming it), and whether each EC2 create
 passes its tags in the create call (needed for the tag-on-create rule; worklog, round 3).
+
+**Q-p5-infra-10. The tag key that ties an RDS-managed secret to its DB instance (DEV-p5-infra-10).**
+Context: the reviewer asked to limit the demo roles' boundary to the demo DB's secret with
+`aws:ResourceTag/aws:rds:primaryDBInstanceArn`. The Service Authorization Reference confirms that
+`secretsmanager:GetSecretValue` and `DescribeSecret` accept `aws:ResourceTag/${TagKey}`, and the RDS
+guide gives the instance ARN format (`arn:<partition>:rds:<region>:<account>:db:<identifier>`). I found
+no AWS page that names the tag key RDS puts on its managed secrets; the only sources are third-party
+repositories and an emulator. Options: (a) use the key as asked (fails closed: if RDS used another key,
+the API task cannot read its secret and the first live run fails at task start, naming the denied call);
+(b) drop the condition (every RDS-managed secret in the region readable, the gap DEV-10 names);
+(c) the owner reads the tags of any RDS-managed secret once (`describe-secret`, no secret value) and
+confirms the key. *Implemented: (a), with (c) as the check for the first live run.* No answer needed to
+proceed; it is recorded so the first run's owner knows what a "secret: AccessDenied" at task start means.

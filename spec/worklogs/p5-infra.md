@@ -356,3 +356,76 @@ AC-AWS-01..04 and -07 remain built, awaiting the first live run. New for that ru
 question and the EC2 tag-on-create question (Q-p5-infra-9), the CloudFormation `TagResource` on the demo
 stacks (granted in case CloudFormation asks for it when the CLI passes stack tags), and the reviewer's
 O4 live checks 1-4 (DEV-p5-infra-09).
+
+## 2026-11-24, round 4 (worker): the re-review's blocking DEV-p5-infra-10
+Pulled `6eb83a7` (the reviewer's deviations row -10 and MIGRATION row; not edited). The worktree again
+held both reviewer files staged in reverse; restored to HEAD, not committed. Stopped my leftover
+round-3 background monitors before starting.
+
+### Wrong turn (the cause of DEV-10)
+Round 3 said "CloudFront supports no `aws:ResourceTag` condition" in a code comment, in the README table
+and in a test ("CloudFront is the one unscoped exception") without checking the Service Authorization
+Reference. The claim was false, and the test pinned the unscoped grant as the expected state, so every
+breakage that round (mine and the reviewer's O4) tested the wrong target: removing scope could not turn
+anything red because there was no scope. Lesson: an "AWS does not support X" claim gets a citation
+before it gets a test. Same for "ECS does not scope task definition registration" (also false for
+`RegisterTaskDefinition`, below).
+
+### Sources (Service Authorization Reference, read 2026-11-24)
+- `list_amazoncloudfront.html`: `CreateDistribution` has no resource type, condition keys
+  `aws:RequestTag/${TagKey}`, `aws:TagKeys`. `UpdateDistribution`, `DeleteDistribution`: resource
+  `distribution*`, `aws:ResourceTag/${TagKey}`. `TagResource` (distribution): `aws:RequestTag`,
+  `aws:ResourceTag`, `aws:TagKeys`. `UntagResource` (distribution): `aws:ResourceTag`, `aws:TagKeys`.
+  Resource type `distribution`: `arn:${Partition}:cloudfront::${Account}:distribution/${DistributionId}`.
+  Origin access control and response headers policy actions and resource types: no condition keys.
+  The API operation `CreateDistributionWithTags` maps to the IAM actions `CreateDistribution`,
+  `TagResource` (plus `CreateConnectionGroup`, `GetVpcOrigin`); there is no IAM action named
+  `cloudfront:CreateDistributionWithTags`, so round 3's entry for it granted nothing and is removed.
+- `list_awssecretsmanager.html`: `GetSecretValue`, `DescribeSecret`: resource `Secret*`, condition keys
+  include `aws:ResourceTag/${TagKey}` and `secretsmanager:ResourceTag/tag-key`.
+- `list_amazonelasticcontainerservice.html`: `RegisterTaskDefinition`: resource `task-definition*`
+  (`arn:${Partition}:ecs:${Region}:${Account}:task-definition/${Family}:${Revision}`);
+  `DeregisterTaskDefinition`: no resource type, no condition keys.
+- `list_awscloudformation.html`: `CreateChangeSet` accepts `cloudformation:ImportResourceTypes`.
+- **Not found in AWS documentation:** the tag key `aws:rds:primaryDBInstanceArn` on RDS-managed
+  secrets. The Secrets Manager guide (`service-linked-secrets.html`, the RDS integration page, the
+  search page) and the RDS guide (`rds-secrets-manager.html`) name the `rds!` prefix but no tag; only
+  third-party repositories and an emulator name the key. Used as the reviewer suggested (fails closed);
+  Q-p5-infra-10 records it for the first live run. Value format: the DB instance ARN.
+
+### Changes (`infra/src/bootstrapStack.ts`)
+- `Cdn` split in three: `CdnDistributionCreate` (`CreateDistribution`, `TagResource` on `*`, only with
+  `aws:RequestTag/project = ascrum-migration`); `CdnDistributionChangeTagged` (`Update`/`Delete
+  Distribution`, `UntagResource` on `distribution/*`, only with `aws:ResourceTag/project`);
+  `CdnUnscopable` (origin access controls, response headers policies, documented as unscopable).
+- Boundary `DatabaseSecret`: `GetSecretValue`/`DescribeSecret` on `rds!*` only with
+  `aws:ResourceTag/aws:rds:primaryDBInstanceArn = arn:…:rds:<region>:<account>:db:ascrum-demo-db`.
+- `RegisterDemoTaskDefinition` on `task-definition/ascrum-demo-api:*` (optional item 3);
+  `DeregisterTaskDefinitions` stays on `*` + region.
+- New deploy-role deny `NeverImportResources`: `CreateChangeSet` when `cloudformation:ImportResourceTypes`
+  is present. Why: `TagResource` with the demo tag in the request is allowed on any distribution id, so a
+  change set importing a foreign distribution could tag it and then update or delete it. A deploy imports
+  nothing. Not asked for; it closes the one path the tag scoping opens.
+- Tests: the "one unscoped exception" test now names only `CdnUnscopable` (OAC/RHP actions only) and
+  pins the create condition; new tests for the distribution scoping (including that the demo's
+  distribution carries the tag), the boundary secret condition, the task family, and the import deny.
+  The exact allow-list (R27) updated. README table and step 0 corrected.
+
+### Breakages, round 4 (one at a time, exact match required, never committed; scratchpad runner)
+All 11 red: create without RequestTag; change without ResourceTag; change on `*`; `UpdateDistribution`
+moved into `CdnUnscopable`; RequestTag value `*`; boundary condition removed; boundary `db:*`;
+`RegisterTaskDefinition` on `*`; import deny inverted; `CreateDistributionWithTags` back; demo stacks
+untagged. (The runner now refuses a pattern that does not occur exactly once, so no false survivors.)
+
+### Gates (this session, every AWS credential source at `/dev/null`, `AWS_PROFILE` unset)
+- infra `pnpm verify` exit 0: "All matched files use Prettier code style!", "Test Files 9 passed (9)",
+  "Tests 120 passed (120)", "Successfully synthesized to …/infra/cdk.out".
+- web `pnpm verify` (`STUB_PORT=4101 PREVIEW_PORT=5273 PAGES_PORT=5274`, Postgres on 55461) exit 0:
+  "Tests 443 passed (443)" (unit), "Tests 87 passed (87)" (integration), "41 passed" (e2e).
+- No AWS command run; nothing read `~/.aws`.
+
+### Still only provable live (added this round)
+The RDS-managed secret's tag key (Q-p5-infra-10: a "secret AccessDenied" at task start means the key
+differs); whether CloudFormation's distribution create needs `cloudfront:CreateConnectionGroup` (not
+granted; would fail closed with AccessDenied naming it); that the tagged create passes the stack tags in
+the request (the template carries them; pinned).

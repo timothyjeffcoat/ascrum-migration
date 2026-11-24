@@ -110,9 +110,14 @@ export class BootstrapStack extends Stack {
         }),
         new iam.PolicyStatement({
           sid: 'DatabaseSecret',
-          // RDS-managed master secrets are named rds!db-<id> (manageMasterUserPassword in the demo stack).
+          // RDS-managed master secrets are named rds!db-<id> (manageMasterUserPassword in the demo stack),
+          // and RDS tags each with the ARN of the instance it belongs to: only the demo DB's secret, not
+          // every RDS-managed secret in the region (DEV-p5-infra-10; the tag key's source is in the worklog).
           actions: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
           resources: [arn('secretsmanager', 'secret:rds!*')],
+          conditions: {
+            StringEquals: { 'aws:ResourceTag/aws:rds:primaryDBInstanceArn': arn('rds', `db:${NAMES.dbInstance}`) },
+          },
         }),
       ],
     })
@@ -129,7 +134,7 @@ export class BootstrapStack extends Stack {
     // change or delete anything else of that kind. EC2's network resources have generated ids, so their
     // changes and deletes require the demo's tag (`aws:ResourceTag/project`), and the tag can only be put
     // on a resource while it is being created (`ec2:CreateAction`), never added to an existing one.
-    // What cannot be scoped either way is listed in the worklog (2026-11-24, round 3).
+    // What cannot be scoped either way is listed in the worklog (2026-11-24, round 4).
     const demoRoles = iamArn(`role/${DEMO_STACK_PREFIX}*`)
     const demoTagged = { [`aws:ResourceTag/${TAG.project.key}`]: TAG.project.value }
     const lb = (resource: string) => arn('elasticloadbalancing', resource)
@@ -257,9 +262,16 @@ export class BootstrapStack extends Stack {
           ],
         }),
         new iam.PolicyStatement({
-          // ECS does not scope task definition (de)registration by ARN; the region only (worklog).
-          sid: 'TaskDefinitions',
-          actions: ['ecs:RegisterTaskDefinition', 'ecs:DeregisterTaskDefinition'],
+          // RegisterTaskDefinition takes the task-definition resource: the demo family only (DEV-p5-infra-10).
+          sid: 'RegisterDemoTaskDefinition',
+          actions: ['ecs:RegisterTaskDefinition'],
+          resources: [ecsArn(`task-definition/${NAMES.taskFamily}:*`)],
+        }),
+        new iam.PolicyStatement({
+          // DeregisterTaskDefinition has no resource type in the Service Authorization Reference: the
+          // region only (worklog).
+          sid: 'DeregisterTaskDefinitions',
+          actions: ['ecs:DeregisterTaskDefinition'],
           resources: ['*'],
           conditions: { StringEquals: sameRegion },
         }),
@@ -367,17 +379,28 @@ export class BootstrapStack extends Stack {
           resources: [`arn:${Aws.PARTITION}:cloudfront::${Aws.ACCOUNT_ID}:function/${NAMES.spaFunction}`],
         }),
         new iam.PolicyStatement({
-          // CloudFront is global and its distribution, origin access control and response headers policy
-          // have generated ids; CloudFront supports no aws:ResourceTag condition, so these cannot be
-          // scoped (worklog). A dedicated account (infra/README.md) is what limits them.
-          sid: 'Cdn',
+          // A distribution has a generated id, so it is scoped by tag (DEV-p5-infra-10; the condition keys
+          // are cited in the worklog). CloudFormation creates it with CreateDistributionWithTags, which IAM
+          // authorises as cloudfront:CreateDistribution plus cloudfront:TagResource: both only with the
+          // demo tag in the request.
+          sid: 'CdnDistributionCreate',
+          actions: ['cloudfront:CreateDistribution', 'cloudfront:TagResource'],
+          resources: ['*'],
+          conditions: { StringEquals: { [`aws:RequestTag/${TAG.project.key}`]: TAG.project.value } },
+        }),
+        new iam.PolicyStatement({
+          // Update, delete and untag only a distribution that already carries the demo tag.
+          sid: 'CdnDistributionChangeTagged',
+          actions: ['cloudfront:UpdateDistribution', 'cloudfront:DeleteDistribution', 'cloudfront:UntagResource'],
+          resources: [`arn:${Aws.PARTITION}:cloudfront::${Aws.ACCOUNT_ID}:distribution/*`],
+          conditions: { StringEquals: demoTagged },
+        }),
+        new iam.PolicyStatement({
+          // Origin access controls and response headers policies have generated ids and no condition keys
+          // in the Service Authorization Reference, so these cannot be scoped (worklog). A dedicated account
+          // (infra/README.md) is what limits them.
+          sid: 'CdnUnscopable',
           actions: [
-            'cloudfront:CreateDistribution',
-            'cloudfront:CreateDistributionWithTags',
-            'cloudfront:UpdateDistribution',
-            'cloudfront:DeleteDistribution',
-            'cloudfront:TagResource',
-            'cloudfront:UntagResource',
             'cloudfront:CreateOriginAccessControl',
             'cloudfront:UpdateOriginAccessControl',
             'cloudfront:DeleteOriginAccessControl',
@@ -513,6 +536,16 @@ export class BootstrapStack extends Stack {
           'cloudformation:ExecuteStackRefactor',
         ],
         resources: ['*'],
+      }),
+      new iam.PolicyStatement({
+        // No resource import into a demo stack: it would bring an existing resource (a foreign
+        // distribution, say) under the execution role, which could then tag it as a demo one
+        // (DEV-p5-infra-10). A deploy's change set imports nothing, so it never carries this key.
+        sid: 'NeverImportResources',
+        effect: iam.Effect.DENY,
+        actions: ['cloudformation:CreateChangeSet'],
+        resources: ['*'],
+        conditions: { Null: { 'cloudformation:ImportResourceTypes': 'false' } },
       }),
       new iam.PolicyStatement({
         sid: 'NeverTheBootstrapStacks',
