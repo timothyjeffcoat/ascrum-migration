@@ -203,3 +203,33 @@ bootstrap (spec §11). `pnpm smoke --list` (with a dummy https URL) lists its 5 
   evidence on failure) name the action.
 - AC-AWS-01..04 and -07 are proven only by the first live run after the owner's steps in
   `infra/README.md`. AC-AWS-05 and -06 are pinned on the templates.
+
+## 2026-11-24, session 1, continued (worker): two CI failures on PR #69
+
+I opened the PR and reported without waiting for CI (wrong turn: the Definition of Done leaves CI to the
+reviewer, but "done" should not be claimed on checks I had not seen). The orchestrator relayed two
+failures; both were mine.
+
+1. **`infra` job: `sh: 1: eslint: not found` (exit 127).** Infra's dev tools are `link:` entries into
+   `web/node_modules`. The job's log shows the workspace install linking `../infra` *before* `web/` was
+   populated; pnpm then creates the symlinks but no `.bin` shims for those tools, so `eslint`, `tsc`,
+   `vitest` and `prettier` were not on the script's PATH. Locally the shims existed (the order was
+   different on a warm store), so my runs never showed it. Worse, this machine has a system ESLint 6.4.0
+   in `/usr/bin`, so a missing shim here could have run the wrong ESLint silently.
+   **Fix:** infra's scripts start each tool through its own entry file in the linked package
+   (`node node_modules/eslint/bin/eslint.js`, `prettier/bin/prettier.cjs`, `typescript/bin/tsc`,
+   `vitest/vitest.mjs`, `@playwright/test/cli.js`), which exists whatever order the install used. `cdk`
+   (a real dependency, with its own shim in CI) is unchanged. No gate changed: same tools, same versions,
+   same flags. Noted in `infra/README.md`.
+   **Clean-state proof:** `git archive HEAD` into a fresh directory (no `node_modules`, no `cdk.out`; a
+   `git clone` outside the worktree is refused by my sandbox), `pnpm install --frozen-lockfile` in `web/`
+   as `setup-web` does, then the `.bin` shims of the five linked tools deleted to recreate CI's state
+   (only `cdk` left), then only the job's steps with every AWS credential source at `/dev/null`:
+   `pnpm lint` exit 0 ("All matched files use Prettier code style!"), `pnpm typecheck` exit 0,
+   `pnpm test` exit 0 ("Test Files 6 passed (6)", "Tests 65 passed (65)"), `pnpm synth` exit 0
+   ("Successfully synthesized to …/clean2/infra/cdk.out").
+2. **CodeQL, 5 alerts.** `actions/unpinned-tag` (3): `aws-actions/configure-aws-credentials@v6` in both
+   workflows is now pinned to the v6.3.0 commit, `@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0`
+   (the comment form Dependabot updates). `js/regex/missing-regexp-anchor` and
+   `js/incomplete-hostname-regexp` (`bootstrapStack.test.ts`): the `toThrow(/token.actions.githubusercontent.com/)`
+   pattern (unescaped dots, no anchor) is now the exact message as a string. No alert dismissed.
