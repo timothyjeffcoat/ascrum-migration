@@ -25,6 +25,21 @@ function cookie(res: StubResponse, name: string): string | undefined {
   return res.setCookies.find((c) => c.name === name)?.value
 }
 
+/**
+ * Counts the store's password checks and makes each one take `delayMs`, as scrypt does (about 0.25 s at
+ * production cost), so that attempts sent at once are all in flight together.
+ */
+function countPasswordChecks(ctx: StubContext, delayMs = 20): { count: number } {
+  const original = ctx.store.findLogin.bind(ctx.store)
+  const checks = { count: 0 }
+  ctx.store.findLogin = async (email, password) => {
+    checks.count += 1
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    return original(email, password)
+  }
+  return checks
+}
+
 export function defineSecurityTests(backend: Backend): void {
   describe('AC-SEC-04 / S-p5-3: login throttling (Q-p5-10 (b))', () => {
     let clock: ReturnType<typeof manualClock>
@@ -115,6 +130,85 @@ export function defineSecurityTests(backend: Backend): void {
       expect((await attempt(CREDENTIALS.po)).res.status).toBe(429)
       await handle({ method: 'POST', path: '/__stub/reset', query: {}, headers: {}, cookies: {}, body: undefined }, ctx)
       expect(body((await attempt(CREDENTIALS.po)).res)).toMatchObject({ user: { id: USER.po } })
+    })
+
+    // DEV-p5-security-08 (review of #59): the throttle used to be asked before the password check and told
+    // about the failure after it, so attempts sent at once all saw "under the limit". These tests send
+    // them at once, with a password check as slow as scrypt makes it, and count how many got through.
+    const statusCounts = (responses: StubResponse[]) => ({
+      checked: responses.filter((r) => r.status === 200).length,
+      refused: responses.filter((r) => r.status === 429).length,
+    })
+
+    it('AC-SEC-04 / DEV-p5-security-08: concurrent failures for one account reach the password check at most the per-account limit of times', async () => {
+      const checks = countPasswordChecks(ctx)
+      const n = 3 * LIMITS.maxFailuresPerAccount
+      // Different IPs, so the account limit alone applies.
+      const clients = await Promise.all(
+        Array.from({ length: n }, (_, i) => new Client(ctx, `192.0.2.${i + 1}`).prime()),
+      )
+      const responses = await Promise.all(clients.map((c) => c.call('POST', '/login', wrong('po'))))
+      expect(checks.count).toBe(LIMITS.maxFailuresPerAccount)
+      expect(statusCounts(responses)).toEqual({
+        checked: LIMITS.maxFailuresPerAccount,
+        refused: n - LIMITS.maxFailuresPerAccount,
+      })
+      expect((await attempt(CREDENTIALS.po, '198.51.100.7')).res.status).toBe(429)
+    })
+
+    it('AC-SEC-04 / DEV-p5-security-08: concurrent failures from one address reach the password check at most the per-IP limit of times', async () => {
+      const checks = countPasswordChecks(ctx)
+      const n = 3 * LIMITS.maxFailuresPerIp
+      const clients = await Promise.all(Array.from({ length: n }, () => new Client(ctx, '203.0.113.5').prime()))
+      // A different unknown e-mail each time, so the per-account limit never applies.
+      const responses = await Promise.all(
+        clients.map((c, i) => c.call('POST', '/login', { email: `guess${i}@nowhere.test`, password: 'x' })),
+      )
+      expect(checks.count).toBe(LIMITS.maxFailuresPerIp)
+      expect(statusCounts(responses)).toEqual({
+        checked: LIMITS.maxFailuresPerIp,
+        refused: n - LIMITS.maxFailuresPerIp,
+      })
+      expect((await attempt(CREDENTIALS.admin, '203.0.113.5')).res.status).toBe(429)
+    })
+
+    it('AC-SEC-04: successful sign-ins do not count against the address (only failures do)', async () => {
+      // An attempt is counted before its password is checked (DEV-p5-security-08); a success gives the
+      // address its count back, so an office behind one NAT address is not limited by its sign-ins.
+      for (let i = 0; i < 2 * LIMITS.maxFailuresPerIp; i++) {
+        expect(body((await attempt(CREDENTIALS.dev2, '203.0.113.7')).res), `sign-in ${i + 1}`).toMatchObject({
+          user: { id: USER.dev2 },
+        })
+      }
+      for (let i = 0; i < LIMITS.maxFailuresPerIp; i++) {
+        const who = (['po', 'sm', 'dev1', 'po', 'sm'] as const)[i] ?? 'po'
+        expect((await attempt(wrong(who), '203.0.113.7')).res.status, `failure ${i + 1}`).toBe(200)
+      }
+      expect((await attempt(CREDENTIALS.dev2, '203.0.113.7')).res.status).toBe(429)
+    })
+
+    it('AC-SEC-04: an attempt refused for its account is not counted against its address either', async () => {
+      for (let i = 0; i < LIMITS.maxFailuresPerAccount; i++) await attempt(wrong('po'), `192.0.2.${i + 1}`)
+      // More refusals from one address than its own limit: none of them may use up the address.
+      for (let i = 0; i < 2 * LIMITS.maxFailuresPerIp; i++) {
+        expect((await attempt(wrong('po'), '203.0.113.8')).res.status, `refusal ${i + 1}`).toBe(429)
+      }
+      expect(body((await attempt(CREDENTIALS.sm, '203.0.113.8')).res)).toMatchObject({ user: { id: USER.sm } })
+      for (let i = 0; i < LIMITS.maxFailuresPerIp; i++) {
+        const who = (['sm', 'dev1', 'dev2', 'sm', 'dev1'] as const)[i] ?? 'sm'
+        expect((await attempt(wrong(who), '203.0.113.8')).res.status, `failure ${i + 1}`).toBe(200)
+      }
+    })
+
+    it('AC-SEC-04 / DEV-p5-security-08: a password check that throws still counts as a failed attempt (fails closed)', async () => {
+      const original = ctx.store.findLogin.bind(ctx.store)
+      ctx.store.findLogin = () => Promise.reject(new Error('password check failed'))
+      for (let i = 0; i < LIMITS.maxFailuresPerAccount; i++) {
+        const client = await new Client(ctx, `192.0.2.${i + 1}`).prime()
+        await expect(client.call('POST', '/login', wrong('po'))).rejects.toThrow('password check failed')
+      }
+      ctx.store.findLogin = original
+      expect((await attempt(CREDENTIALS.po, '198.51.100.9')).res.status).toBe(429)
     })
 
     it('AC-SEC-04: without a throttle (the in-memory stub, as legacy) a sign-in is never 429', async () => {

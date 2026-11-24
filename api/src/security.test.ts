@@ -410,6 +410,63 @@ describe('AC-SEC-04: the client address for per-IP throttling', () => {
   })
 })
 
+// --- DEV-p5-security-08: concurrent sign-ins, on the real API with every production default ------
+
+describe('AC-SEC-04 / DEV-p5-security-08: sign-ins sent at once cannot get past the limits', () => {
+  // The review's probe: wrong passwords sent all at once, over HTTP, with production hashing and the
+  // default limits. A 200 {user:null} means the password was checked (handle() answers it only after
+  // the store's scrypt check); a 429 means it was refused before. The table must agree.
+  const sendAtOnce = async (base: string, n: number, creds: (i: number) => unknown) => {
+    const browsers = await Promise.all(
+      Array.from({ length: n }, async () => {
+        const b = browser(base)
+        await b.send('GET', '/current-user')
+        return b
+      }),
+    )
+    const responses = await Promise.all(browsers.map((b, i) => b.send('POST', '/login', creds(i))))
+    return {
+      checked: responses.filter((r) => r.status === 200).length,
+      refused: responses.filter((r) => r.status === 429).length,
+    }
+  }
+  const failures = async (pool: pg.Pool) =>
+    Object.fromEntries(
+      (await pool.query<{ key: string; failures: number }>('SELECT key, failures FROM login_throttle')).rows.map(
+        (r) => [r.key.replace(/^ip:.*/, 'ip'), r.failures],
+      ),
+    )
+
+  it(
+    'AC-SEC-04 / DEV-p5-security-08: 3× the per-account limit of wrong passwords at once: only the limit are checked, the rest get 429',
+    async () => {
+      const { base, pool } = await api({ productionHashing: true })
+      const limit = DEFAULT_THROTTLE.maxFailuresPerAccount
+      const n = 3 * limit // below the per-IP limit (20), so the account limit alone applies
+      expect(n).toBeLessThan(DEFAULT_THROTTLE.maxFailuresPerIp)
+      const wrong = { email: CREDENTIALS.po.email, password: 'not-the-password' }
+      expect(await sendAtOnce(base, n, () => wrong)).toEqual({ checked: limit, refused: n - limit })
+      expect(await failures(pool)).toEqual({ [`account:${CREDENTIALS.po.email}`]: limit, ip: limit })
+    },
+    PRODUCTION_HASHING_TIMEOUT,
+  )
+
+  it(
+    'AC-SEC-04 / DEV-p5-security-08: 3× the per-IP limit of wrong sign-ins at once from one address: only the limit are checked, the rest get 429',
+    async () => {
+      const { base, pool } = await api({ productionHashing: true })
+      const limit = DEFAULT_THROTTLE.maxFailuresPerIp
+      const n = 3 * limit
+      const guess = (i: number) => ({ email: `guess${i}@nowhere.test`, password: 'x' }) // one try per e-mail
+      expect(await sendAtOnce(base, n, guess)).toEqual({ checked: limit, refused: n - limit })
+      const counted = await failures(pool)
+      expect(counted.ip).toBe(limit)
+      expect(Object.keys(counted).filter((k) => k.startsWith('account:'))).toHaveLength(limit)
+    },
+    PRODUCTION_HASHING_TIMEOUT,
+  )
+})
+
 // --- DEV-p5-store-03 in the running API ----------------------------------------------------------
 
 describe('DEV-p5-store-03: the API sweeps expired sessions on a timer', () => {
