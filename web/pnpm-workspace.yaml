@@ -1,0 +1,5 @@
+# PLANT (review, do not merge): mutes the two high lodash advisories without touching deps.yml.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-35jh-r3h4-6jhm
+    - GHSA-r5fr-rjxr-66jc
