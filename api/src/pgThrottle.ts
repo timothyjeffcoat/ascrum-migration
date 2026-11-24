@@ -10,6 +10,7 @@
 import pg from 'pg'
 import type { Clock } from '../../web/stub/session.ts'
 import {
+  reservedAddress,
   throttleKeys,
   type Admission,
   type LoginAttempt,
@@ -62,10 +63,11 @@ export class PgLoginThrottle implements LoginThrottle {
   }
 
   async succeeded(reservation: Reservation): Promise<void> {
-    const { account, ip } = reservation.attempt
+    const { account } = reservation.attempt
     if (account !== undefined)
       await this.pool.query('DELETE FROM login_throttle WHERE key = $1', [`account:${account}`])
-    const reservedIp = reservation.keys.find((k) => k.key === `ip:${ip}`)
+    // The address key as admit() made it (DEV-p5-security-13: an IPv6 /64, not the address as sent).
+    const reservedIp = reservedAddress(reservation)
     if (reservedIp) await this.release(reservedIp)
   }
 
