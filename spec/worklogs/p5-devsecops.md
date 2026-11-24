@@ -83,3 +83,117 @@ All matched files use Prettier code style!
   37 passed (13.1s)
 ```
 (`tsc --noEmit` printed nothing, i.e. no errors.)
+
+## 2026-11-23: session 2 (follow-up after review)
+
+Picked up the reviewer's commits (94f99e1, fd387e8, 8efb3ba). Follow-ups from the owner's answers
+(Q-1 (b), Q-2 (a), Q-3 done) and DEV-p5-devsecops-01, -03, -04. The deviation rows and the
+`MIGRATION.md` row are the reviewer's and were not edited.
+
+### What was done
+- **`.github/workflows/secrets.yml`, job `secrets` (Q-1 (b), DEV-01).** Gitleaks **8.30.1** (released
+  2026-03-21), the release binary for linux x64, downloaded by URL and checked with `sha256sum --check`
+  against the SHA-256 from the release's `checksums.txt` (551f6fc8…70eb, also verified locally). Two
+  scans: the commits the change adds (`base..head` of the PR, `before..after` of a push; a merge from
+  the base drops out because the base already has those commits) and the checked-out tree
+  (`gitleaks dir`). The tree scan runs even when the commit scan fails, so one run reports both.
+  `--redact` keeps secrets out of the log. Weekly schedule (tree only). Muting guard: a tracked
+  `.gitleaks.toml` or `.gitleaksignore` fails the job with "needs an owner-approved deviation", and
+  `--ignore-gitleaks-allow` disables inline `gitleaks:allow` comments.
+  - **Licence:** the Gitleaks CLI is MIT (the `LICENSE` in the release tarball: "MIT License, Copyright
+    (c) 2019 Zachary Rice"), so it is fine for a personal public repo. The `gitleaks/gitleaks-action`
+    wrapper has its own terms: free for personal accounts, a licence key for organisation accounts. It
+    is not used: the binary needs no token, no licence and no third-party action, and is pinned by hash.
+- **`deps.yml` (DEV-03, DEV-04).** No longer runs in `web/` only, and no longer uses `setup-web` (the
+  audit reads the lockfile; no install needed). Steps:
+  1. *No audit ignores in any pnpm config*: every tracked `pnpm-workspace.yaml`, `package.json`, `.npmrc`
+     and `.pnpmrc` outside `legacy/` is grepped (case-insensitive) for `auditConfig`/`audit-config` and
+     `ignoreGhsas`/`ignoreCves`/`ignoreUnfixable` in any spelling. A match fails with: "Ignoring an
+     advisory mutes the deps gate, so it needs an owner-approved deviation (an answered
+     Q-<cluster>-<n> and a row in spec/deviations.md) and a reviewed change to this workflow, not a
+     config entry."
+  2. *Every pnpm project is covered by an audited lockfile*: fails if a `package-lock.json`,
+     `npm-shrinkwrap.json`, `yarn.lock` or `bun.lock(b)` is tracked outside `legacy/`, if there is no
+     `pnpm-lock.yaml`, or if any `package.json` outside `legacy/` is not an importer of the nearest
+     tracked `pnpm-lock.yaml` at or above it (read from the lockfile's `importers:` keys).
+  3. pnpm and Node versions come from the root `package.json`/`.nvmrc` once they exist, otherwise from
+     `web/`. So nothing needs editing when the root workspace arrives.
+  4. `pnpm audit --audit-level high` in every lockfile's directory; any failure fails the job.
+- **`SECURITY.md` (Q-3).** Points to GitHub private vulnerability reporting (Security tab → "Report a
+  vulnerability"), no e-mail. Re-read with `gh api …/private-vulnerability-reporting`: `{"enabled":true}`.
+- **Dependabot `/api`: not added.** See Q-p5-devsecops-5.
+- Local checks before pushing: each `deps` step script, extracted from the YAML, run against eight
+  scratch clones: clean (pass, `dirs=web`); `api/` with its own lockfile and lodash 4.17.20 (audit
+  fails in `api`); root workspace with `api/` importer (audit fails in `.`); `api/package.json` without
+  a lockfile (coverage fails); a `package.json` that is not a workspace importer (coverage fails); a
+  `package-lock.json` (coverage fails); `ignoreGhsas` in `web/pnpm-workspace.yaml` and `ignoreCves`
+  in `web/package.json` (ignore step fails).
+
+### Clean tree (PR #41, head 2aae665)
+- `deps` **green**: https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45308425625
+  (`web/package.json: importer '.' of web/pnpm-lock.yaml`, `No known vulnerabilities found`).
+- `secrets` **red, not green**: https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45308425782 .
+  The commit scan is green (range 4681be2..2aae665, "5 commits scanned", "no leaks found"); the tree
+  scan finds one false positive, `spec/worklogs/foundation.md:65`, rule `generic-api-key` (prose:
+  `accessible names: Q-foundation-1.`). The file is outside this cluster's paths and an ignore would be
+  silencing, so it is raised as **Q-p5-devsecops-4** and left red. Rewording the line clears it
+  (checked locally).
+- `codeql`, `CodeQL`, `lint`, `typecheck`, `test`, `build`, `e2e` green on the same head.
+
+### History scan (local only; `gitleaks git --log-opts=--all`, 516 commits)
+Three findings, recorded and asked about in Q-p5-devsecops-4, nothing silenced: the same worklog line
+in 8df4797 and b04ff4d, and `server/cert/privatekey.pem` (`private-key`) from upstream commit 5d8f8d0
+(2013, the original angular-app's development HTTPS key), deleted from the tree in #1 (29e69b4).
+GitHub's secret-scanning alerts API lists no alerts.
+
+### Plants (all draft PRs into `migration`, closed unmerged, branches deleted)
+
+| Gate | Plant | PR | Result | Run |
+|---|---|---|---|---|
+| secrets (push protection) | Random characters in AWS key format (`AKIA` + 16 base32, 40-char secret) in `infra/demo.env` | none | **Blocked by push protection**: `git push` rejected ("Amazon AWS Secret Access Key", commit 96ba831, never reached the remote). Unlike session 1's AWS *example* key, a format-valid random key is blocked. The unblock URLs were not used | none (push rejected) |
+| secrets | A JWT (`HS256` header, plausible claims, random 256-bit signature) as `ASCRUM_API_TOKEN` in `infra/demo.env` | #49 | **red**: commit scan "6 commits scanned … leaks found: 1", rule `jwt`, `infra/demo.env`; tree scan also red (the JWT plus the worklog line) | https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45308493720 |
+| secrets (muting) | `.gitleaksignore` with the worklog finding's fingerprint | #53 | **red** on the allowlist guard; the tree scan, which loaded the ignore file, was green, which shows what the guard prevents | https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45308562354 |
+| deps (DEV-03, re-run of #45) | `lodash@4.17.20` in a top-level `api/` with its own `pnpm-lock.yaml` | #50 | **red**: "pnpm audit in api … 4 vulnerabilities found / Severity: 2 moderate \| 2 high" (web: none) | https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45308517284 |
+| deps (DEV-03, future shape) | Root `pnpm-workspace.yaml` (`packages: [api]`), root `package.json` with `packageManager`, root `pnpm-lock.yaml`; `api/` importer with `lodash@4.17.20` | #51 | **red**: `api/package.json: importer 'api' of ./pnpm-lock.yaml`, "pnpm audit in . … 2 high"; pnpm taken from the root `package.json` | https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45308524067 |
+| deps (DEV-04, re-run of #44) | `lodash@4.17.20` in `web/` plus `web/pnpm-workspace.yaml` `auditConfig.ignoreGhsas` for both highs | #52 | **red** on the ignore step: `web/pnpm-workspace.yaml:1:auditConfig:`, `:2:  ignoreGhsas:`, with the deviation message | https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45308532769 |
+
+The `secrets` job was red on #50, #51 and #52 too, from the tree false positive only (Q-4). After
+closing: `gh api …/git/matching-refs/heads/plant` → 0 branches; no local `plant/*` branches.
+
+### Findings, mistakes and wrong turns
+- **The tree is not clean for Gitleaks** (Q-4), so `secrets` cannot be shown green yet. Not silenced.
+- **Push protection does block a format-valid fake AWS key.** Session 1's conclusion ("not
+  demonstrated") was about AWS's *example* key; a random key in the same format was rejected at push.
+  So I switched the Gitleaks plant to a JWT, which push protection does not cover.
+- **Dependabot security updates now open PRs against `legacy/`** (PR #47, `open` 0.0.3 → 6.0.0 in
+  `/legacy/server`), and all 15 Dependabot alerts are in `legacy/`. A side effect of Q-3 (a). Not
+  touched; Q-p5-devsecops-6.
+- **Scratch-dir collision.** My first `pnpm verify` wrote its log to a fixed name in the session
+  scratch directory, and the file I read back was the p5-store worker's run (its paths, its
+  `test:integration` step). My own exit code (0) was real, but the log was not mine. Re-ran with a
+  unique `mktemp` log; that run is the one quoted below.
+- `prettier --check` on the root `.github/` YAML reports style differences in all four YAML files,
+  including session 1's `codeql.yml` and `dependabot.yml`. The `lint` gate only covers `web/`, so this
+  is not a gate failure; recorded, not changed.
+- I first wrote `rm -rf` of a scratch path built from a variable; the harness refused it, and the
+  scenario runs used fresh `mktemp -d` directories instead.
+
+### Checks to require on `migration` (orchestrator applies, with the owner's OK)
+The five existing (`lint`, `typecheck`, `test`, `build`, `e2e`), plus `deps`, `codeql`, `CodeQL`
+(pinned to app `github-advanced-security`, id 57789) and `secrets` (after Q-4 is resolved, or it will
+block every PR).
+
+### Questions
+- Q-p5-devsecops-4 (blocks a green `secrets` on the clean tree), -5 (Dependabot `/api`), -6 (Dependabot
+  security PRs on `legacy/`).
+
+### Gates (run in this session, from `web/`, ports 3701/4873/4874)
+No app code changed. `pnpm verify`, exit 0:
+```
+All matched files use Prettier code style!
+ Test Files  41 passed (41)
+      Tests  406 passed (406)
+✓ built in 364ms
+✓ built in 388ms
+  37 passed (13.0s)
+```
