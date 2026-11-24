@@ -35,10 +35,20 @@ afterEach(async () => {
 
 type Api = { base: string; pool: pg.Pool; server: Server }
 
+// Production-cost scrypt is about 0.25 s per hash on a developer machine; the seed (6 users) plus 12
+// sign-ins came within a few ms of Vitest's 5 s default under load (seen during the mutation runs).
+const PRODUCTION_HASHING_TIMEOUT = 30_000
+
+type ApiTestOptions = Partial<Omit<ApiOptions, 'pool' | 'port' | 'scrypt'>> & {
+  /** true: startApi's own default hash cost (production). Otherwise the cheap test cost. */
+  productionHashing?: boolean
+}
+
 /** The API on a fresh database (migrated and seeded by startApi itself), on a free port. */
-async function api(options: Partial<Omit<ApiOptions, 'pool' | 'port'>> = {}, schema?: string): Promise<Api> {
+async function api(options: ApiTestOptions = {}, schema?: string): Promise<Api> {
+  const { productionHashing = false, ...settings } = options
   const pool = poolFor(schema ?? (await emptySchema()))
-  const server = await startApi({ pool, port: 0, ...options })
+  const server = await startApi({ pool, port: 0, ...settings, ...(productionHashing ? {} : { scrypt: TEST_SCRYPT }) })
   running.push(async () => {
     server.closeAllConnections()
     await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -99,33 +109,37 @@ const userRows = async (pool: pg.Pool) =>
   (await pool.query<UserRow>('SELECT id, email, password, password_hash FROM users ORDER BY seq')).rows
 
 describe('AC-SEC-01 / S-p5-1: passwords are stored as scrypt hashes with a per-user salt', () => {
-  it('AC-SEC-01: no stored password equals its plain text, and every seed user can still sign in', async () => {
-    const { base, pool } = await api() // production defaults: the hash parameters main.ts uses
-    const rows = await userRows(pool)
-    expect(rows.map((r) => r.email)).toEqual(Object.values(CREDENTIALS).map((c) => c.email))
-    const plain = new Set<string>(Object.values(CREDENTIALS).map((c) => c.password))
-    for (const row of rows) {
-      expect(row.password, row.email).toBeNull() // the pre-hashing column is empty
-      expect(row.password_hash, row.email).toMatch(/^scrypt\$17\$8\$1\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{43}$/)
-      for (const p of plain) expect(row.password_hash?.includes(p), row.email).toBe(false)
-    }
-    // Five users share the password "demo": a per-user salt gives five different salts and hashes.
-    const salts = rows.map((r) => r.password_hash?.split('$')[4])
-    expect(new Set(salts).size).toBe(rows.length)
-    expect(new Set(rows.map((r) => r.password_hash)).size).toBe(rows.length)
-    expect(PRODUCTION_SCRYPT).toEqual({ log2N: 17, r: 8, p: 1 })
+  it(
+    'AC-SEC-01: no stored password equals its plain text, and every seed user can still sign in',
+    async () => {
+      const { base, pool } = await api({ productionHashing: true }) // the hash parameters main.ts uses
+      const rows = await userRows(pool)
+      expect(rows.map((r) => r.email)).toEqual(Object.values(CREDENTIALS).map((c) => c.email))
+      const plain = new Set<string>(Object.values(CREDENTIALS).map((c) => c.password))
+      for (const row of rows) {
+        expect(row.password, row.email).toBeNull() // the pre-hashing column is empty
+        expect(row.password_hash, row.email).toMatch(/^scrypt\$17\$8\$1\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{43}$/)
+        for (const p of plain) expect(row.password_hash?.includes(p), row.email).toBe(false)
+      }
+      // Five users share the password "demo": a per-user salt gives five different salts and hashes.
+      const salts = rows.map((r) => r.password_hash?.split('$')[4])
+      expect(new Set(salts).size).toBe(rows.length)
+      expect(new Set(rows.map((r) => r.password_hash)).size).toBe(rows.length)
+      expect(PRODUCTION_SCRYPT).toEqual({ log2N: 17, r: 8, p: 1 })
 
-    for (const [who, creds] of Object.entries(CREDENTIALS)) {
-      const { send } = browser(base)
-      await send('GET', '/current-user')
-      expect((await send('POST', '/login', creds)).json, who).toMatchObject({ user: { email: creds.email } })
-      const { send: other } = browser(base)
-      await other('GET', '/current-user')
-      expect((await other('POST', '/login', { ...creds, password: `${creds.password}x` })).json).toEqual({
-        user: null,
-      })
-    }
-  })
+      for (const [who, creds] of Object.entries(CREDENTIALS)) {
+        const { send } = browser(base)
+        await send('GET', '/current-user')
+        expect((await send('POST', '/login', creds)).json, who).toMatchObject({ user: { email: creds.email } })
+        const { send: other } = browser(base)
+        await other('GET', '/current-user')
+        expect((await other('POST', '/login', { ...creds, password: `${creds.password}x` })).json).toEqual({
+          user: null,
+        })
+      }
+    },
+    PRODUCTION_HASHING_TIMEOUT,
+  )
 
   it('AC-SEC-01: passwords written through the API (POST, PUT) are hashed; a PUT without one keeps the hash (S8)', async () => {
     const ctx = await pgContext({ allowReset: true })
@@ -163,33 +177,37 @@ describe('AC-SEC-01 / S-p5-1: passwords are stored as scrypt hashes with a per-u
     expect(await login('pw-two')).toEqual({ user: null })
   })
 
-  it('AC-SEC-01: a database written before hashing (plain passwords from migration 001) is hashed when the API starts', async () => {
-    const schema = await emptySchema()
-    const old = poolFor(schema)
-    const only001 = await mkdtemp(join(tmpdir(), 'ascrum-001-'))
-    try {
-      await cp(join(MIGRATIONS_DIR, '001_initial_schema.sql'), join(only001, '001_initial_schema.sql'))
-      expect(await migrate(old, only001)).toEqual(['001'])
-    } finally {
-      await rm(only001, { recursive: true, force: true })
-    }
-    await old.query(
-      `INSERT INTO users (id, email, password, first_name, admin) VALUES
+  it(
+    'AC-SEC-01: a database written before hashing (plain passwords from migration 001) is hashed when the API starts',
+    async () => {
+      const schema = await emptySchema()
+      const old = poolFor(schema)
+      const only001 = await mkdtemp(join(tmpdir(), 'ascrum-001-'))
+      try {
+        await cp(join(MIGRATIONS_DIR, '001_initial_schema.sql'), join(only001, '001_initial_schema.sql'))
+        expect(await migrate(old, only001)).toEqual(['001'])
+      } finally {
+        await rm(only001, { recursive: true, force: true })
+      }
+      await old.query(
+        `INSERT INTO users (id, email, password, first_name, admin) VALUES
        ('a00000000000000000000001', 'early@x.test', 'early-pw', 'Early', false)`,
-    )
-    await old.end()
+      )
+      await old.end()
 
-    const { base, pool } = await api({}, schema)
-    const [row] = await userRows(pool)
-    expect(row?.password).toBeNull()
-    expect(row?.password_hash).toMatch(/^scrypt\$17\$/)
-    expect(row?.password_hash).not.toContain('early-pw')
-    const { send } = browser(base)
-    await send('GET', '/current-user')
-    expect((await send('POST', '/login', { email: 'early@x.test', password: 'early-pw' })).json).toMatchObject({
-      user: { firstName: 'Early' },
-    })
-  })
+      const { base, pool } = await api({ productionHashing: true }, schema)
+      const [row] = await userRows(pool)
+      expect(row?.password).toBeNull()
+      expect(row?.password_hash).toMatch(/^scrypt\$17\$/)
+      expect(row?.password_hash).not.toContain('early-pw')
+      const { send } = browser(base)
+      await send('GET', '/current-user')
+      expect((await send('POST', '/login', { email: 'early@x.test', password: 'early-pw' })).json).toMatchObject({
+        user: { firstName: 'Early' },
+      })
+    },
+    PRODUCTION_HASHING_TIMEOUT,
+  )
 })
 
 // --- DEV-p5-store-10 -----------------------------------------------------------------------------
