@@ -831,3 +831,24 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Wave B was the first time two halves of one release were built in parallel and only worked together. The order of merging was a decision, not an accident, and the check that proves the merged result works became a merge rule the moment it existed."
+
+## 2026-11-24: Was the Enter-twice bug found by throttling by hand? (a LinkedIn question)
+- **The question.** A reader in the first comment thread asked whether the Enter-twice bug on a 500 ms reply only showed up once the network was throttled by hand.
+- **Answer, from the record (DEV-owner-04 and the 2026-11-23 entry).** No. It never showed up on its own, and nobody throttled anything by hand. It was the owner's second chosen breakage, meant to be planted. Before planting it, the orchestrator checked what the app already did in a scripted Chromium run that held the sign-in reply for 500 ms: a second Enter 0 or 100 ms after the first sent a second `POST /login`; with an instant reply it sent one. The 404 unit tests never saw it because their stub answers before a second key can land.
+- **What it was.** Existing behaviour, not a planted break; the legacy app has the same gap by reading its code (it cannot run). The owner chose to fix it for sign-in only (spec P7); two tests pin it; Chromium re-measured: one request in every timing.
+- **Open question it points to.** Nothing in the unit suite simulates slow replies. Doing that broadly would be a new test design decision; the owner has not been asked.
+
+**Moment (article candidate)**
+- "A reader asked whether I found the double sign-in by throttling the network by hand. I didn't find it at all: I asked for it as a breakage, and the agent checked first and found the app already did it. A fake backend that answers instantly hides every bug that needs the user to be faster than the server."
+
+## 2026-11-24: A metrics row lost in a ledger conflict (orchestrator)
+- **What happened.** After merging #63, putting the uncommitted ledger rows back conflicted with the committed ones. The orchestrator rebuilt `spec/metrics.jsonl` as the union of the committed rows and the stashed rows (none changed), but wrote over the conflicted working file without saving it first. The hook had already appended one row there: the `pr` row for `gh pr merge 63`. That row is lost; it is not re-created, because the ledger is never written by hand.
+- **Fix to the routine.** Before resolving a ledger conflict, save the conflicted working file too, and keep rows found only there.
+
+## 2026-11-24: A button with no type (a LinkedIn comment)
+- **The comment.** In the second comment thread a reader wrote that a button with no type submitting its form is easy to miss, because nothing breaks until there is a second button on the form, and that the Enter-clicks-Remove case shows why a blind second pass matters (the comment as seen was cut off after "a blind second").
+- **What the record adds (DEV-audit-01, DEV-sprints-tasks-03, spec P4).** Legacy's project form had typeless team "Remove" buttons, so Enter in Name clicked the first one. The port made every button `type="button"` and broke it another way: Name was the form's only text field, and a browser submits such a form on Enter with no submit button at all, so the page reloaded and edits were lost. No spec-based review caught it, because no AC or convention covered Enter; the independent audit found it on the built app. The cluster 4 reviewer, reading the old sprint template, found the same class of bug there: Enter in any field silently removed the sprint's first backlog item. The fix was one rule for every form (P4: no native submit; Enter does nothing except in sign-in), with named tests on all six forms (#17).
+- **The correction to the comment.** A second button is not needed. A form with a single text field submits on Enter with no buttons, which is exactly how the port's version broke.
+
+**Moment (article candidate)**
+- "A reader said a typeless button only bites once a form has a second one. The port proved there's a quieter case: remove the button problem entirely and a one-field form still submits on Enter. The spec-based reviews passed it because the spec never mentioned Enter. The blind passes caught it because they used the app, not the spec."
