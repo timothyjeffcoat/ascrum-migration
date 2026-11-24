@@ -861,3 +861,12 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "The fix for 'the pin check reads FROM lines only' was a small Dockerfile parser. The review's two survivors were both places where the parser and Docker disagree about a single character: a quote that Docker strips and the script keeps, and a space the script adds where Docker adds nothing. Every check that re-implements someone else's grammar inherits this kind of gap."
+
+## 2026-11-24: Hardening merged (orchestrator)
+- **Merged.** p5-hardening as `995693e` (#65), with all 11 required checks green on its head (`gh pr checks 65`; `e2e-compose` 2m37s).
+- **Closed.** DEV-p5-security-13, -15, -16, -17 and DEV-p5-containers-11..14, each with a named test or check the reviewer turned red with breakages of its own (45 tried, 41 red).
+- **Left open on purpose (owner's decision on the orchestrator's recommendation, "merge 65").** DEV-p5-hardening-01..05, all non-blocking. -03 (one leaked volume per `check-images.sh` run, one flag) and -05 (a port in the client address keys separately; matters only behind a proxy that sends ports) are carried into wave C. -01, -02 (two hand-written Dockerfile forms that get past the pin check) and -04 (`createRequire()` past the lazy-import rule) stay as known limits of pattern checks. Another fix-and-review round would chase ever-smaller holes.
+- **Next.** Wave C (p5-infra, AWS) needs the owner's prerequisites in spec §11 and the owner's go-ahead.
+
+**Moment (article candidate)**
+- "Each review round found smaller holes than the last: a race that let 100 guesses through, then a file missing from an image, then a Dockerfile spelled in quotes. Knowing when to stop is part of the gate."
