@@ -35,6 +35,12 @@ export type ApiOptions = Partial<ApiSettings> & {
  */
 export async function startApi(options: ApiOptions): Promise<Server> {
   const { pool, port, clock = Date.now } = options
+  // Q-p5-containers-1 (b), DEV-p5-containers-01: pg.Pool emits 'error' when the database drops an idle
+  // connection (a restart, a failover, `docker compose stop db`), and an 'error' event without a
+  // listener is an uncaught exception: the process exits. The listener lives here, where the API takes
+  // over the pool, so the process survives whether or not anything else (the health check) is wired
+  // in. The pool discards the dead connection and opens a new one on the next query.
+  pool.on('error', (error) => console.error('[api] lost an idle database connection:', error.message))
   const applied = await migrate(pool)
   const store = new PgStore(pool, { scrypt: options.scrypt })
   if (applied.includes('001')) {

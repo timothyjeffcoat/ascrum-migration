@@ -100,15 +100,28 @@ jobs:
     env:
       COMPOSE_PROJECT_NAME: ascrum-ci
       IMAGE_TAG: ci
+      # docker/check-images.sh scans the images' own layers and config with Gitleaks: the same release
+      # binary, version and SHA-256 as .github/workflows/secrets.yml (move both together).
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-web
+      - name: Install Gitleaks (pinned, checksum-verified)
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+          echo "GITLEAKS=$RUNNER_TEMP/gitleaks" >> "$GITHUB_ENV"
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
       - name: Build the images
         working-directory: .
         run: docker compose --profile prod-check build
-      - name: AC-CTR-02 images run as non-root, no dev dependencies, test files or .env
+      - name: AC-CTR-02 images (non-root, no dev deps, tests or .env), pins, no secrets in layers, the API loads and starts
         working-directory: .
         run: docker/check-images.sh ascrum-api:ci ascrum-web:ci
       - name: AC-CTR-01 docker compose up, wait until every service is healthy
@@ -116,6 +129,9 @@ jobs:
         run: docker compose --profile prod-check up --wait --wait-timeout 180
       - name: AC-CTR-01 the full Playwright suite against the stack (with AC-CTR-03 and §3.3)
         run: pnpm e2e:compose
+      - name: AC-SEC-04 behind nginx, the login throttle sees each client's address and ignores a forged one
+        working-directory: .
+        run: docker/check-client-address.sh
       - name: AC-CTR-03 the api health check without the database, and after it is back
         working-directory: .
         run: docker/check-health.sh

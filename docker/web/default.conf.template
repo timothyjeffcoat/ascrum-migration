@@ -9,6 +9,10 @@ server {
     listen 8080;
     server_name _;
     server_tokens off;
+    # DEV-p5-containers-08: nginx's own redirects (a directory without its slash, `/databases` and
+    # `/assets`) were absolute and named the container's port, http://localhost:8080/..., which is wrong
+    # on the published port and behind any proxy. Relative redirects stay on whatever origin was used.
+    absolute_redirect off;
     root /srv/ascrum;
 
     # Exactly the map in web/securityHeaders.ts, generated at build time. Declared here once and never

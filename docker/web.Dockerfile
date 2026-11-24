@@ -15,13 +15,13 @@
 # Security headers: exactly the map exported by web/securityHeaders.ts (p5-security), turned into nginx
 # config at build time by docker/web/security-headers.ts. The build fails if that module is missing.
 
-ARG NODE_IMAGE=node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
+# Both bases are pinned by version and digest, written out on each FROM line (not through an ARG):
+# Dependabot's docker ecosystem reads only literal FROM lines (DEV-p5-containers-09).
 # nginx 1.30 (the stable line) from nginx's own unprivileged image: runs as uid 101 and listens on 8080,
-# so no root step is needed anywhere. Pinned by version and digest.
-ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.30.6-alpine3.24@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
+# so no root step is needed anywhere.
 
 # --- build: the production bundle and the generated header config ----------------------------------
-FROM ${NODE_IMAGE} AS build
+FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS build
 WORKDIR /build/web
 COPY web/package.json web/pnpm-lock.yaml ./
 # pnpm at the version in web/package.json "packageManager", through corepack. No pnpm-workspace.yaml
@@ -40,7 +40,7 @@ RUN COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm build \
  && rm dist/mockServiceWorker.js
 
 # --- runtime -----------------------------------------------------------------------------------
-FROM ${NGINX_IMAGE} AS runtime
+FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03 AS runtime
 ENV API_UPSTREAM=http://api:3000 \
     ROUTE_STUB_CONTROL=off \
     NGINX_ENVSUBST_FILTER=^(API_UPSTREAM|ROUTE_STUB_CONTROL)$

@@ -48,13 +48,8 @@ export async function databaseAnswers(pool: pg.Pool, timeoutMs: number): Promise
  * event loop turns, so no request can arrive in between (startApi does).
  */
 export function addHealthCheck(server: Server, pool: pg.Pool, timeoutMs = DEFAULT_TIMEOUT_MS): void {
-  // A health check can only report "unavailable" from a process that is still running. pg.Pool emits
-  // 'error' when the database drops an idle connection (a restart, a failover, `docker compose stop
-  // db`), and an 'error' event without a listener crashes Node. Found by stopping the database under
-  // the compose stack: the API exited instead of turning unhealthy. With this listener the pool just
-  // discards the dead connection and opens a new one on the next query (DEV-p5-containers-01).
-  pool.on('error', (error) => console.error('[api] lost an idle database connection:', error.message))
-
+  // The pool's 'error' listener, which keeps the process alive when the database drops its connections,
+  // is startApi()'s (main.ts, Q-p5-containers-1 (b)): process survival does not depend on this module.
   const contract = server.listeners('request') as RequestListener[]
   server.removeAllListeners('request')
   server.on('request', (req: IncomingMessage, res: ServerResponse) => {

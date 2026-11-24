@@ -5,11 +5,16 @@
 #   docker build -f docker/api.Dockerfile -t ascrum-api .        (context: the repo root)
 #
 # The context is the repo root because the API imports the shared contract from web/stub/ (Q-p5-1 (b),
-# p5-store's worklog). docker/api.Dockerfile.dockerignore is an allowlist: only api/ sources, the
-# migrations and the six contract files reach the build, never tests, node_modules or .env files.
+# p5-store's worklog). docker/api.Dockerfile.dockerignore is an allowlist: only the non-test sources of
+# api/src/ and web/stub/, the migrations and the lockfile reach the build, never tests, node_modules or
+# .env files. Of those sources, the image gets exactly the files the API loads at run time, taken from
+# Node's own loader at build time (docker/api/import-graph.ts, DEV-p5-containers-05): a file the API
+# starts importing gets in by itself, and one it does not import (a test helper, the MSW adapter) stays out.
 #
-# Config, all from the environment: DATABASE_URL (required), PORT (default 3000), ALLOW_RESET (unset
-# here, so production has no reset route, spec §3.3; compose sets it for local runs and CI only).
+# Config, all from the environment (api/src/config.ts): DATABASE_URL (required), PORT (default 3000);
+# APP_ENV unset means production mode, so no ALLOW_RESET and `Secure` cookies (spec §3.3, p5-security).
+# The image starts through `node api/src/main.ts`, which reads the environment with loadConfig()
+# (the condition for DEV-p5-security-16; docker/check-images.sh checks the CMD and that it starts).
 #
 # Migrations run at start (main.ts, unchanged): startApi() applies pending migrations under a
 # PostgreSQL advisory lock before it listens, so two containers starting at once cannot race, and a
@@ -17,11 +22,12 @@
 # would also work with this image; see the worklog for why start-up was kept.
 
 # node:24 (spec §2) on Alpine: the smallest official Node image that still has a shell and busybox for
-# debugging. Pinned by version and digest; Dependabot's docker ecosystem can bump both together.
-ARG NODE_IMAGE=node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
+# debugging. Pinned by version and digest, written out on each FROM line (not through an ARG): Dependabot's
+# docker ecosystem reads only literal FROM lines, and bumps the version and digest together there
+# (DEV-p5-containers-09). docker/check-images.sh fails on an unpinned FROM.
 
 # --- deps: the production dependencies of api/ (only `pg` and its own dependencies) ----------------
-FROM ${NODE_IMAGE} AS deps
+FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS deps
 WORKDIR /build/api
 # pnpm at the version the repo pins (web/package.json "packageManager"), through Node's corepack.
 COPY web/package.json /build/web-package.json
@@ -37,8 +43,23 @@ RUN find node_modules/.pnpm -type f -name '*.test.*' -delete \
  && find node_modules/.pnpm -mindepth 4 -maxdepth 5 -type d \( -name test -o -name tests -o -name __tests__ \) \
       -prune -exec rm -rf {} +
 
+# --- app: exactly the source files the API loads (DEV-p5-containers-05) ------------------------------
+# The tree as it will be in /app, then Node's loader lists what main.ts actually imports, and only that
+# is copied to /out. Importing main.ts here is also the first smoke test: a missing module fails the build.
+WORKDIR /build/app
+COPY api/package.json api/package.json
+COPY api/src api/src
+COPY web/stub web/stub
+COPY docker/api/import-graph.ts /build/import-graph.ts
+RUN printf '{ "type": "module" }\n' > web/package.json \
+ && ln -s /build/api/node_modules api/node_modules \
+ && node /build/import-graph.ts /build/app /build/app/api/src/main.ts > /build/import-graph.txt \
+ && mkdir -p /out \
+ && tar -cf - -T /build/import-graph.txt | tar -xf - -C /out \
+ && echo "API sources in the image:" && cat /build/import-graph.txt
+
 # --- runtime -----------------------------------------------------------------------------------
-FROM ${NODE_IMAGE} AS runtime
+FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS runtime
 ENV NODE_ENV=production \
     PORT=3000
 # The API never installs anything at run time, so the base image's package managers go: fewer tools for
@@ -51,8 +72,7 @@ WORKDIR /app
 COPY --from=deps /build/api/node_modules api/node_modules
 COPY api/package.json api/package.json
 COPY api/migrations api/migrations
-COPY api/src api/src
-COPY web/stub web/stub
+COPY --from=deps /out/ ./
 # web/stub/*.ts are ES modules; this is the only part of web/package.json Node needs to load them.
 RUN printf '{ "type": "module" }\n' > web/package.json
 USER node

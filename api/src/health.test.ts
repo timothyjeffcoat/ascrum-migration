@@ -104,7 +104,8 @@ describe('AC-CTR-03: the API health check', () => {
       const base = baseOf(server)
       expect((await fetch(base + HEALTH_PATH)).status).toBe(200)
       // What a database restart does to every idle connection. Without a pool 'error' listener this
-      // is an uncaught exception, and the process (here: the test run) dies.
+      // is an uncaught exception, and the process (here: the test run) dies. The listener is startApi()'s
+      // (Q-p5-containers-1 (b)); removing it makes this run fail with an unhandled error (57P01).
       const pids = await pool.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
       const killed = await admin.query<{ ok: boolean }>('SELECT pg_terminate_backend($1) AS ok', [pids.rows[0]?.pid])
       expect(killed.rows[0]?.ok).toBe(true)
