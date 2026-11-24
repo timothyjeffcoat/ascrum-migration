@@ -687,3 +687,8 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "The first article ended with every test green against a fake server. Phase 5's question: do those same tests still pass against a real database? The old tests are now the referee for the new server."
+
+## 2026-11-23: Nothing stays running (Phase 5 spec rev 2)
+- **Decision.** Right after approval, the owner set a limit: "as long as we don't have to keep it running on AWS cause that cost money." The spec now makes every deployment one run: deploy, smoke test, save the evidence, destroy. The destroy step runs even when an earlier step fails, and a final check fails the run if any tagged resource is left (AC-AWS-04). A merge no longer deploys; a person starts each run (AC-AWS-01).
+- **What it changes.** There is no public AWS demo, so the earlier choice of a public demo reseeded nightly (Q-p5-11) is superseded. The GitHub Pages demo stays the one to click, at no cost. Each run keeps screenshots and test output as a workflow artifact, because the environment is gone afterwards (AC-AWS-07).
+- **For the article.** "Is a public demo with published passwords safe?" becomes a different question: "Did it really run on AWS if nothing is running?" The answer is the saved run artifacts and the bill.

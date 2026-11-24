@@ -1,7 +1,7 @@
 # Phase 5 Spec: from a fake server to production (Node + PostgreSQL, containers, AWS, DevSecOps)
 
-Status: **APPROVED rev 1** (owner: "approve all" for §9 Q-p5-1..12, 2026-11-23). Workers start only when their wave opens (§4). Wave C also needs the owner prerequisites in §11.
-Revision history: rev 0 (draft, PR #37). Rev 1 records the owner's answers (§9) and adds AC-AWS-06 (a cost alarm, because Q-p5-4 (a) runs up a monthly bill), §11 (owner prerequisites) and §12 (evidence for the article).
+Status: **APPROVED rev 2** (owner: "approve all" for §9 Q-p5-1..12, 2026-11-23; rev 2: nothing stays running on AWS, owner, 2026-11-23). Workers start only when their wave opens (§4). Wave C also needs the owner prerequisites in §11.
+Revision history: rev 0 (draft, PR #37). Rev 1 records the owner's answers (§9) and adds AC-AWS-06 (a cost alarm, because Q-p5-4 (a) runs up a monthly bill), §11 (owner prerequisites) and §12 (evidence for the article). Rev 2: the owner does not want anything left running on AWS, because it costs money. Every deploy is now deploy, test, record, destroy in one run (G5, §3.6, AC-AWS-01/04/07), and Q-p5-11 is superseded.
 Inputs: `spec/conversion-spec.md` (rev 3, the contract this phase must not break), especially §7 (stub), §10 (metrics) and §12.6 (AC-STUB-*).
 Authority and roles: the same as `conversion-spec.md` (owner, orchestrator, worker, reviewer). Where this spec is silent, `conversion-spec.md` applies; where both are silent, ask (§8).
 
@@ -23,7 +23,7 @@ The existing 406 unit tests, 37 Playwright tests and the stub contract tests for
 - G2. A relational schema, not a document dump (§3.2), with migrations and a deterministic seed.
 - G3. Security fixes that a real server needs and the stub could skip (§3.4): hashed passwords, safe cookies, no reset route in production.
 - G4. Containers for the API and a production web build; `docker compose up` runs the whole stack locally.
-- G5. A deployment to AWS from CI, without long-lived AWS keys, that the owner can tear down with one command.
+- G5. A deployment to AWS from CI, without long-lived AWS keys, that never stays up: each run deploys, tests, records the evidence and destroys everything it created.
 - G6. DevSecOps gates: dependency, secret, code and image scanning, all as required checks.
 - G7. Honest logs as before: deviations, worklogs, journal, measured metrics.
 
@@ -81,7 +81,8 @@ Each one is a deliberate difference from the stub, so each gets a D-id-style com
 
 ### 3.6 Deployment shape (pending Q-p5-4)
 - Recommended: the web build on S3 behind CloudFront, the API on ECS Fargate behind a load balancer, PostgreSQL on RDS, secrets in Secrets Manager, logs in CloudWatch.
-- One environment, `demo`, created and destroyed by the pipeline. No production users.
+- No standing environment (rev 2). A manually started workflow creates `demo`, runs the smoke test, saves the evidence and destroys it in the same run. Nothing is left running between runs. No production users.
+- The clickable demo stays the GitHub Pages build (in-browser stub), which costs nothing.
 - The same origin for web and API (CloudFront routes `/login`, `/logout`, `/current-user` and `/databases/*` to the API). The cookie scheme then works unchanged.
 
 ## 4. Clusters and ownership (parallel where independent)
@@ -117,12 +118,13 @@ Waves: **A** = p5-store and p5-devsecops in parallel. **B** = p5-security and p5
 - AC-CTR-03. The API container has a health check that fails when the database is unreachable.
 
 ### 5.4 Infrastructure and deploy (p5-infra)
-- AC-AWS-01. A merge to `migration` deploys `demo` only after all required checks pass.
+- AC-AWS-01. `demo` is deployed only by a manual run of the deploy workflow on `migration`, and only when all required checks passed on that commit. A merge does not deploy.
 - AC-AWS-02. CI authenticates to AWS through OIDC; the repo holds no AWS access keys (checked by the secret scan).
 - AC-AWS-03. After a deploy, a smoke test signs in as a seed user over HTTPS and loads the projects list.
-- AC-AWS-04. One documented command destroys the environment, and a second run of it is a no-op.
+- AC-AWS-04. Every deploy run ends by destroying what it created, also when an earlier step failed or the run was cancelled. A final step lists tagged resources and fails if any remain (apart from the one-time bootstrap in §11 and the budget alarm). The destroy command also runs on its own, and a second run is a no-op.
 - AC-AWS-05. The database is not reachable from the internet.
 - AC-AWS-06. An AWS budget alarm e-mails the owner before the monthly cost of `demo` passes a limit the owner sets. The limit is not written in the repo.
+- AC-AWS-07. Each deploy run keeps its evidence as a workflow artifact (smoke-test output, a screenshot of the signed-in projects list, step timings), because the environment no longer exists afterwards.
 
 ### 5.5 DevSecOps (p5-devsecops)
 - AC-DSO-01. Each scan in §6 is a required check on `migration`, and a deliberately planted finding of each kind turns it red (the reviewer's breakages, logged).
@@ -166,7 +168,7 @@ Every recommendation below is accepted. Where a recommendation offered two optio
 | Q-p5-8 | Database for tests | (a) a Postgres service container in CI and compose locally, (b) Testcontainers | **(a)**: no new dependency, and the same thing runs locally and in CI |
 | Q-p5-9 | Unknown fields in a write | (a) reject with 400, (b) drop silently, (c) keep them in a `jsonb` `extra` column | **(c)**: legacy (MongoLab) stored whatever was sent, so (a) or (b) could change behaviour the front end relies on |
 | Q-p5-10 | Login throttling | (a) none (as legacy), (b) per-IP and per-account limit with a `429` | **(b)**, as a logged deviation. It changes the contract for abusive clients only. A test must show that the login modal shows serverError on a 429 |
-| Q-p5-11 | Is `demo` public? | (a) public, with the README's seed credentials, reseeded nightly; (b) public but read-only for anonymous; (c) private (owner's IP or a login in front) | **(a) with a nightly reseed**: a recruiter can click it. Anyone can edit the demo data, which is why it's reseeded. Never store anything real in it |
+| Q-p5-11 | Is `demo` public? | (a) public, with the README's seed credentials, reseeded nightly; (b) public but read-only for anonymous; (c) private (owner's IP or a login in front) | ~~(a) with a nightly reseed~~ **Superseded in rev 2:** nothing stays running, so there is no public AWS demo. The GitHub Pages demo is the one to click |
 | Q-p5-12 | Mutation testing (the gap logged in #34) | (a) add Stryker as a scheduled job, (b) later | **(b)**: keep this phase about the server; open it as its own question |
 
 ## 10. Exit criteria
