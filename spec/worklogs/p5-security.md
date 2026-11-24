@@ -215,7 +215,7 @@ $ eslint --max-warnings 0 . ../api && prettier --check . ../api
 All matched files use Prettier code style!
 $ tsc --noEmit -p tsconfig.json
  Test Files  41 passed (41)          # unit
-      Tests  430 passed (430)        # was 413 on migration: +16 security (memory), +1 LoginModal 429
+      Tests  430 passed (430)        # was 416 on migration: +13 security (memory store), +1 LoginModal 429
  Test Files  4 passed (4)            # integration (PostgreSQL 18)
       Tests  65 passed (65)          # was 38: +27 in api/src/security.test.ts
 ✓ built in 347ms                     # dist
