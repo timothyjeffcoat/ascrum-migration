@@ -631,3 +631,18 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "The owner's second breakage didn't need breaking: the app already did it. Unit tests run against an instant stub, so a double Enter never reached the server twice there. On a real browser with a 500 ms reply it did. The tests weren't wrong; nobody had asked what a slow network does."
+
+## 2026-11-23: Which agent breakages to keep? (a LinkedIn question)
+- **The question.** A reader asked which of the reviewer agent's 11 breakages on #17 the owner would keep once they add their own.
+- **What "keep" means here.** Nothing stores the breakages. The reviewer applied each by hand, ran the suite, and reverted it (its checklist comment on #17). What stays is the tests that turned red. No mutation tool reruns them in CI, so nothing checks that those tests can still fail.
+- **The 11, by what they guard.**
+  - R1–R5: Enter reloads the page on the project, user and backlog forms and the two login-toolbar forms. The owner's two breakages only touched the login modal.
+  - R6, R10: Sign in ignores the validity check. Neither of the owner's breakages checks validity.
+  - R7: a double `POST /login` from two handlers on one press. It is the closest to the owner's "Enter twice", but the cause differs: R7 is a code mistake, while the owner's was one handler hit twice during a slow reply, and it was already a real bug (DEV-owner-04).
+  - R9: the login form without `preventDefault`.
+  - R8, R11: gross breakages that turned 10 tests red each; almost any test catches them.
+- **Answer.** Keep all 11. The owner's two replaced none of them. They looked in a direction the 11 did not: what a user does (Cancel with credentials typed, DEV-owner-03) and what the network does (a slow reply, DEV-owner-04), not what the code says.
+- **Gap left open.** All the mutation testing so far was one-off and by hand. A mutation-testing tool in CI would make "kept" something a gate checks. That is a new dependency and needs the owner's decision; it has not been asked.
+
+**Moment (article candidate)**
+- "A reader asked which of the agent's breakages I'd keep once I added my own. All of them: mine didn't replace any. The agent broke the code; I broke what a user does and what a slow network does. And 'keep' is generous, because nothing reruns them. They were done once, by hand."
