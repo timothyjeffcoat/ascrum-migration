@@ -1,0 +1,29 @@
+# Local stack. For now only the database (cluster p5-store); wave B's containers cluster adds the API
+# and the web build. Start it with `docker compose up -d db`, then, from web/:
+#   DATABASE_URL=postgres://ascrum:ascrum@localhost:55436/ascrum pnpm test:integration
+#
+# PostgreSQL 18: the newest major that Amazon RDS offers generally (Q-p5-2). 19 was still only in
+# the RDS preview environment when this was written, see spec/worklogs/p5-store.md.
+#
+# The credentials below are throwaway development values for a database that only listens on
+# localhost. They are not secrets and are never used outside a developer's machine or CI (S-p5-4:
+# real secrets come from the cloud secret store).
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ascrum
+      POSTGRES_PASSWORD: ascrum
+      POSTGRES_DB: ascrum
+    ports:
+      - '127.0.0.1:${DB_PORT:-55436}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ascrum -d ascrum']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - db-data:/var/lib/postgresql
+
+volumes:
+  db-data:
