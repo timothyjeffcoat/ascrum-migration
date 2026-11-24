@@ -35,7 +35,7 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 
 | Cluster | Wave | Ports (STUB/PREVIEW/PAGES) | Status | PR | Reviewer notes |
 |---|---|---|---|---|---|
-| p5-store | A | 3601/4773/4774, Postgres 55436 | pending | | |
+| p5-store | A | 3601/4773/4774, Postgres 55436 | converted | [#48](https://github.com/timothyjeffcoat/ascrum-migration/pull/48) | review in progress |
 | p5-devsecops | A | 3701/4873/4874 | pending | | |
 | p5-security | B | | pending | | |
 | p5-containers | B | | pending | | |
