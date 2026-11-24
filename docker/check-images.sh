@@ -163,6 +163,8 @@ hits=$(grep -E '^app/.' "$work/api.txt" | grep -v '^app/api/node_modules/' | gre
 # Import smoke test, in the image as built: Node's loader loads main.ts and everything it imports (a
 # missing module fails here exactly as it would at start), and the files it loads are exactly the .ts
 # files in /app: none missing, none extra (a test helper or the MSW adapter would be extra).
+# A module loaded with import() inside a function is never resolved here; the lint gate forbids import()
+# in api/src and web/stub for that reason (DEV-p5-containers-11, web/eslint.config.js SERVER_SOURCE_RULES).
 if graph=$(docker run --rm --network none --entrypoint node \
   --mount "type=bind,source=$PWD/docker/api/import-graph.ts,target=/tmp/import-graph.ts,readonly" \
   "$api_image" /tmp/import-graph.ts /app /app/api/src/main.ts 2> "$work/graph.err"); then
