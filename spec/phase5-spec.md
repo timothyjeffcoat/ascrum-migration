@@ -187,6 +187,7 @@ Every recommendation below is accepted. Where a recommendation offered two optio
 The Phase 5 article and post are written from the record, like the first one. Each wave must leave the evidence the readers' questions will need (the list is in `spec/journal.md`, entry "Phase 5 begins"):
 - the stub contract tests that failed against Postgres before they passed, with the reason, from `spec/metrics.jsonl` and the worklogs;
 - breakages chosen by the owner for every wave, not only by agents, with the results;
+  - **Sealed owner picks (2026-11-23).** The owner chose 3 breakages for waves A/B. Their text is kept outside the repo until the reviewer runs them, so workers cannot aim tests at them. Its SHA-256 is `16809ee11023ea4df3431452a8397d6c0f906a157fce6e2e05a1759d0d9a0804`. When the text is published, `sha256sum` of it must match.
 - each scanner's planted finding and its red run (AC-DSO-01);
 - the deploy role's permissions as written, and who ran which deploy;
 - the measured AWS cost, from the bill;
