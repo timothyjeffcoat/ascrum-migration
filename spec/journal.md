@@ -646,3 +646,17 @@ PR [#9](https://github.com/timothyjeffcoat/ascrum-migration/pull/9). A fresh rev
 
 **Moment (article candidate)**
 - "A reader asked which of the agent's breakages I'd keep once I added my own. All of them: mine didn't replace any. The agent broke the code; I broke what a user does and what a slow network does. And 'keep' is generous, because nothing reruns them. They were done once, by hand."
+
+## 2026-11-23: Is AI migration the trend? (reading the response)
+- **The question.** The owner read the response to the post and article as a sign of an industry trend: upgrading legacy systems with AI.
+- **What the numbers show** (LinkedIn analytics, screenshots on 2026-11-23). After a day, the post had 334 impressions, 12 comments and 2 reactions; the article had 35 impressions and none. 9 of the 12 comments sit in one thread. That is deep engagement from a few people in the owner's own network, not broad reach.
+- **What the comments asked.** Who picked the breakages, whether the reviewer saw the diff, whether the bugs were accidental legacy behaviour, which breakages to keep. None asked about migrating; all asked how far the agents' work can be trusted.
+- **Outside data** (web search, 2026-11-23; mostly vendor and blog sources, so treat the numbers as rough).
+  - The vendors are shipping it. AWS Transform pitches agentic mainframe modernization ([AWS](https://aws.amazon.com/blogs/migration-and-modernization/reimagine-your-mainframe-applications-with-agentic-ai-and-aws-transform/)). IBM's COBOL-to-Java assistant reached general availability in 2026 ([Open Mainframe Project](https://openmainframeproject.org/blog/beyond-the-cobol-to-java-a-technical-look-at-ai-mainframe-modernization/)).
+  - Market estimates for legacy modernization are about $26–29B in 2026, and they disagree ([Stromasys](https://www.stromasys.com/resources/ai-is-transforming-legacy-system-modernization/), [Keyhole](https://keyholesoftware.com/legacy-modernization-trends/)).
+  - The careful voices argue what this repo found. Gartner warns that vendor claims have inflated expectations ([Gartner](https://www.gartner.com/en/documents/6620702)). McKinsey's "code and load" (quoted secondhand) says AI translates the code but keeps the old design and debt.
+- **Conclusion.** The trend is real, but the post's evidence is about verification, not migration: the response came from "every gate green, three bugs live". AI migration is a crowded pitch; showing where it silently fails, and gating against that, is not.
+- **A mistake in the post.** It says "In the article:" but has no link to the article, which likely explains 334 impressions against 35. The owner is adding the link.
+
+**Moment (article candidate)**
+- "I read the response to my post as proof that AI migration is the trend. The comments said something narrower: nobody asked how to migrate, every question was how to trust what the agents did. The market is real; the open problem in it is verification."
