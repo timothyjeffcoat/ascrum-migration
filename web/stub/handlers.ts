@@ -156,20 +156,20 @@ async function route(method: string, req: StubRequest, caller: Caller, ctx: Stub
     const attempt = { account: typeof creds.email === 'string' ? creds.email : undefined, ip: req.clientIp }
     // S-p5-3 / AC-SEC-04: a blocked account or address is refused before any password is checked
     // (which also spares the scrypt work). 429 is Q-p5-10 (b); the front end shows serverError (S14).
-    const wait = (await ctx.loginThrottle?.retryAfter(attempt)) ?? 0
-    if (wait > 0) {
+    // DEV-p5-security-08: admit() counts this attempt as a failure *now*, before the check, so attempts
+    // sent at once cannot all see "under the limit". If the check throws, the count stays (fail closed:
+    // we cannot tell whether the password was compared).
+    const admission = await ctx.loginThrottle?.admit(attempt)
+    if (admission && !admission.allowed) {
       const reply = json(429, { message: TOO_MANY })
-      return { ...reply, headers: { ...reply.headers, 'Retry-After': String(wait) } }
+      return { ...reply, headers: { ...reply.headers, 'Retry-After': String(admission.retryAfter) } }
     }
     // passport-local (legacy) fails on a missing or empty email/password before it looks anyone up.
     const valid = (v: unknown): v is string => typeof v === 'string' && v !== ''
     const match =
       valid(creds.email) && valid(creds.password) ? await store.findLogin(creds.email, creds.password) : undefined
-    if (!match) {
-      await ctx.loginThrottle?.recordFailure(attempt)
-      return json(200, { user: null }) // legacy: bad credentials are 200, not 401
-    }
-    if (attempt.account !== undefined) await ctx.loginThrottle?.recordSuccess(attempt.account)
+    if (!match) return json(200, { user: null }) // legacy: bad credentials are 200, not 401; already counted
+    if (admission) await ctx.loginThrottle?.succeeded(admission.reservation)
     // Session fixation: the signed-in session gets a new sid, and the pre-login sid (which an attacker
     // could have planted or read before sign-in) stops existing. Legacy kept the same session.
     // The XSRF token is kept: a new one would be visible to the front end (src/api/http.test.ts,
