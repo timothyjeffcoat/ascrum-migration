@@ -5,9 +5,9 @@
 **Preconditions checked:** `spec/phase5-spec.md` reads `APPROVED rev 2`, and its §4 has the p5-hardening
 row (owner: "start hardening"); `MIGRATION.md` lists the cluster as in progress. Branch
 `convert/p5-hardening` in its own worktree, from the gate commit for PR #63 (`8726949`), which is not on
-`migration` yet, so `git diff --stat origin/migration...HEAD` also shows that commit's three files
-(`MIGRATION.md`, `spec/metrics.jsonl`, `spec/phase5-spec.md`). This cluster's own commits touch owned
-paths only. Ports: e2e 4001/5173/5174; PostgreSQL for the integration run in a throwaway container on
+`migration` when I started. #63 was squash-merged during the session (`dd3cf81`), so before opening the
+PR I merged `origin/migration` into the branch (no rebase, no force-push); after that,
+`git diff --stat origin/migration...HEAD` lists 18 files, all owned paths plus this worklog. Ports: e2e 4001/5173/5174; PostgreSQL for the integration run in a throwaway container on
 55460; compose project `ascrum-p5-hardening` (host ports 55461–55465, `IMAGE_TAG=p5h`).
 
 Scope: the eight non-blocking rows from the wave B reviews, nothing else: DEV-p5-security-13, -15, -16,
