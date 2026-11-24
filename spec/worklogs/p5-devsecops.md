@@ -134,8 +134,8 @@ Picked up the reviewer's commits (94f99e1, fd387e8, 8efb3ba). Follow-ups from th
   (`web/package.json: importer '.' of web/pnpm-lock.yaml`, `No known vulnerabilities found`).
 - `secrets` **red, not green**: https://github.com/timothyjeffcoat/ascrum-migration/actions/runs/45308425782 .
   The commit scan is green (range 4681be2..2aae665, "5 commits scanned", "no leaks found"); the tree
-  scan finds one false positive, `spec/worklogs/foundation.md:65`, rule `generic-api-key` (prose:
-  `accessible names: Q-foundation-1.`). The file is outside this cluster's paths and an ignore would be
+  scan finds one false positive, `spec/worklogs/foundation.md:65`, rule `generic-api-key` (prose: the words
+  "accessible names", a colon, then the question id Q-foundation-1). The file is outside this cluster's paths and an ignore would be
   silencing, so it is raised as **Q-p5-devsecops-4** and left red. Rewording the line clears it
   (checked locally).
 - `codeql`, `CodeQL`, `lint`, `typecheck`, `test`, `build`, `e2e` green on the same head.
