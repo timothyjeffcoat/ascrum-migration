@@ -1,0 +1,18 @@
+AScrum migration, Phase 5: breakages chosen by the owner (sealed 2026-11-23)
+
+Chosen by the owner from an agent-suggested list of 13, for these reasons:
+- the spec does not already require them;
+- the in-memory stub hid them.
+
+The reviewer of the matching wave runs each one after the worker's PR is open. Workers are not shown this list.
+
+O1 (wave A, p5-store): Lists come back in a different order.
+   The stub returns records in insertion order and Postgres promises no order. Editing a row can move it to the end of the table.
+   Breakage: remove any ORDER BY, or make reads return rows in a different order. Do the tests notice tasks, backlog items or sprints shuffled?
+
+O2 (wave A, p5-store): Editing a project drops its team.
+   Team members move from an array inside the project to a join table.
+   Breakage: a project PUT updates the project row but does not rewrite, or wrongly clears, project_team_members. Does a test catch the lost team after a re-fetch?
+
+O3 (wave A/B, p5-store or p5-security, whichever owns session logout): Reusing the old session cookie after signing out still works.
+   Breakage: logout clears the browser side but leaves the sessions row signed in. Does a request with the old sid cookie still act as the user?

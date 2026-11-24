@@ -722,3 +722,13 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "The owner chose three ways to break the new database before any of its code existed. One was caught. One was caught in its subtle form and survived in a narrower one. The third, 'editing a project drops its team', survived both ways: every test that edited a project sent back the same team it had read. The code was right. The 35 tests that said so would have said it about broken code too."
+
+## 2026-11-23: The sealed breakages, unsealed
+- **Published.** The owner's three breakages are now in `spec/sealed/phase5-owner-breakages.txt`, byte for byte as sealed. `sha256sum spec/sealed/phase5-owner-breakages.txt` gives `16809ee11023ea4df3431452a8397d6c0f906a157fce6e2e05a1759d0d9a0804`, the fingerprint committed in `spec/phase5-spec.md` §12 (#39) before any server code existed. The orchestrator checked the match before committing.
+- **Results** (the reviewer's run, entry above):
+  - **O1, list order:** caught in its plain form. It survived in a per-table form, because only tasks are checked after an edit (DEV-p5-store-06). The worker had thought of order on its own, from the same kind of agent list the owner chose from.
+  - **O2, editing a project drops its team:** **survived every variant.** All 35 Postgres tests stayed green while project edits lost or kept stale team rows, because no test changes a list and reads it back (DEV-p5-store-05). The worker's 9 mutations and 8 of the reviewer's own breakages had not found it.
+  - **O3, an old cookie after sign-out:** caught.
+
+**Moment (article candidate)**
+- "Before the agents wrote a line of server code, I sealed three ways to break it and published only their fingerprint. The worker's own tests caught eight of its nine mutations. My second pick, 'editing a project drops its team', went through all 35 database tests untouched."
