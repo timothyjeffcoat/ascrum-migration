@@ -35,7 +35,7 @@ Statuses: `pending` → `converted` (reviewer started) → `verified` (review pa
 
 | Cluster | Wave | Ports (STUB/PREVIEW/PAGES) | Status | PR | Reviewer notes |
 |---|---|---|---|---|---|
-| p5-store | A | 3601/4773/4774, Postgres 55436 | verified | [#48](https://github.com/timothyjeffcoat/ascrum-migration/pull/48) | 6/6 AC-PG; `pnpm verify` + `test:integration` green (413 unit, 35 integration, 37 e2e); gates in `api/` proven by planting; owner O3 caught, O1 caught except per collection, O2 survived; DEV-p5-store-01..04 accepted, -05..08 test gaps (non-blocking, test-only fixes), -09 `integration` not a required check (owner) |
+| p5-store | A | 3601/4773/4774, Postgres 55436 | verified | [#48](https://github.com/timothyjeffcoat/ascrum-migration/pull/48) | 6/6 AC-PG; `pnpm verify` + `test:integration` green (413 unit, 35 integration, 37 e2e); gates in `api/` proven by planting; owner O3 caught, O1 caught except per collection, O2 survived; DEV-p5-store-01..04 accepted (-01, -04 confirmed by the owner). Re-review after 7f7d486 (tests only; 416 unit, 38 integration, 37 e2e): -05..08 fixed, O1 per collection and every O2 variant now red; -09 `integration` required at merge (orchestrator); new -10, -11 (narrower test limits, non-blocking, open) |
 | p5-devsecops | A | 3701/4873/4874 | pending | | |
 | p5-security | B | | pending | | |
 | p5-containers | B | | pending | | |
