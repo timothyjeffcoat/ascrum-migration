@@ -15,6 +15,20 @@ updates:
     commit-message:
       prefix: deps
 
+  # The API (Phase 5, Q-p5-1 (b)) has its own lockfile (`sharedWorkspaceLockfile: false`), so it needs
+  # its own entry (Q-p5-devsecops-5).
+  - package-ecosystem: npm
+    directory: /api
+    target-branch: migration
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      api-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps
+
   - package-ecosystem: github-actions
     # `/` covers .github/workflows; the composite action is listed explicitly.
     directories:

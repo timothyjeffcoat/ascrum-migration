@@ -1,14 +1,14 @@
 // Test controls (spec §13 item 5). resetStub() runs before every test from setup.ts.
 // Per-test `server.use()` overrides are allowed for error injection; mocking api/ is not.
 import { http, HttpResponse } from 'msw'
-import { resetStore } from '../../stub/store.ts'
 import { JSON_PREFIX, parseCookies } from '../../stub/handlers.ts'
 import { server, stubContext } from './server.ts'
 
 /** Reseed the store, drop every session, and clear the cookies jsdom holds. */
 export function resetStub(): void {
-  resetStore(stubContext.store)
-  stubContext.sessions.clear()
+  // Synchronous on purpose: tests call resetStub() and then edit the in-memory store right away.
+  stubContext.store.reseed()
+  stubContext.sessions.map.clear()
   for (const name of Object.keys(parseCookies(document.cookie))) {
     document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`
   }

@@ -22,7 +22,7 @@ export function createStubHandlers(ctx: StubContext, opts: MswAdapterOptions): H
         headers[name.toLowerCase()] = value
       })
 
-      const out = handle(
+      const out = await handle(
         {
           method: request.method,
           path: url.pathname,

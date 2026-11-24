@@ -29,7 +29,7 @@ async function respond(req: IncomingMessage, res: ServerResponse, ctx: StubConte
     headers[name.toLowerCase()] = Array.isArray(value) ? value.join(', ') : value
   }
 
-  const out = handle(
+  const out = await handle(
     {
       method: req.method ?? 'GET',
       path: url.pathname,

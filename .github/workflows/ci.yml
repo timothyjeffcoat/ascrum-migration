@@ -63,3 +63,30 @@ jobs:
           name: playwright-report
           path: web/playwright-report
           retention-days: 14
+
+  # Phase 5 (spec §6, Q-p5-8 (a)): the stub contract and AC-PG-* against a real PostgreSQL, run as a
+  # service container. Same major version as compose.yaml. The credentials are throwaway values for a
+  # database that lives only as long as this job; they are not secrets.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: ascrum
+          POSTGRES_PASSWORD: ascrum
+          POSTGRES_DB: ascrum
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ascrum -d ascrum"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://ascrum:ascrum@localhost:5432/ascrum
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-web
+      - run: pnpm test:integration

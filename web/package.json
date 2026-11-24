@@ -14,11 +14,12 @@
     "build:pages": "vite build --mode pages",
     "preview": "vite preview",
     "stub": "node stub/server.ts",
-    "lint": "eslint --max-warnings 0 . && prettier --check .",
+    "lint": "eslint --max-warnings 0 . ../api && prettier --check . ../api",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
+    "test": "vitest run --project unit",
     "e2e": "pnpm build && pnpm build:pages && playwright test",
-    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm e2e"
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm e2e",
+    "test:integration": "vitest run --project integration"
   },
   "dependencies": {
     "react": "^19.3.1",
