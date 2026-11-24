@@ -30,12 +30,20 @@ export interface Store {
   get(c: CollectionName, id: string): Promise<WireDoc | undefined>
   /** Stores `fields` under a new id from the deterministic counter (AC-STUB-15). */
   insert(c: CollectionName, fields: Fields): Promise<WireDoc>
-  /** Replaces the whole document (fields left out are gone); undefined when there is no such id. */
+  /**
+   * Replaces the whole document (fields left out are gone); undefined when there is no such id.
+   * One exception, S8: a users document sent without `password` keeps the stored one (the edit form
+   * leaves the password blank to mean "unchanged", owner answer A3).
+   */
   replace(c: CollectionName, id: string, fields: Fields): Promise<WireDoc | undefined>
   /** Deletes and returns the document; undefined when there is no such id. */
   remove(c: CollectionName, id: string): Promise<WireDoc | undefined>
-  /** Every user with exactly this email, in insertion order (login picks the first password match). */
-  usersByEmail(email: string): Promise<WireDoc[]>
+  /**
+   * Login (spec §7.3): the first user, in insertion order, whose e-mail is exactly `email` and whose
+   * password is `password`. The comparison lives in the store because PgStore keeps only a hash
+   * (S-p5-1); MemoryStore compares plain text. Both strings are non-empty (handle() checks).
+   */
+  findLogin(email: string, password: string): Promise<WireDoc | undefined>
   /** Reseeds: the seed documents only, and the id counter back to its start (AC-STUB-14/15). */
   reset(): Promise<void>
 }
@@ -80,6 +88,10 @@ export class MemoryStore implements Store {
     const index = docs.findIndex((doc) => doc._id.$oid === id)
     if (index < 0) return undefined
     const replacement: WireDoc = { ...structuredClone(fields), _id: { $oid: id } }
+    const existing = docs[index]
+    if (c === 'users' && fields.password === undefined && existing?.password !== undefined) {
+      replacement.password = existing.password // S8
+    }
     docs[index] = replacement
     return replacement
   }
@@ -92,8 +104,12 @@ export class MemoryStore implements Store {
     return removed
   }
 
-  async usersByEmail(email: string): Promise<WireDoc[]> {
-    return this.collections.users.filter((u) => u.email === email)
+  // Plain text on purpose (S-p5-1 applies to PgStore only): this store runs in the browser for the
+  // Pages demo and in jsdom, where node:crypto's scrypt does not exist; its data is the public seed,
+  // lives only in memory, and passwords never leave handle() (D7). Hashing here would change nothing
+  // anyone can observe. See spec/worklogs/p5-security.md.
+  async findLogin(email: string, password: string): Promise<WireDoc | undefined> {
+    return this.collections.users.find((u) => u.email === email && u.password === password)
   }
 
   async reset(): Promise<void> {

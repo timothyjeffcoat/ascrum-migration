@@ -2,7 +2,9 @@ import { act, getDefaultNormalizer, screen, waitFor, within } from '@testing-lib
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { request } from '../api/http.ts'
 import { recordRequests, renderRoute } from '../test/renderRoute.tsx'
+import { stubContext } from '../test/server.ts'
 import { failNext } from '../test/stubControl.ts'
+import { MemoryLoginThrottle } from '../../stub/throttle.ts'
 import { getLoginDialogId } from './loginDialog.ts'
 import { RetryCancelledError, retryQueue } from './retryQueue.ts'
 
@@ -110,6 +112,39 @@ describe('LoginModal', () => {
     expect(await within(modal).findByText('There was a problem with authenticating: HTTP 500.')).toHaveClass(
       'alert alert-error',
     )
+  })
+
+  // Q-p5-10 (b): the real API answers a throttled sign-in with 429. The modal already treats any HTTP
+  // failure as login.error.serverError (S14); this drives the stub's real throttle, not an injected 429.
+  it('AC-SEC-04 / Q-p5-10: a throttled sign-in (429) shows login.error.serverError "HTTP 429" and keeps the modal open', async () => {
+    stubContext.loginThrottle = new MemoryLoginThrottle({
+      maxFailuresPerAccount: 1,
+      maxFailuresPerIp: 100,
+      windowSeconds: 60,
+    })
+    onTestFinished(() => {
+      stubContext.loginThrottle = undefined
+    })
+    const { user } = await renderAtProjectsInfo()
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    const modal = getModal()
+    await user.type(within(modal).getByLabelText('E-mail'), 'po@ascrum.test')
+    await user.type(within(modal).getByLabelText('Password'), 'wrong')
+    await user.click(within(modal).getByRole('button', { name: 'Sign in' }))
+    expect(
+      await within(modal).findByText('Login failed.  Please check your credentials and try again.', exact),
+    ).toHaveClass('alert alert-error')
+
+    // The right password, but the account is now throttled.
+    await user.clear(within(modal).getByLabelText('Password'))
+    await user.type(within(modal).getByLabelText('Password'), 'demo')
+    await user.click(within(modal).getByRole('button', { name: 'Sign in' }))
+    expect(await within(modal).findByText('There was a problem with authenticating: HTTP 429.')).toHaveClass(
+      'alert alert-error',
+    )
+    expect(getModal()).toBe(modal)
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+    expect(await request('GET', '/current-user')).toEqual({ user: null })
   })
 
   it('AC-AUTH-05: success closes the modal and retries the queued items in order', async () => {
