@@ -870,3 +870,9 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Each review round found smaller holes than the last: a race that let 100 guesses through, then a file missing from an image, then a Dockerfile spelled in quotes. Knowing when to stop is part of the gate."
+
+## 2026-11-24: The post a day later (LinkedIn analytics)
+- **Numbers** (post as shown to the owner, 2026-11-24, after the article link was added to it). 449 impressions, 16 comments, 2 reactions. Baseline (2026-11-23, before the link): 334 impressions, 12 comments, 2 reactions. So +115 impressions and +4 comments in about a day, and no new reactions. The article's own views were not re-measured.
+- **Where the comments are.** Two threads, each started by a reader who is not in the owner's network, and each continued by the same reader a few hours after the owner's reply (the entries above on the Enter-twice question and the typeless button). The 16 include the owner's own replies.
+- **Reading, with care.** Comments without reactions means a few people talking at length, not a wide audience agreeing. An impression means the post was shown, not read. Why the two readers ask, and how much of the reach their threads caused, is not in the record, so it is not claimed here.
+- **To measure next.** The article's views since the link was added, and the post's numbers once the threads go quiet.
