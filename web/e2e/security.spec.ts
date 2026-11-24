@@ -122,6 +122,55 @@ test('AC-SEC-05: every page and asset the web build serves carries the security 
   }
 })
 
+// DEV-p5-security-09: the test above compares the served headers with the same map the server sends, so
+// any edit to the map agrees with itself. This one pins the policy itself, written out here on purpose
+// (not imported), and also checks the rules any future policy must keep.
+const EXPECTED_CSP: Record<string, string[]> = {
+  'default-src': ["'self'"],
+  'script-src': ["'self'"],
+  'style-src': ["'self'"],
+  'img-src': ["'self'", 'https://www.gravatar.com'], // Q-p5-security-1 (a)
+  'font-src': ["'self'"],
+  'connect-src': ["'self'"],
+  'worker-src': ["'self'"],
+  'manifest-src': ["'self'"],
+  'object-src': ["'none'"],
+  'base-uri': ["'self'"],
+  'form-action': ["'self'"],
+  'frame-ancestors': ["'none'"],
+}
+
+/** "a b; c d" → [['a', ['b']], ['c', ['d']]]; a repeated directive stays twice, so the test sees it. */
+function parseCsp(policy: string): [string, string[]][] {
+  return policy
+    .split(';')
+    .map((part) => part.trim().split(/\s+/))
+    .filter(([name]) => name)
+    .map(([name = '', ...sources]) => [name.toLowerCase(), sources])
+}
+
+test('AC-SEC-05 / DEV-p5-security-09: the served CSP is exactly the expected policy: no unsafe-* source, no wildcard, images from self and Gravatar only', async ({
+  request,
+}) => {
+  for (const path of ['/', '/projectsinfo']) {
+    const policy = (await request.get(path)).headers()['content-security-policy'] ?? ''
+    const directives = parseCsp(policy)
+    expect(Object.fromEntries(directives), path).toEqual(EXPECTED_CSP)
+    expect(directives, `${path}: no directive twice`).toHaveLength(Object.keys(EXPECTED_CSP).length)
+    for (const [name, sources] of directives) {
+      for (const source of sources) {
+        expect(source, `${path}: ${name}`).not.toMatch(/^'unsafe-|^'wasm-unsafe-eval'$/)
+        expect(source, `${path}: ${name}`).not.toMatch(/\*/)
+        // A bare scheme allows every host on it.
+        expect(source, `${path}: ${name}`).not.toMatch(/^(https?|wss?|blob|filesystem):$/)
+        if (source === 'data:') expect(name, `${path}: data: outside img-src`).toBe('img-src')
+      }
+    }
+    const img = directives.find(([name]) => name === 'img-src')?.[1] ?? []
+    for (const source of img) expect(["'self'", 'data:', 'https://www.gravatar.com'], 'img-src').toContain(source)
+  }
+})
+
 test('AC-SEC-05: the CSP allows the app’s own assets only: no violation on any screen, signed in as the admin', async ({
   page,
 }) => {
