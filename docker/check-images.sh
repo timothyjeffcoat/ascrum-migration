@@ -15,7 +15,7 @@
 #   docker/check-images.sh <api image> <web image>        (from the repo root)
 #
 # Needs docker, jq and Gitleaks: $GITLEAKS, or `gitleaks` on the PATH, at the version pinned in
-# .github/workflows/secrets.yml (the e2e-compose job installs it the same way). A missing tool fails the
+# .github/actions/setup-gitleaks (which the e2e-compose and secrets jobs both use). A missing tool fails the
 # check; it is never skipped. The start-up check runs its own throwaway PostgreSQL on a private network,
 # publishes no port, and removes everything it started.
 #

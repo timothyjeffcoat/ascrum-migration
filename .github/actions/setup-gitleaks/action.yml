@@ -1,0 +1,32 @@
+# The one place the Gitleaks version and its SHA-256 live (DEV-p5-containers-14). Both jobs that run
+# Gitleaks use this action: `secrets` (.github/workflows/secrets.yml, the repo scan) and `e2e-compose`
+# (.github/workflows/ci.yml, the image-layer scan in docker/check-images.sh), so they cannot drift apart.
+# To move Gitleaks, change both values below together, from the release's gitleaks_<v>_checksums.txt.
+#
+# The MIT-licensed CLI, as a release tarball whose SHA-256 is checked before it is unpacked (the
+# `gitleaks-action` wrapper has its own licence terms and needs a key for organisation repos).
+# Sets GITLEAKS (the binary's path) for later steps, which docker/check-images.sh reads.
+name: Set up Gitleaks
+description: Install the pinned, checksum-verified Gitleaks release binary and export its path as GITLEAKS
+outputs:
+  path:
+    description: Absolute path of the gitleaks binary
+    value: ${{ steps.install.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        GITLEAKS_VERSION: 8.30.1
+        # From gitleaks_8.30.1_checksums.txt in the v8.30.1 release, linux_x64 tarball.
+        GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      run: |
+        tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        curl -fsSLo "$RUNNER_TEMP/$tarball" \
+          "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+        echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum --check --strict
+        tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+        "$RUNNER_TEMP/gitleaks" version
+        echo "GITLEAKS=$RUNNER_TEMP/gitleaks" >> "$GITHUB_ENV"
+        echo "path=$RUNNER_TEMP/gitleaks" >> "$GITHUB_OUTPUT"
