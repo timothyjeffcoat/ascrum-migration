@@ -1,0 +1,32 @@
+{
+  "name": "ascrum-infra",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "cdk": "cdk",
+    "synth": "cdk synth --quiet --no-notices -c githubRepository=${GITHUB_REPOSITORY:-example-owner/ascrum-migration}",
+    "lint": "node node_modules/eslint/bin/eslint.js --max-warnings 0 . && node node_modules/prettier/bin/prettier.cjs --check .",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "test": "node node_modules/vitest/vitest.mjs run",
+    "smoke": "node node_modules/@playwright/test/cli.js test -c smoke/playwright.config.ts",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm synth"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.275.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "link:../web/node_modules/@playwright/test",
+    "@types/node": "link:../web/node_modules/@types/node",
+    "aws-cdk": "2.1148.0",
+    "eslint": "link:../web/node_modules/eslint",
+    "prettier": "link:../web/node_modules/prettier",
+    "typescript": "link:../web/node_modules/typescript",
+    "vitest": "link:../web/node_modules/vitest"
+  },
+  "prettier": "../web/.prettierrc.json"
+}

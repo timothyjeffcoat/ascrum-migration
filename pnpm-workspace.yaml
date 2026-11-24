@@ -5,4 +5,6 @@
 packages:
   - web
   - api
+  # Phase 5 wave C (p5-infra): the CDK app, with its own lockfile and gates (infra/README.md).
+  - infra
 sharedWorkspaceLockfile: false

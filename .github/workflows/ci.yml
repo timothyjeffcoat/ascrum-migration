@@ -141,3 +141,27 @@ jobs:
         if: always()
         working-directory: .
         run: docker compose --profile prod-check down --volumes --remove-orphans
+
+  # Phase 5 wave C (p5-infra): the CDK app in infra/ (its own package and lockfile, so web's gates do not
+  # see it): lint, typecheck, the stack and script unit tests, and `cdk synth`. None of it may need AWS:
+  # this job has no credentials, and every credential source is pointed at nothing, so a lookup or an
+  # SDK call would fail the job instead of quietly using something.
+  infra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra
+    env:
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CONFIG_FILE: /dev/null
+      AWS_EC2_METADATA_DISABLED: 'true'
+      CDK_DISABLE_CLI_TELEMETRY: 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-web
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: cdk synth without AWS credentials
+        run: pnpm synth

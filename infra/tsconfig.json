@@ -1,0 +1,24 @@
+{
+  // infra/ runs directly under Node 24 (type stripping), like web/stub and api/: relative imports carry
+  // their .ts extension and only erasable TypeScript syntax is allowed. The strict options are web's.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true
+  },
+  "include": ["bin", "src", "scripts", "smoke", "*.config.ts"]
+}

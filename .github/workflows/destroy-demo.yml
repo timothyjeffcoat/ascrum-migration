@@ -1,0 +1,68 @@
+# Destroy the AWS `demo` on its own (AC-AWS-04): the same script the deploy workflow's `destroy` job
+# runs, for when that job could not finish (a runner lost, a timeout) or just to prove nothing is left.
+# It works from any state a run left behind, and a second run finds nothing and changes nothing. The
+# one-time bootstrap (OIDC provider, deploy role, budget alarm) is never touched.
+#
+# Manual only, on `migration` (the deploy role trusts this file there and nowhere else). No required-check
+# gate: removing the demo must always be possible.
+name: Destroy demo (AWS)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: aws-demo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash # -eo pipefail
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  destroy:
+    name: destroy and leftover check (AC-AWS-04)
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    environment: aws-demo
+    permissions:
+      contents: read
+      id-token: write # OIDC token for AWS (AC-AWS-02)
+    steps:
+      - name: Started on migration
+        if: github.ref != 'refs/heads/migration'
+        run: |
+          echo "::error::Run this from migration; the deploy role trusts no other ref. This run is on $GITHUB_REF."
+          exit 1
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: web/.nvmrc
+      - name: AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ascrum-destroy-${{ github.run_id }}
+          role-duration-seconds: 7200
+          mask-aws-account-id: true
+      - name: AC-AWS-04 destroy the demo stacks (nothing to do if they do not exist)
+        run: |
+          mkdir -p infra/evidence
+          node infra/scripts/destroy.ts 2>&1 | tee infra/evidence/destroy.txt
+      - name: AC-AWS-04 nothing remains but the bootstrap and the budget
+        if: always()
+        run: node infra/scripts/leftovers.ts 2>&1 | tee infra/evidence/leftovers.txt
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: destroy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: infra/evidence
+          retention-days: 90
+          if-no-files-found: warn

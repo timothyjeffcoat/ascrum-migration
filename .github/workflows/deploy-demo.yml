@@ -1,0 +1,299 @@
+# Deploy, test, record and destroy the AWS `demo` in one run (Phase 5 spec rev 2, §3.6, §5.4). Nothing
+# stays up between runs: the GitHub Pages build is the demo to click.
+#
+#   gate      AC-AWS-01: started by hand on `migration` only, and only when every check the branch
+#             protection requires passed on that commit (infra/scripts/requiredChecks.ts).
+#   deploy    AC-AWS-02: AWS credentials through GitHub OIDC only (no keys anywhere). Registry stack,
+#             API image built from this commit and pushed (ECR scan-on-push; spec §6 image-scan: a HIGH or
+#             CRITICAL finding stops the run), demo stack, web build to S3, then the AC-AWS-03 smoke test
+#             over HTTPS. Its evidence is kept whatever happens.
+#   destroy   AC-AWS-04: always runs once the gate passed, also after a failure or a cancel, and deletes
+#             whatever exists (infra/scripts/destroy.ts); its last step fails if anything tagged for the
+#             demo remains (infra/scripts/leftovers.ts).
+#   evidence  AC-AWS-07: one artifact with the smoke output, the screenshot, the image scan, the destroy
+#             and leftover reports, who ran it, and every step's timing.
+#
+# The deploy role trusts this file and destroy-demo.yml on `migration`, in the `aws-demo` environment, and
+# nothing else (infra/src/bootstrapStack.ts). One-time setup by the owner: infra/README.md.
+name: Deploy demo (AWS)
+
+on:
+  workflow_dispatch:
+
+# One AWS run at a time (this workflow and destroy-demo.yml), and a running one is never cancelled by
+# the next: a cancelled deploy would still need its destroy.
+concurrency:
+  group: aws-demo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash # -eo pipefail, so `cmd | tee file` fails when cmd does
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  CDK_DISABLE_CLI_TELEMETRY: 'true'
+
+jobs:
+  gate:
+    name: gate (AC-AWS-01)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
+    steps:
+      - name: AC-AWS-01 started on migration
+        if: github.ref != 'refs/heads/migration'
+        run: |
+          echo "::error::The demo is deployed from migration only (AC-AWS-01); this run is on $GITHUB_REF."
+          exit 1
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: web/.nvmrc
+      - name: AC-AWS-01 every required check passed on this commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node infra/scripts/requiredChecks.ts migration
+
+  deploy:
+    name: deploy and smoke test (AC-AWS-02, -03)
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: aws-demo
+    permissions:
+      contents: read
+      id-token: write # OIDC token for AWS (AC-AWS-02)
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+      EVIDENCE: infra/evidence
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The aws-demo environment is set up (infra/README.md)
+        env:
+          ROLE: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$AWS_REGION" ] || [ -z "$ROLE" ]; then
+            echo "::error::Set the aws-demo environment's variable AWS_REGION and secret AWS_DEPLOY_ROLE_ARN (infra/README.md)."
+            exit 1
+          fi
+          mkdir -p "$EVIDENCE"
+          jq -n --arg sha "$GITHUB_SHA" --arg ref "$GITHUB_REF" --arg actor "$GITHUB_ACTOR" \
+            --arg triggered_by "$GITHUB_TRIGGERING_ACTOR" --arg region "$AWS_REGION" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" --arg started "$(date -u +%FT%TZ)" \
+            '{sha: $sha, ref: $ref, actor: $actor, triggered_by: $triggered_by, region: $region, run: $run, attempt: $attempt, deploy_started: $started}' \
+            > "$EVIDENCE/run.json"
+          cat "$EVIDENCE/run.json"
+
+      - uses: ./.github/actions/setup-web
+
+      - name: AC-AWS-02 AWS credentials through OIDC (no stored keys)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ascrum-deploy-${{ github.run_id }}
+          role-duration-seconds: 7200
+          mask-aws-account-id: true
+
+      - name: Deploy context (per-run origin secret, CloudFront prefix list)
+        run: |
+          secret=$(openssl rand -hex 32)
+          echo "::add-mask::$secret"
+          prefix_list=$(aws ec2 describe-managed-prefix-lists \
+            --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+            --query 'PrefixLists[0].PrefixListId' --output text)
+          if [[ $prefix_list != pl-* ]]; then
+            echo "::error::No CloudFront origin-facing prefix list in $AWS_REGION."
+            exit 1
+          fi
+          {
+            echo "ORIGIN_SECRET=$secret"
+            echo "PREFIX_LIST=$prefix_list"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy the registry stack
+        working-directory: infra
+        run: |
+          pnpm exec cdk deploy AscrumDemoRegistry --exclusively --require-approval never --no-notices \
+            --outputs-file "$RUNNER_TEMP/registry.json" \
+            -c demoDeploy=true -c imageTag="$IMAGE_TAG" -c originSecret="$ORIGIN_SECRET" \
+            -c cloudFrontPrefixListId="$PREFIX_LIST"
+          echo "REPOSITORY_URI=$(jq -r '.AscrumDemoRegistry.ApiRepositoryUri' "$RUNNER_TEMP/registry.json")" >> "$GITHUB_ENV"
+
+      - name: Build the API image from this commit
+        run: docker build -f docker/api.Dockerfile -t "$REPOSITORY_URI:$IMAGE_TAG" .
+
+      - name: Push the API image (ECR scans it on push)
+        run: |
+          aws ecr get-login-password | docker login --username AWS --password-stdin "${REPOSITORY_URI%%/*}"
+          docker push "$REPOSITORY_URI:$IMAGE_TAG"
+
+      - name: image-scan (spec §6, Q-p5-7) no HIGH or CRITICAL finding in the API image
+        run: |
+          aws ecr wait image-scan-complete --repository-name ascrum-demo-api --image-id imageTag="$IMAGE_TAG"
+          aws ecr describe-image-scan-findings --repository-name ascrum-demo-api --image-id imageTag="$IMAGE_TAG" \
+            > "$RUNNER_TEMP/scan.json"
+          # Kept without registryId (the account id).
+          jq '{status: .imageScanStatus, completedAt: .imageScanFindings.imageScanCompletedAt,
+               counts: (.imageScanFindings.findingSeverityCounts // {}),
+               findings: [.imageScanFindings.findings[]? | {name, severity, uri}]}' \
+            "$RUNNER_TEMP/scan.json" | tee "$EVIDENCE/image-scan.json"
+          blocking=$(jq '[(.counts.HIGH // 0), (.counts.CRITICAL // 0)] | add' "$EVIDENCE/image-scan.json")
+          if [ "$blocking" -ne 0 ]; then
+            echo "::error::The API image has $blocking HIGH or CRITICAL findings (image-scan gate, spec §6)."
+            exit 1
+          fi
+
+      - name: Deploy the demo stack (network, database, API, web bucket, CloudFront)
+        working-directory: infra
+        run: |
+          pnpm exec cdk deploy AscrumDemo --exclusively --require-approval never --no-notices \
+            --outputs-file "$RUNNER_TEMP/demo.json" \
+            -c demoDeploy=true -c imageTag="$IMAGE_TAG" -c originSecret="$ORIGIN_SECRET" \
+            -c cloudFrontPrefixListId="$PREFIX_LIST"
+          {
+            echo "DEMO_URL=$(jq -r '.AscrumDemo.Url' "$RUNNER_TEMP/demo.json")"
+            echo "ALB_URL=$(jq -r '.AscrumDemo.LoadBalancerUrl' "$RUNNER_TEMP/demo.json")"
+            echo "WEB_BUCKET=$(jq -r '.AscrumDemo.WebBucketName' "$RUNNER_TEMP/demo.json")"
+          } >> "$GITHUB_ENV"
+
+      - name: Build the web app and upload it to the bucket
+        run: |
+          (cd web && pnpm build)
+          # The production build never registers the MSW worker; the web image drops it too
+          # (DEV-p5-containers-03).
+          rm -f web/dist/mockServiceWorker.js
+          aws s3 sync web/dist/assets "s3://$WEB_BUCKET/assets" --delete --only-show-errors \
+            --cache-control 'public, max-age=31536000, immutable'
+          aws s3 sync web/dist "s3://$WEB_BUCKET" --delete --only-show-errors --exclude 'assets/*' \
+            --cache-control 'no-cache'
+
+      - name: Wait until the demo answers over HTTPS
+        run: |
+          for attempt in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$DEMO_URL/current-user" || true)
+            echo "attempt $attempt: GET /current-user -> $code"
+            [ "$code" = 200 ] && exit 0
+            sleep 10
+          done
+          echo "::error::$DEMO_URL did not answer 200 within 10 minutes."
+          exit 1
+
+      - name: Install Chromium
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: AC-AWS-03 smoke test over HTTPS (sign in as a seed user, load the projects list)
+        working-directory: infra
+        env:
+          SMOKE_BASE_URL: ${{ env.DEMO_URL }}
+          SMOKE_ALB_URL: ${{ env.ALB_URL }}
+        run: pnpm smoke 2>&1 | tee evidence/smoke-output.txt
+
+      - name: The API's logs and the stack's events, for a failed run
+        if: failure()
+        run: |
+          aws logs filter-log-events --log-group-name /ascrum/demo/api --limit 1000 \
+            --query 'events[].message' --output text > "$EVIDENCE/api-logs.txt" 2>&1 || true
+          for stack in AscrumDemoRegistry AscrumDemo; do
+            aws cloudformation describe-stack-events --stack-name "$stack" \
+              --query 'StackEvents[?ends_with(ResourceStatus, `FAILED`)].[Timestamp, LogicalResourceId, ResourceStatus, ResourceStatusReason]' \
+              --output text > "$EVIDENCE/$stack-failed-events.txt" 2>&1 || true
+          done
+
+      - name: Keep account ids out of the evidence (spec §11)
+        if: always()
+        run: |
+          find "$EVIDENCE" -type f \( -name '*.txt' -o -name '*.json' \) \
+            -exec sed -i -E 's/\b[0-9]{12}\b/***/g' {} +
+
+      - name: AC-AWS-07 keep the deploy evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-evidence
+          path: infra/evidence
+          retention-days: 7
+          if-no-files-found: warn
+
+  destroy:
+    name: destroy and leftover check (AC-AWS-04)
+    needs: [gate, deploy]
+    # Always once the gate let the run through: after a green deploy, a red one, or a cancel.
+    if: always() && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    environment: aws-demo
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      # destroy.ts and leftovers.ts need Node only (they call the runner's AWS CLI), no install.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: web/.nvmrc
+      - name: AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ascrum-destroy-${{ github.run_id }}
+          role-duration-seconds: 7200
+          mask-aws-account-id: true
+      - name: AC-AWS-04 destroy everything this run created
+        run: |
+          mkdir -p infra/evidence
+          node infra/scripts/destroy.ts 2>&1 | tee infra/evidence/destroy.txt
+      - name: AC-AWS-04 nothing remains but the bootstrap and the budget
+        if: always()
+        run: node infra/scripts/leftovers.ts 2>&1 | tee infra/evidence/leftovers.txt
+      - name: AC-AWS-07 keep the destroy evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: destroy-evidence
+          path: infra/evidence
+          retention-days: 7
+          if-no-files-found: warn
+
+  evidence:
+    name: evidence (AC-AWS-07)
+    needs: [gate, deploy, destroy]
+    if: always() && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read # the run's own jobs and steps, for the timings
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: evidence
+      - name: Step timings of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '[.jobs[] | {job: .name, conclusion, started_at, completed_at,
+                    seconds: (if .completed_at then ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) else null end),
+                    steps: [(.steps // [])[] | {name, conclusion, started_at, completed_at,
+                      seconds: (if .completed_at and .started_at then ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) else null end)}]}]' \
+            > evidence/timings.json
+          jq -r '.[] | .job as $job | .steps[] | [$job, .name, (.seconds // "" | tostring), (.conclusion // "")] | @tsv' \
+            evidence/timings.json | tee evidence/timings.tsv
+      - name: AC-AWS-07 one artifact for the run
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 90
