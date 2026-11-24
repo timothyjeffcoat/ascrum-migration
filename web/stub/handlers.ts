@@ -173,7 +173,7 @@ async function route(method: string, req: StubRequest, caller: Caller, ctx: Stub
     // Session fixation: the signed-in session gets a new sid, and the pre-login sid (which an attacker
     // could have planted or read before sign-in) stops existing. Legacy kept the same session.
     // The XSRF token is kept: a new one would be visible to the front end (src/api/http.test.ts,
-    // AC-API-07, pins it), so rotating it too is a question (Q-p5-security-2), not done here.
+    // AC-API-07, pins it), so it is kept (Q-p5-security-2, answered (a)).
     caller.rotatedTo = await ctx.sessions.rotate(caller.sid)
     await ctx.sessions.setUser(caller.rotatedTo, match._id.$oid)
     return json(200, { user: currentUser(match) })

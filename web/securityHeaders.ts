@@ -10,7 +10,7 @@
 // CSSOM, which CSP does not govern). The API is the same origin (spec §3.6), so connect-src 'self'.
 //   - img-src adds https://www.gravatar.com, the one outside host the app uses: the user list and the
 //     user form show Gravatar images (AC-GRAV-01, legacy behaviour). Images only, and only that host.
-//     Open question Q-p5-security-1 asks the owner whether to keep it (spec/questions/p5-security.md).
+//     Q-p5-security-1, answered (a) by the owner (spec/questions/p5-security.md).
 //   - worker-src 'self': the MSW service worker (dev:msw and Pages only) is a same-origin script.
 //   - object-src 'none', base-uri 'self', form-action 'self', frame-ancestors 'none': no plugins, no
 //     <base> hijacking, forms post nowhere else, and no other site may frame the app (clickjacking).

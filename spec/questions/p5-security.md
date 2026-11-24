@@ -2,7 +2,7 @@
 
 Ids are `Q-p5-security-<n>` (spec §8, `conversion-spec.md` §8.5).
 
-**Q-p5-security-1. The CSP and Gravatar images (not blocking; implemented as recommended, pending an answer).**
+**Q-p5-security-1. The CSP and Gravatar images (not blocking; answered (a)).**
 Context: spec §3.4 S-p5-5 says "the CSP must allow the app's own assets only". The app also shows
 Gravatar images from `https://www.gravatar.com/avatar/<md5>` on the user list and the user form
 (AC-GRAV-01, legacy behaviour, `web/src/components/Gravatar.tsx`). With `img-src 'self'` alone, every
@@ -21,7 +21,10 @@ from it, and the e2e test checks both that the avatars load and that nothing els
 allowed (a foreign image and an inline script are blocked). The wording of S-p5-5 would need "plus
 Gravatar images (AC-GRAV-01)".
 
-**Q-p5-security-2. Rotate the XSRF token at login, too? (not blocking; implemented (a), pending an answer).**
+**Answer (owner, relayed by the orchestrator, 2026-11-23): (a).** The CSP allows images from
+`https://www.gravatar.com` only; everything else stays `'self'` or `'none'`. Implemented in this branch.
+
+**Q-p5-security-2. Rotate the XSRF token at login, too? (not blocking; answered (a)).**
 Context: to stop session fixation, login now moves the session to a new `sid` and the old `sid` stops
 existing. My first version also issued a new XSRF token. That is visible to the front end:
 `web/src/api/http.test.ts` "AC-API-07: a 401 enqueues unauthorized-server; the retry is re-sent with
@@ -41,3 +44,6 @@ fixed the session also knows its XSRF token. Using it needs the victim's browser
 on a cross-site request, which `SameSite=Lax` (S-p5-2) prevents for POST, PUT and DELETE. (b) is the
 textbook answer and costs one line in a cluster-0 test; I did not want to make that edit, or a visible
 change, without an answer.
+
+**Answer (owner, relayed by the orchestrator, 2026-11-23): (a).** Rotate only `sid` at login; keep the
+XSRF token. Implemented in this branch.
