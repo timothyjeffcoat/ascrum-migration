@@ -701,6 +701,19 @@ These come from how the first post's comments went: every question was about tru
 **Moment (article candidate)**
 - "I chose three ways to break the new server and published only their fingerprint. The agents writing the code can't see them. When the reviewer runs them, the text goes public, and anyone can check that it matches the hash committed before a line of server code existed."
 
+## 2026-11-23: Who checks the security checks? (review of p5-devsecops, PR #41)
+- **What was checked.** The worker added two scanning workflows (CodeQL for code, `pnpm audit` for dependencies) and a Dependabot config, then planted one finding for each scanner. The reviewer re-read every run the worklog cites (`gh run view`, `gh api`): the CodeQL plant (#42) turned the `CodeQL` check red with 1 critical alert, the vulnerable `lodash` plant (#43) turned `deps` red, and the clean branch was green on both. `pnpm verify` on the PR branch: exit 0, 406 unit tests, 37 Playwright tests.
+- **The trap the worker found, confirmed.** The CodeQL *job* stays green when it finds something; a separate *check* with almost the same name (`CodeQL` vs `codeql`) is the one that fails. On the reviewer's own plant (#46) the job was green and the check red with "3 new alerts including 2 critical". Requiring the wrong name would have let all three merge. The owner chose to require both.
+- **What the reviewer's breakages found.** Three plants, each a draft PR closed unmerged:
+  - #46, browser code that runs the URL fragment, the same code in a file named like a test, and the URL fragment into `innerHTML`: CodeQL flagged all three (2 critical, 1 high). The scanner works.
+  - #44, a vulnerable `lodash` plus a 5-line `web/pnpm-workspace.yaml` telling the audit to ignore its two advisories: **all 8 checks green.** The workflow file was not touched, and the repo's gate-weakening search does not look there (DEV-p5-devsecops-04).
+  - #45, the same vulnerable package in a new top-level `api/` folder, which is where the approved spec puts the real server: `deps` green, because the job only audits `web/` (DEV-p5-devsecops-03). Harmless today, since `api/` does not exist yet; a gap the day it lands.
+- **What is not finished.** No secret-scanning check exists: push protection blocks pushes but posts no check, and the worker's test with AWS's documented example key was (correctly) ignored. The owner answered: add a Gitleaks job and prove it red. None of the new checks is required on `migration` yet; that is applied after merge. So AC-DSO-01 is met for code and dependency scanning on the current tree, not yet for secrets or "required". AC-DSO-02 (Dependabot PRs go through the gates) can only be shown after merge.
+- **Not run.** The owner's sealed breakages were not given to this reviewer, so none of them is reported here.
+
+**Moment (article candidate)**
+- "The dependency scanner caught the vulnerable package the agent planted. Then the reviewer added one small config file next to the same package, and every check on the pull request went green. The scan was fine; what it was told to ignore was not checked by anyone."
+
 ## 2026-11-23: Wave A review, the store (p5-store, PR #48)
 - **What was reviewed.** The worker made the stub's handler async over a `Store` and a `Sessions` interface and added PostgreSQL versions of both: a schema with join tables, a migration runner and the API entry point in a new `api/` package. One contract test suite now runs on both stores: 413 unit tests on the memory store (406 before, plus 7 new "store parity" tests) and 35 integration tests on PostgreSQL.
 - **Did the old tests catch anything when the server changed?** No, and the worker says so: the first PostgreSQL run was 35/35 green. The worker had listed what the in-memory arrays gave for free (order, null vs absent, strict equality) and written those tests *before* the PostgreSQL code, then broke its own code 9 ways (8 caught, 1 equivalent).

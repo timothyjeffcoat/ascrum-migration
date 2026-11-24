@@ -1,0 +1,62 @@
+# Dependency updates arrive as PRs into `migration` and go through the same required checks as any
+# other PR (Phase 5 spec AC-DSO-02). Nothing here auto-merges.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /web
+    target-branch: migration
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine minor/patch churn; majors stay separate so each can be reviewed.
+      web-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps
+
+  # The API (Phase 5, Q-p5-1 (b)) has its own lockfile (`sharedWorkspaceLockfile: false`), so it needs
+  # its own entry (Q-p5-devsecops-5).
+  - package-ecosystem: npm
+    directory: /api
+    target-branch: migration
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      api-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    # `/` covers .github/workflows; the composite action is listed explicitly.
+    directories:
+      - /
+      - /.github/actions/setup-web
+    target-branch: migration
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
+
+  # `legacy/` is the frozen reference app (never modified, never built or deployed), so Dependabot must
+  # not propose changes there (Q-p5-devsecops-6). `exclude-paths` is not enough: the options reference
+  # marks it "version updates only". And a directory with no entry here gets security PRs
+  # with default settings, which is how #47 happened. So `legacy/` gets its own entry: `ignore` on every
+  # dependency is one of the options that also applies to security updates, and
+  # `open-pull-requests-limit: 0` stops version updates. Alerts for `legacy/` still appear; they are
+  # dismissed as "frozen reference code, never built or deployed". No `target-branch` here on purpose:
+  # with it, an entry's options "no longer apply to security updates" (options reference).
+  - package-ecosystem: npm
+    directories:
+      - /legacy/client
+      - /legacy/server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: '*'
