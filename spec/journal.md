@@ -757,3 +757,19 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "The gap the owner predicted was closed, and the closing test caught every variant of it. Then the second reviewer broke the new tests instead of the code, and two of ten attempts still got through. One of them hid inside PostgreSQL itself: an edit that changes no indexed column leaves the index pointing at the old position, so 'unordered' still came back in order. A test can pass because the database happens to be tidy."
+
+## 2026-11-23: Wave A closed
+- **Merged.** p5-devsecops as `f03f449` (#41), then p5-store as `984a0e6` (#48), one at a time under branch protection.
+- **Required checks.** `migration` now requires 10 checks, up from 5: lint, typecheck, test, build, e2e, plus integration (the contract tests against PostgreSQL), deps, codeql, secrets, and `CodeQL` pinned to GitHub's security app, so that a same-named check from elsewhere cannot satisfy it.
+- **A red run merged, on purpose.** #41's `secrets` run stayed red because an agent had quoted a false-positive phrase word for word in its own report, and the commit scan reads every commit in the PR. The owner chose to merge it before the check was required, rather than force-push or override, and to make it required only after it ran green on `migration`. It did.
+- **Repo settings changed by the orchestrator with the owner's OK.** Dependabot alerts, Dependabot security updates and private vulnerability reporting turned on. The 15 alerts on the frozen `legacy/` code dismissed with a reason, and Dependabot's PR against it closed.
+- **Wave A in numbers** (from `gh` and the PRs):
+  - unit tests 406 → 416;
+  - new integration tests: 38;
+  - Playwright still 37;
+  - plants (draft PRs closed unmerged): 12, #42–#46 and #49–#53;
+  - deviation rows 39 → 56, of which 2 stay open and go to wave B (DEV-p5-store-10, -11).
+- **The owner's sealed breakages.** 3 chosen, 1 got past every test (O2), 1 got past in part (O1), and all 3 are now caught.
+
+**Moment (article candidate)**
+- "Wave A doubled the gates from five to ten. The most useful finding still came from outside the agents: one of three breakages the owner sealed before the code existed went straight through 35 green database tests."
