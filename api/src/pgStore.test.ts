@@ -8,11 +8,12 @@ import {
   defineNodeAdapterTests,
   dumpCollections,
   ids,
+  INJECTED_EMAILS,
   memoryBackend,
   q,
   reset,
 } from '../../web/stub/contractTests.ts'
-import { BACKLOG, PROJECT, SPRINT, USER } from '../../web/stub/seed.ts'
+import { BACKLOG, CREDENTIALS, PROJECT, SPRINT, USER } from '../../web/stub/seed.ts'
 import { COLLECTIONS } from '../../web/stub/store.ts'
 import { pgBackend, pgContext } from './testDb.ts'
 
@@ -102,6 +103,14 @@ describe('AC-PG-05: q is parameterised SQL only', () => {
     const anon = await new Client(ctx).prime()
     const login = await anon.call('POST', '/login', { email: "admin@abc.com' --", password: "' OR '1'='1" })
     expect(body(login)).toEqual({ user: null })
+    // DEV-p5-store-07: the password is compared in JavaScript, so the e-mail is the field that reaches
+    // SQL. Each of these, with the admin's real password, signs in as the admin on a string-built lookup.
+    for (const email of INJECTED_EMAILS) {
+      const res = await anon.call('POST', '/login', { email, password: CREDENTIALS.admin.password })
+      expect(body(res), email).toEqual({ user: null })
+      expect(body(await anon.call('GET', '/current-user')), email).toEqual({ user: null })
+    }
+    expect(ids(await anon.call('GET', coll('users')))).toHaveLength(6)
     expect((await anon.call('GET', coll('projects', "1' OR '1'='1"))).status).toBe(404)
   })
 })

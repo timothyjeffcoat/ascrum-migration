@@ -195,3 +195,84 @@ schema, one at a time, and restored the files after each (`diff -r` against a ba
 
 ### Legacy-case table
 Not applicable: spec §9 assigns no legacy test cases to Phase 5 clusters.
+
+## 2026-11-23, session 2 (worker, after the review of PR #48)
+
+**Scope:** tests only. The reviewer found the code correct and logged four test gaps
+(DEV-p5-store-05..08); the owner approved closing all four before merge ("approve all", relayed by the
+orchestrator). No file under `api/src` or `web/stub` other than the two test files changed:
+`web/stub/contractTests.ts` (shared contract suite, both stores) and `api/src/pgStore.test.ts`.
+Owner answers recorded in `spec/questions/p5-store.md`.
+
+### Method
+For each gap: apply the reviewer's breakage alone to `api/src/pgStore.ts` (or `web/stub/store.ts`), run
+the suite on the branch as reviewed and see it pass, add or strengthen tests, run them against the same
+breakage and see them fail, restore the source (`git checkout`), and see everything pass. The breakages
+were applied by a throwaway script outside the repo (exact text replacements, nothing committed).
+
+### Gaps closed
+| Gap | Breakage (each alone) | Before (tests as reviewed) | After: red | After, code restored |
+|---|---|---|---|---|
+| DEV-05 / O2a | projects PUT does not rewrite `project_team_members` | integration 35/35 green | 1 failed / 38: "DEV-p5-store-05 / O2: a PUT that changes a list …" | green |
+| DEV-05 / O2b | projects PUT deletes the team rows, does not re-insert | 35/35 green | 1 failed / 38 (same test) | green |
+| DEV-05 / O2c | no collection's PUT rewrites its join table | 35/35 green | 1 failed / 38 (same test) | green |
+| DEV-05 / O2d | every PUT clears its join rows (was already caught) | 2 failed / 35 | 3 failed / 38 (+ DEV-05) | green |
+| DEV-05 / R7 | a PUT never updates `has_*` | 35/35 green | 1 failed / 38 (same test; "Legacy Cleanup" first member, and present → absent) | green |
+| DEV-06 / O1c | `ORDER BY seq` for tasks only, the other tables unordered | 35/35 green | 2 failed / 38: "DEV-p5-store-06 / O1: every collection lists in insertion order …", and DEV-05 (its whole-list comparison after PUTs) | green |
+| DEV-06 / O1e | `ORDER BY seq` for tasks, `ORDER BY ctid` for the rest | 35/35 green | 2 failed / 38 (same two) | green |
+| DEV-07 / R15b | `usersByEmail()` built as `WHERE email = '${email}'` | 35/35 green | 2 failed / 38: "AC-PG-05: SQL in a login or an id is just text" and "DEV-p5-store-07: an e-mail that looks like SQL is only text …" | green |
+| DEV-08 / R2 | case-insensitive `usersByEmail()` (`lower(email) = lower($1)`) | 35/35 green | 1 failed / 38: "DEV-p5-store-08: login matches the e-mail exactly, case included …" | green |
+| DEV-08 / R2 (memory) | `MemoryStore.usersByEmail()` compares lower-cased | unit 413/413 green | 1 failed / 416 (same test, MemoryStore) | green |
+
+### The tests
+- **DEV-05** (contract suite, both stores): PUTs Webshop's team changed and reordered, then shorter;
+  gives "Legacy Cleanup" its first member (absent → present); clears Mobile App's team to `[]`; removes
+  Webshop's team (present → absent), then sets it to `[]` (absent → empty) and Mobile App's to `null`.
+  Sprints: backlog changed (keeping the dangling id), cleared, removed, and back to present with a
+  duplicate. Every PUT is read back by id and in the full list, and both collections are compared whole
+  at the end, so a PUT that touches another document's list also fails.
+- **DEV-06** (contract suite): replaces "lists in insertion order, and a PUT keeps the document in its
+  place", which covered tasks only. For each of the five collections it edits the first and a middle
+  document, adds one, and expects the original order plus the new id last. Also a filtered list
+  (Webshop's backlog) after the edits. R1 (join items without `position` in their `ORDER BY`) still has
+  no test, as the reviewer logged: heap order equals position order for every write this code makes.
+- **DEV-07**: `INJECTED_EMAILS` (in `contractTests.ts`) holds five e-mails that each sign in as the admin
+  on a string-built lookup when sent with the admin's real password, including the reviewer's
+  `nobody' OR email = 'admin@abc.com`. Asserted in the named AC-PG-05 test (PgStore) and in a new
+  contract test (both stores): `{user:null}`, and `/current-user` is `{user:null}` afterwards.
+- **DEV-08**: legacy pins it. `legacy/server/lib/mongo-strategy.js` `findByEmail` sends
+  `q={"email": email}` to MongoLab, which is MongoDB equality (exact, case-sensitive string
+  comparison), and nothing on the way lower-cases or trims (passport-local passes the field through;
+  `LoginFormController.js` sends what was typed). So no `Q-p5-store-2`. The contract test: the admin's
+  e-mail in three other cases and with a leading or trailing space signs nobody in; `q` on `users` with
+  the upper-case e-mail finds nothing; a user created as `Mixed@Case.test` signs in only with that exact
+  spelling. Runs on both stores.
+
+### Dependabot `/api` (Q-p5-devsecops-5)
+Pending. `.github/dependabot.yml` arrives with PR #41, which is still open (not merged into `migration`
+at the end of this session, checked with `gh pr view 41`). When it merges, the `/api` npm entry needs
+adding next to the existing ones (owner: it lands with `api/`).
+
+### Mistakes and wrong turns
+- My first DEV-06 draft expected Webshop's filtered backlog without "Wish list" (I counted five Webshop
+  items from memory; the seed has six). Caught by reading `seed.ts` before the first run.
+- A heredoc in a shell command that wrote the breakage script was refused by a tool safety check; I
+  wrote the script with the editor instead. No effect on the repo.
+
+### Gate results (run in this session, from `web/`, with `STUB_PORT=3601 PREVIEW_PORT=4773 PAGES_PORT=4774` and `DATABASE_URL` pointing at the compose db on 55436)
+`pnpm verify` → exit 0:
+```
+$ eslint --max-warnings 0 . ../api && prettier --check . ../api
+All matched files use Prettier code style!
+$ tsc --noEmit -p tsconfig.json
+$ vitest run --project unit
+ Test Files  41 passed (41)
+      Tests  416 passed (416)
+$ vitest run --project integration
+ Test Files  3 passed (3)
+      Tests  38 passed (38)
+$ pnpm build && pnpm build:pages && playwright test
+  37 passed (13.4s)
+```
+(Unit 413 → 416 and integration 35 → 38: three new contract tests, DEV-05, -07 and -08; the DEV-06 test
+replaces the tasks-only order test.)

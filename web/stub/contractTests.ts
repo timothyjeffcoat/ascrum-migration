@@ -19,7 +19,7 @@ import {
 } from './handlers.ts'
 import { BACKLOG, CREDENTIALS, PROJECT, SPRINT, USER } from './seed.ts'
 import { startStubServer } from './server.ts'
-import { COLLECTIONS } from './store.ts'
+import { COLLECTIONS, type WireDoc } from './store.ts'
 
 /** A store under test. Every context it creates is fresh, seeded and independent of the others. */
 export type Backend = {
@@ -63,6 +63,18 @@ export class Client {
     return this
   }
 }
+
+/**
+ * Login e-mails that are SQL if a lookup splices them into a string (DEV-p5-store-07). Each would sign
+ * in as the admin when sent with the admin's password; with parameters each is just an unknown e-mail.
+ */
+export const INJECTED_EMAILS = [
+  "nobody' OR email = 'admin@abc.com",
+  "' OR '1'='1",
+  "admin@abc.com' --",
+  "x' OR admin --",
+  "x' UNION SELECT id FROM users WHERE admin --",
+]
 
 export function body(res: StubResponse): unknown {
   expect(res.body?.startsWith(JSON_PREFIX)).toBe(true)
@@ -406,11 +418,80 @@ export function defineContractTests(backend: Backend): void {
       return id
     }
 
-    it('lists in insertion order, and a PUT keeps the document in its place', async () => {
-      const before = ids(await admin.call('GET', coll('tasks')))
-      await admin.call('PUT', coll('tasks', before[0] ?? ''), { name: 'edited first task' })
-      const created = body(await admin.call('POST', coll('tasks'), { name: 'last' })) as { _id: { $oid: string } }
-      expect(ids(await admin.call('GET', coll('tasks')))).toEqual([...before, created._id.$oid])
+    // Every collection, not only tasks (DEV-p5-store-06, owner breakage O1): each table has its own
+    // SELECT, so ordering one table and not another must fail here. Editing a row is what moves it in
+    // a heap without ORDER BY (or with ORDER BY ctid), so the first and a middle document are edited.
+    it('DEV-p5-store-06 / O1: every collection lists in insertion order, and a PUT keeps the document in its place', async () => {
+      for (const c of COLLECTIONS) {
+        const docs = body(await admin.call('GET', coll(c))) as WireDoc[]
+        const before = docs.map((d) => d._id.$oid)
+        expect(before.length, c).toBeGreaterThanOrEqual(3)
+        for (const doc of [docs[0], docs[Math.floor(docs.length / 2)]]) {
+          const { _id, ...fields } = doc ?? { _id: { $oid: '' } }
+          const put = await admin.call('PUT', coll(c, _id.$oid), { ...fields, name: `edited ${_id.$oid}` })
+          expect(put.status, c).toBe(200)
+        }
+        const created = body(await admin.call('POST', coll(c), { name: 'last' })) as WireDoc
+        expect(ids(await admin.call('GET', coll(c))), c).toEqual([...before, created._id.$oid])
+      }
+      // A filtered list keeps the same order.
+      const webshopBacklog = q({ projectId: PROJECT.webshop })
+      const backlog = ids(await admin.call('GET', coll('productbacklog'), undefined, webshopBacklog))
+      expect(backlog).toEqual([
+        BACKLOG.catalogue,
+        BACKLOG.cart,
+        BACKLOG.checkout,
+        BACKLOG.orderHistory,
+        BACKLOG.search,
+        BACKLOG.wishList,
+      ])
+    })
+
+    // DEV-p5-store-05 (owner breakage O2): a list field lives in a join table in PostgreSQL, so a PUT
+    // that changes it must rewrite the rows and the has_* flag. Each change is read back by id and in
+    // the full list, and the end state of both collections is compared whole, so a PUT that touches
+    // another document's list fails too.
+    it('DEV-p5-store-05 / O2: a PUT that changes a list (teamMembers, sprintBacklog) is what a re-fetch returns', async () => {
+      const read = async (c: string, id: string) => body(await admin.call('GET', coll(c, id))) as WireDoc
+      const without = (doc: WireDoc, field: string) =>
+        Object.fromEntries(Object.entries(doc).filter(([k]) => k !== field))
+      const putAndReread = async (c: string, doc: Record<string, unknown>, label: string) => {
+        const id = (doc._id as { $oid: string }).$oid
+        expect(body(await admin.call('PUT', coll(c, id), doc)), label).toEqual(doc)
+        expect(await read(c, id), `${label}: GET by id`).toEqual(doc)
+        const listed = (body(await admin.call('GET', coll(c))) as WireDoc[]).find((d) => d._id.$oid === id)
+        expect(listed, `${label}: GET list`).toEqual(doc)
+      }
+
+      const webshop = await read('projects', PROJECT.webshop)
+      const mobileApp = await read('projects', PROJECT.mobileApp)
+      const legacyCleanup = await read('projects', PROJECT.legacyCleanup)
+      expect(legacyCleanup).not.toHaveProperty('teamMembers')
+      await putAndReread('projects', { ...webshop, teamMembers: [USER.dev2, USER.outsider, USER.dev1] }, 'changed')
+      await putAndReread('projects', { ...webshop, teamMembers: [USER.sm] }, 'shorter')
+      await putAndReread('projects', { ...legacyCleanup, teamMembers: [USER.dev1] }, 'first member (absent → present)')
+      await putAndReread('projects', { ...mobileApp, teamMembers: [] }, 'cleared to []')
+      await putAndReread('projects', without(webshop, 'teamMembers'), 'removed (present → absent)')
+      await putAndReread('projects', { ...without(webshop, 'teamMembers'), teamMembers: [] }, 'absent → []')
+      await putAndReread('projects', { ...mobileApp, teamMembers: null }, '[] → null')
+      expect(body(await admin.call('GET', coll('projects')))).toEqual([
+        { ...without(webshop, 'teamMembers'), teamMembers: [] },
+        { ...mobileApp, teamMembers: null },
+        { ...legacyCleanup, teamMembers: [USER.dev1] },
+      ])
+
+      const s1 = await read('sprints', SPRINT.webshop1)
+      const s2 = await read('sprints', SPRINT.webshop2)
+      const s3 = await read('sprints', SPRINT.mobile1)
+      await putAndReread('sprints', { ...s1, sprintBacklog: [BACKLOG.deleted, BACKLOG.search] }, 'sprint changed')
+      await putAndReread('sprints', { ...s2, sprintBacklog: [] }, 'sprint cleared')
+      await putAndReread('sprints', without(s3, 'sprintBacklog'), 'sprint backlog removed')
+      await putAndReread('sprints', { ...s3, sprintBacklog: [BACKLOG.push, BACKLOG.push] }, 'sprint absent → present')
+      expect(body(await admin.call('GET', coll('sprints')))).toEqual([
+        { ...s1, sprintBacklog: [BACKLOG.deleted, BACKLOG.search] },
+        { ...s2, sprintBacklog: [] },
+        { ...s3, sprintBacklog: [BACKLOG.push, BACKLOG.push] },
+      ])
     })
 
     it('keeps every value exactly as sent: types, nulls, nesting, unknown fields, unicode', async () => {
@@ -501,6 +582,38 @@ export function defineContractTests(backend: Backend): void {
       expect(body(await po.call('GET', '/current-user'))).toEqual({ user: null })
       const again = await (await new Client(ctx).prime()).call('POST', '/login', CREDENTIALS.po)
       expect(body(again)).toMatchObject({ user: { id: twin._id.$oid } })
+    })
+
+    // Legacy (server/lib/mongo-strategy.js findByEmail) sent q={"email": <as typed>} to MongoLab:
+    // MongoDB equality, which compares strings exactly. No lower-casing or trimming anywhere on the way
+    // (passport-local passes the field through). A citext column or lower() lookup would change who
+    // can sign in, so both stores are held to exact matching here.
+    it('DEV-p5-store-08: login matches the e-mail exactly, case included, as legacy MongoDB did', async () => {
+      const tryLogin = async (email: string, password: string) => {
+        const client = await new Client(ctx).prime()
+        const res = body(await client.call('POST', '/login', { email, password }))
+        return { res, current: body(await client.call('GET', '/current-user')) }
+      }
+      for (const email of ['ADMIN@ABC.COM', 'Admin@abc.com', 'admin@ABC.com', ' admin@abc.com', 'admin@abc.com ']) {
+        expect(await tryLogin(email, CREDENTIALS.admin.password), email).toEqual({
+          res: { user: null },
+          current: { user: null },
+        })
+      }
+      expect(body(await admin.call('GET', coll('users'), undefined, q({ email: 'ADMIN@ABC.COM' })))).toEqual([])
+
+      await admin.call('POST', coll('users'), { email: 'Mixed@Case.test', password: 'pw', firstName: 'M' })
+      expect((await tryLogin('mixed@case.test', 'pw')).res).toEqual({ user: null })
+      expect((await tryLogin('Mixed@Case.test', 'pw')).res).toMatchObject({ user: { email: 'Mixed@Case.test' } })
+    })
+
+    it('DEV-p5-store-07: an e-mail that looks like SQL is only text; with a real password it signs nobody in', async () => {
+      for (const email of INJECTED_EMAILS) {
+        const client = await new Client(ctx).prime()
+        const res = await client.call('POST', '/login', { email, password: CREDENTIALS.admin.password })
+        expect(body(res), email).toEqual({ user: null })
+        expect(body(await client.call('GET', '/current-user')), email).toEqual({ user: null })
+      }
     })
   })
 }
