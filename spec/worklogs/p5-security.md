@@ -1,0 +1,385 @@
+# Worklog: cluster p5-security (Phase 5, wave B)
+
+## 2026-11-23, session 1 (worker)
+
+**Preconditions checked:** `spec/phase5-spec.md` reads `APPROVED rev 2`; wave A (p5-store,
+p5-devsecops) is merged (`6941064`, "Wave A closed"), so wave B is open. Branch `convert/p5-security`
+from `migration` at `6941064`, in its own worktree. Ports 3801/4973/4974; PostgreSQL 18 from the repo's
+`compose.yaml` under my own compose project (`-p ascrum-p5-security`, `DB_PORT=55438`, which
+`compose.yaml` already reads, so no override file was needed).
+
+### Decisions, per item
+
+**S-p5-1 / AC-SEC-01: hashing.**
+- `api/src/passwords.ts`: `node:crypto` scrypt, 16-byte random salt per hash, 32-byte key, stored as
+  `scrypt$<log2N>$<r>$<p>$<salt>$<key>` (base64url). Parameters N = 2^17, r = 8, p = 1, the OWASP
+  minimum for scrypt, about 0.25 s per hash here (measured: 2^14 31 ms, 2^15 62 ms, 2^16 133 ms,
+  2^17 254 ms). The hash carries its parameters, so the cost can rise later without a migration.
+  `timingSafeEqual` for the compare; a malformed or absurd stored value never matches.
+- Migration `002_security.sql` adds `users.password_hash`. The hash has its own column so a value can
+  never be read as the other kind. SQL cannot compute scrypt, so rows written before 002 (any local
+  database from wave A) are hashed by `PgStore.hashPlainPasswords()` when the API starts, which also
+  empties the old `password` column. Tested from a database migrated to 001 only.
+- Login moved into the store: `Store.usersByEmail()` became `findLogin(email, password)`, because
+  PgStore can only compare hashes. S8 ("a users PUT without password keeps the stored one") moved into
+  both stores as well: in `handle()` it fed the stored value back in as the new password, which with a
+  hash would hash the hash.
+- Reads never return the hash (`secret` column in `schema.ts`, left out of every SELECT); `handle()`
+  still strips `password` from every response (D7) as before. A non-string password is dropped instead
+  of being kept in `extra` (it could never sign in: login needs a non-empty string).
+- An unknown e-mail pays for one decoy hash, so response time does not reveal which e-mails exist.
+- **The in-memory stub keeps plain text, on purpose.** It runs in the browser (Pages demo, `dev:msw`)
+  and in jsdom, where `node:crypto` scrypt does not exist (WebCrypto has PBKDF2 but no scrypt, and only
+  async). Its data is the public seed whose credentials are in the README, it lives only in memory,
+  and passwords never leave `handle()` (D7, AC-STUB-11). Nothing anyone can observe would change, so
+  this was a decision and not a question. Comment in `store.ts`. Proposed DEV row below.
+- Seed hashes are cached per PgStore instance, so a reset (dev and CI only) does not pay scrypt six
+  times again. Each seed user still has a salt of its own.
+
+**S-p5-2 / AC-SEC-02: cookie flags; "production mode" defined.**
+- Production mode is the env var `APP_ENV`: `production` **or unset**; only `APP_ENV=development`
+  turns it off. Fail closed: a deployment that forgets the variable gets `Secure` cookies and no reset
+  route. Any other value stops the API at start-up. All variables are documented in one table at the
+  top of `api/src/config.ts`.
+- Cookies: `SameSite=Lax` always (one origin, nothing legitimate posts cross-site); `Secure` in
+  production mode; `sid` `HttpOnly` as before; `XSRF-TOKEN` not `HttpOnly` (the front end reads it).
+  Set in the Node adapter (`web/stub/server.ts`, option `secureCookies`), so `pnpm stub`, `pnpm dev`
+  and Playwright (plain http) are unchanged apart from `SameSite=Lax`. MSW writes `document.cookie`
+  itself and is unaffected.
+
+**S-p5-3 / AC-SEC-04: throttling.**
+- Fixed window per key, failures only: 5 failed sign-ins per e-mail and 20 per client address in
+  15 minutes, then `429` with `)]}',\n{"message":"Too many failed sign-ins. Try again later."}` and
+  `Retry-After: <seconds>`. Env vars `LOGIN_MAX_FAILURES_PER_ACCOUNT`, `LOGIN_MAX_FAILURES_PER_IP`,
+  `LOGIN_THROTTLE_WINDOW_SECONDS`. Why these: 5 covers typos; 20 lets several people behind one NAT
+  address mistype without locking each other out and still caps one address at 80 guesses an hour.
+  A success clears the account's count. A refused attempt is not counted. The check runs after XSRF
+  (unchanged order) and before the password is checked (no scrypt work for a blocked key).
+- The account key is the e-mail exactly as sent, like the lookup (DEV-p5-store-08). Known cost of a
+  per-account limit: anyone can lock an account for up to 15 minutes by failing 5 times. Accepted for
+  this app; a CAPTCHA or per-account backoff would be a product change.
+- Counts live in PostgreSQL (`login_throttle`, migration 002) so several API containers share them and
+  a restart keeps them; one upsert per key, no read-modify-write. The memory stub has
+  `MemoryLoginThrottle` but runs **without** a throttle unless a test asks for one, as legacy (the
+  Playwright suite signs in many times from one address).
+- **Client address and proxies.** `TRUST_PROXY_HOPS` (default 0). With 0 the socket address is used
+  and `X-Forwarded-For` is ignored, so a client that reaches the API directly cannot choose its own
+  key. With n > 0 the n-th entry from the right is used: each proxy appends, so only entries our own
+  proxies appended can be believed, and whatever a client prepends is ignored. For wave C,
+  CloudFront → ALB → API is 2 hops, and that only holds if the ALB accepts traffic from CloudFront
+  alone. Under MSW there is no address, so only the per-account limit applies.
+- Front end: the modal already shows `login.error.serverError` for any HTTP error (S14), so no app
+  change was needed. The new test drives the stub's real throttle (not an injected 429).
+
+**AC-SEC-03: reset route 404.** `handle()` now answers `/__stub/reset` before sessions and XSRF in
+both cases: 204 when allowed (as before), and 404 `{message:"Not found"}` with no cookie and no session
+row when not. The XSRF rule protects state-changing routes; a route that does not exist changes
+nothing, and the 404 for exactly this path tells a scanner only that it is absent. Every real route and
+every other unknown path still checks XSRF first (test "AC-SEC-03: the XSRF rule is unchanged for every
+real route, and for unknown ones"). Also, `ALLOW_RESET=1` in production mode stops the API at start-up.
+
+**S-p5-5 / AC-SEC-05: headers.** `web/securityHeaders.ts` exports `securityHeaders: Record<string,
+string>` (name and shape as agreed with p5-containers): CSP (`default-src 'self'`, script/style/font/
+connect/worker/manifest `'self'`, `img-src 'self' https://www.gravatar.com`, `object-src 'none'`,
+`base-uri 'self'`, `form-action 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`,
+`Permissions-Policy` (camera, microphone, geolocation, payment, usb off). Reasons are in the file.
+Applied to `vite preview` only (the dev server's HMR needs inline script). No HSTS and no
+`upgrade-insecure-requests`: both belong to the TLS terminator (CloudFront, wave C) and would break or
+be ignored on http://localhost.
+- **Gravatar**: "own assets only" conflicts with AC-GRAV-01; raised as Q-p5-security-1, implemented
+  option (a), images from that one host.
+- **Pages build**: GitHub Pages cannot send response headers, so the Pages demo runs without them.
+  A `<meta http-equiv>` CSP would be possible but needs an `index.html`/build change outside my paths
+  (and cannot carry `frame-ancestors`). Not done; noted for the owner.
+
+**S-p5-4: secrets.** Everything the API needs comes from the environment (`config.ts`). `git grep`
+for passwords, tokens, keys and connection strings outside `legacy/`, tests and the seed found only the
+documented throwaway local/CI database credentials (`compose.yaml`, `ci.yml`, a hint in `testDb.ts`).
+There is no session-signing secret to manage: sessions are random server-side ids, not signed cookies.
+
+**Hand-overs from wave A.**
+- **DEV-p5-store-03:** sessions expire after `SESSION_IDLE_SECONDS` (default 8 h, a working day) of
+  inactivity; each request moves `last_seen_at` (one `UPDATE … RETURNING` that only matches a live
+  row); the API deletes expired sessions and ended throttle windows every `SESSION_SWEEP_SECONDS`
+  (default 600) on an unref'd timer. Same semantics in `MemorySessions`. Session **rotation** at login:
+  the session moves to a new `sid` (`Sessions.rotate`, one `UPDATE sessions SET sid`), the old one is
+  gone. See Q-p5-security-2 for the XSRF token. Note for p5-containers: a cookie-less health check
+  still creates a session row on each call; the sweep removes it after the idle lifetime, but a health
+  route that does not touch sessions is better (it is their AC-CTR-03).
+- **DEV-p5-store-10:** the lookup is now `findLogin()`; the e-mail is bind parameter `$1`. Two guards:
+  three new payloads in `INJECTED_EMAILS` (`x$e$ OR admin --`, `x$$ OR admin --`, and `x\' OR admin --`
+  for an `E''` builder that doubles quotes), and a structural test that records every statement a
+  sign-in sends (a `connect` listener on a fresh pool) and asserts the e-mail is never in the SQL text
+  and is in the parameters.
+- **DEV-p5-store-11:** the O1 order test now moves the "Checkout" item to Mobile App and back (a
+  non-HOT update of the indexed `project_id`) before the filtered check.
+
+### Red, then green
+Tests were written first and run against the unchanged code (Vitest strips types, so options the code
+did not know yet were simply ignored and the behaviour is what failed).
+- Unit, `stub/handlers.test.ts` + `LoginModal.test.tsx` on `6941064` + new tests: `Tests 8 failed |
+  32 passed (40)`. AC-SEC-04 ×4 `expected 200 to be 429`; rotation `expected undefined to be truthy`
+  (no new sid); DEV-p5-store-03 expiry `expected { user: {…} } to deeply equal { user: null }`;
+  sweep `ctx.sessions.sweep is not a function`; **AC-SEC-03 `expected 403 to be 404`** (the wave A
+  finding). `LoginModal.test.tsx` failed to import (`stub/throttle.ts` did not exist yet).
+- AC-SEC-01/02/03 on the real API: `api/src/security.test.ts` could not import its new modules, so its
+  red is an import error, not behaviour. Behavioural evidence from the unchanged API instead
+  (`node api/src/main.ts` on my database, then removed): `Set-Cookie: sid=…; Path=/; HttpOnly` and
+  `XSRF-TOKEN=…; Path=/` (no Secure, no SameSite); `POST /__stub/reset` without the header → `403`;
+  `SELECT email, password FROM users` → `admin@abc.com | changeme`, `po@ascrum.test | demo`, ….
+- AC-SEC-05 e2e, with `securityHeaders.ts` present but not applied to preview: `2 failed | 1 passed`
+  (headers `Received: undefined`; the enforcement control found no `script-src` violation). The
+  "no violation on any screen" test passed with no CSP at all, which is why the control test exists.
+- The hand-over tests close test gaps in correct code, so they are red only against a mutant (below).
+- Green after implementing: unit `430 passed (430)`, integration `65 passed (65)`, e2e security
+  `3 passed`.
+
+### Mutations (each alone, reverted with `git checkout`, tree clean after)
+Runner script in my scratch space; results:
+
+| # | Mutant | Suite | Result |
+|---|---|---|---|
+| M1 | DEV-p5-store-10: lookup spliced into `$e$…$e$` | integration | 3 red: DEV-p5-store-07, AC-PG-05 login, DEV-p5-store-10 structural |
+| M2 | DEV-p5-store-11: `ORDER BY` only without `WHERE` | integration | 1 red: DEV-p5-store-06 / O1 |
+| M3 | plain text in `password_hash`, compared as text | integration | 44 red (incl. all 3 AC-SEC-01) |
+| M4 | `Secure` never set | integration | 1 red: AC-SEC-02 production |
+| M5 | throttle never consulted | unit | 5 red incl. the LoginModal 429 test |
+| M6 | reset checked only when allowed (wave A order) | unit | 1 red: AC-SEC-03 |
+| M7 | no `sid` rotation at login | unit | 1 red: rotation test |
+| M8a | `MemorySessions` never expire | unit | 1 red: DEV-p5-store-03 |
+| M8b | `PgSessions` never expire on read | integration | 1 red: DEV-p5-store-03 (+1 timeout, below) |
+| M9 | sweep timer does nothing | integration | 1 red: sweep timer test (+1 timeout, below) |
+| M10 | left-most `X-Forwarded-For` trusted | integration | 2 red: clientIpOf, one-proxy HTTP test |
+| M11 | Pg: success does not clear the account | integration | 1 red |
+| M12 | Pg: PUT without password clears the hash | integration | 2 red: AC-STUB-12, AC-SEC-01 S8 |
+| M13 | CSP `img-src` without Gravatar | e2e | 1 red: "no violation on any screen" |
+| M14 | CSP `script-src 'unsafe-inline'` | e2e | 1 red: enforcement control |
+
+### Mistakes and wrong turns
+- **XSRF rotation was visible to the front end.** My first rotation also issued a new XSRF token. The
+  full unit run then failed `src/api/http.test.ts` AC-API-07 (cluster 0), which pins the token sent by
+  the retry after login. N1 makes that a question: Q-p5-security-2. I changed to rotating the `sid`
+  only, which the front end cannot see, and kept the test green without touching it.
+- **AC-PG-02's table list** failed with the new `login_throttle` table: an expected update in my path.
+- **Playwright `response.headers()`** omits security headers; I first misread the result as
+  `vite preview` not sending them to assets. `curl` showed it did; switched to `allHeaders()`, and kept
+  the first (200) response per asset because later navigations revalidate with a 304.
+- **A flaky-by-design test caught in the mutation run:** the first AC-SEC-01 test, at production
+  scrypt cost, timed out at 5002 ms in two mutation runs (M8b, M9) where the mutant had nothing to do
+  with it. I moved every API test that does not need it to the cheap test cost and gave the two
+  production-cost tests an explicit 30 s timeout. `TEST_SCRYPT` (N = 2^10) is the same code path; the
+  first AC-SEC-01 test pins that `startApi`'s default is `PRODUCTION_SCRYPT`.
+- Two shell slips while probing: `pkill -f "api/src/main.ts"` matched my own shell and killed it
+  (twice); nothing else was affected. And one inline edit script was refused by the command checker;
+  I redid it with the Edit tool.
+
+### Proposed DEV rows (for the reviewer; I do not write `spec/deviations.md`)
+- **DEV-p5-security-01** (S-p5-1): PgStore stores scrypt hashes; MemoryStore keeps plain text (browser
+  and jsdom have no scrypt; no observable difference). `Store.findLogin` replaces `usersByEmail`; S8
+  moved into the stores.
+- **DEV-p5-security-02** (S-p5-2): `SameSite=Lax` on both cookies in every mode (legacy and the stub
+  set none); `Secure` in production mode, which is `APP_ENV` unset or `production`.
+- **DEV-p5-security-03** (S-p5-3, Q-p5-10 (b)): 429 + `Retry-After` after 5/account or 20/address
+  failures in 15 minutes, API only; the memory stub does not throttle.
+- **DEV-p5-security-04** (AC-SEC-03): with reset off, `/__stub/reset` is 404 before XSRF.
+- **DEV-p5-security-05** (session fixation): login moves the session to a new `sid`; the old `sid` reads
+  as a new anonymous session. XSRF token kept (Q-p5-security-2).
+- **DEV-p5-security-06** (DEV-p5-store-03): sessions expire after 8 h idle and are swept; legacy
+  sessions never expired.
+- **DEV-p5-security-07** (S-p5-5): CSP allows Gravatar images (Q-p5-security-1); the Pages demo has no
+  security headers.
+
+### Notes for other clusters
+- **p5-containers:** serve `securityHeaders` from `web/securityHeaders.ts` as is. The API image needs
+  `APP_ENV=development` wherever it sets `ALLOW_RESET=1` (compose, e2e-compose): otherwise it refuses
+  to start. If the web container proxies the API paths, set `TRUST_PROXY_HOPS=1` on the API. Playwright
+  against compose signs in from one address: 20 failed sign-ins per 15 minutes is the limit, and
+  `POST /__stub/reset` clears it. The production image must run with `APP_ENV` unset or `production`.
+- **Wave C (p5-infra):** `DATABASE_URL` from Secrets Manager; `APP_ENV=production` (or unset);
+  `TRUST_PROXY_HOPS=2` for CloudFront → ALB, with the ALB reachable from CloudFront only; HSTS on the
+  CloudFront response headers policy; the same `securityHeaders` map for the S3/CloudFront web build.
+- **Later migration:** `users.password` (plain, from 001) is empty after the first start on 002 and can
+  be dropped once every database has started once. With nothing deployed yet that could be now, but a
+  local wave A volume would lose its passwords, so I left it.
+
+### Questions
+- Q-p5-security-1 (CSP and Gravatar): implemented (a), pending.
+- Q-p5-security-2 (rotate the XSRF token at login too): implemented (a), pending.
+Neither blocks the PR.
+
+### Gates (this session, from `web/`, with `DATABASE_URL` on my own Postgres)
+`pnpm verify` on `da0068b` (code as pushed; this worklog is the only later change), exit 0:
+```
+$ eslint --max-warnings 0 . ../api && prettier --check . ../api
+All matched files use Prettier code style!
+$ tsc --noEmit -p tsconfig.json
+ Test Files  41 passed (41)          # unit
+      Tests  430 passed (430)        # was 416 on migration: +13 security (memory store), +1 LoginModal 429
+ Test Files  4 passed (4)            # integration (PostgreSQL 18)
+      Tests  65 passed (65)          # was 38: +27 in api/src/security.test.ts
+✓ built in 347ms                     # dist
+✓ built in 369ms                     # dist-pages
+  40 passed (24.3s)                  # Playwright, was 37: +3 in e2e/security.spec.ts
+```
+
+## 2026-11-23, session 2 (worker): DEV-p5-security-08, the throttle under concurrency
+
+The review of #59 found that the login throttle could be bypassed with concurrent attempts (blocking).
+`handle()` asked `retryAfter()` before the password check and called `recordFailure()` only after the
+0.25 s scrypt check, so attempts sent together all saw "under the limit". The reviewer's probe: 100
+concurrent wrong passwords for one account from one address, production defaults: 100 checked, 0 × 429.
+My mistake in session 1: every throttle test sent its attempts one after another, so the suite could not
+see this. This session fixes -08 only.
+
+### Red, then green
+Tests written first and committed alone (`310374c`), red on `d13e310`:
+
+| Test | Store | Before (red) | After |
+|---|---|---|---|
+| `AC-SEC-04 / DEV-p5-security-08: concurrent failures for one account reach the password check at most the per-account limit of times` (9 at once, limit 3) | Memory | 9 checks | 3 checks, 6 × 429 |
+| same | Pg | 9 checks | 3, 6 × 429 |
+| `AC-SEC-04 / DEV-p5-security-08: concurrent failures from one address reach the password check at most the per-IP limit of times` (15 at once, limit 5) | Memory | 15 checks | 5, 10 × 429 |
+| same | Pg | 15 checks | 5, 10 × 429 |
+| `AC-SEC-04 / DEV-p5-security-08: a password check that throws still counts as a failed attempt (fails closed)` | both | right password then got 200 | 429 |
+| `AC-SEC-04 / DEV-p5-security-08: 3× the per-account limit of wrong passwords at once: …` (real API over HTTP, production hashing and limits, 15 at once) | Pg | `{ checked: 15, refused: 0 }` | `{ checked: 5, refused: 10 }`, table 5 / 5 |
+| `AC-SEC-04 / DEV-p5-security-08: 3× the per-IP limit of wrong sign-ins at once from one address: …` (60 at once) | Pg | `{ checked: 60, refused: 0 }` | `{ checked: 20, refused: 40 }`, table ip 20, 20 account rows |
+
+The shared tests count password checks by wrapping `ctx.store.findLogin` with a counter and a 20 ms
+delay (scrypt stands in); the HTTP tests count 200s (handle() answers 200 `{user:null}` only after the
+store's check) and read `login_throttle`. Two more shared tests pin new code paths and were green before
+the fix too, as sequential behaviour should be: `AC-SEC-04: successful sign-ins do not count against the
+address (only failures do)` and `AC-SEC-04: an attempt refused for its account is not counted against its
+address either`.
+
+**No existing AC-SEC-04 test was edited** (`git diff d13e310` removes no line from either test file).
+
+### The fix (`638ecee`)
+- `LoginThrottle` is now `admit(attempt)` → `{allowed, reservation}` or `{allowed: false, retryAfter}`,
+  and `succeeded(reservation)`; `retryAfter`/`recordFailure`/`recordSuccess` are gone. `admit()` counts
+  the attempt as a failure against every key *before* the password is checked, or refuses and counts
+  nothing. A wrong password keeps the count; a right one clears the account and gives the address its
+  place back.
+- **Pg:** one `INSERT … ON CONFLICT (key) DO UPDATE SET … WHERE window_start <= expired OR failures < max
+  RETURNING window_start` per key. PostgreSQL locks the conflicting row and evaluates the `WHERE` on its
+  latest committed version, so the check and the count are one statement and two requests (one container
+  or several) cannot both take the last place. No row back = refused. Keys go address first; if the
+  account then refuses, the address place already taken is given back, so an attempt refused for its
+  account costs its address nothing (as before). `Retry-After` is computed afterwards over all keys, as
+  `retryAfter()` was (max over blocked keys); if the blocking row vanished in between, 1 s.
+- **Memory:** check all keys, then count all, with no `await` in between, which is atomic in JavaScript.
+- `throttleKeys()` now lists the address before the account (order matters only for Pg, above).
+- No migration change: the `failures > 0` check stays, so giving back the last failure deletes the row.
+
+### The three questions from the brief
+- **A success after reserved failures.** A right password deletes the account row, which also forgets
+  failures that concurrent wrong attempts reserved and are still checking. That is the sequential rule
+  ("a success clears the account's failures") applied at the moment of success; it gives an attacker
+  nothing, because only someone who knows the password can trigger it. Those in-flight wrong attempts
+  were already checked when they reserved, and they do not count again when they finish. The address
+  count is decremented only in the window the attempt reserved in (`window_start` must match), so a
+  success never eats a newer window's failure. The give-back is two statements (UPDATE `failures > 1`,
+  else DELETE `failures = 1`): if another request counts between them, the give-back may do nothing and
+  the count stays one too high. That fails closed and is rare.
+- **scrypt throws.** The reservation stays: the attempt counts as a failure. We cannot tell whether the
+  password was compared before the error, and releasing would give a free guess for every error an
+  attacker could provoke. Pinned by the "throws" test above.
+- **One shared session.** The throttle keys are the account and the address, never the session, and a
+  failed sign-in does not touch the session. Sending every attempt on one `sid` therefore changes
+  nothing: each request reserves for itself. (Two *successful* sign-ins at once on one `sid` both call
+  `rotate()`; the second finds no row and answers with a `sid` that is a new anonymous session. That is
+  the attacker's own session, unrelated to throttling, and was the same before.)
+- **The trade-off, stated:** while `max` sign-ins for one key are in flight at once, one more is refused
+  even if they all turn out to be right. With the defaults that needs 5 concurrent sign-ins for one
+  account, or 20 from one address within the ~0.25 s of a check. Sequentially nothing changed.
+
+### Mutations (each alone, restored, tree clean after)
+- Give-back of the address place on success removed (memory and Pg): `successful sign-ins do not count
+  against the address` red on both ("sign-in 6: expected {message} to match {user}").
+- Give-back of earlier places on refusal removed (Pg): `an attempt refused for its account …` red.
+- Limit removed from the Pg upsert's `WHERE` (`failures < max + 1000`): 7 tests red, including all four
+  concurrent ones.
+
+### Probe (throwaway, not committed)
+The reviewer's scenario: `node api/src/main.ts` with `APP_ENV` unset (production mode, production scrypt,
+default limits), a fresh database, 100 browsers each primed with `GET /current-user`, then 100 wrong
+passwords for `po@ascrum.test` sent at once from 127.0.0.1.
+- Before (`d13e310` code): `{"200":100}` in 7.6 s; `login_throttle` held account 100, ip 100.
+- After (`638ecee`): `{"200":5,"429":95}` in 0.76 s; `login_throttle` holds account 5, ip 5.
+  **5 reached the password check (limit 5).**
+
+### Gates (this session, from `web/`, `DATABASE_URL` on the cluster's own Postgres, ports 3801/4973/4974)
+`pnpm verify` on `638ecee`, exit 0:
+```
+$ eslint --max-warnings 0 . ../api && prettier --check . ../api
+All matched files use Prettier code style!
+$ tsc --noEmit -p tsconfig.json
+ Test Files  41 passed (41)          # unit
+      Tests  435 passed (435)        # was 430: +5 shared tests on the memory store
+ Test Files  4 passed (4)            # integration
+      Tests  72 passed (72)          # was 65: +5 shared tests on Pg, +2 over HTTP
+✓ built in 370ms                     # dist
+✓ built in 395ms                     # dist-pages
+  40 passed (24.9s)                  # Playwright
+```
+
+## 2026-11-23, session 2 continued (worker): owner answers and the test gaps DEV-p5-security-09..12
+
+The owner answered "approve all" (relayed by the orchestrator). Tests only: no production code changed
+in this part (two comments now cite the answers).
+
+### Owner answers (`1bb88ae`)
+Q-p5-security-1 = (a), Gravatar images only. Q-p5-security-2 = (a), rotate only `sid`. Both are recorded
+in `spec/questions/p5-security.md`, and the comments in `web/securityHeaders.ts` and `web/stub/handlers.ts`
+now cite the answers instead of an open question.
+
+### Red, then green: each mutant passes the old tests and fails the new one
+Method: apply the reviewer's breakage alone, run the existing tests (old) and the new test (new), then restore.
+- For -09: Playwright `e2e/security.spec.ts`, chromium, after `pnpm build`.
+- For the others: the integration files, with the new tests excluded by name for "old".
+
+| DEV | Breakage | Old tests | New test | New test name |
+|---|---|---|---|---|
+| -09 | R8 style-src `'unsafe-inline'` | 3 passed | failed | `AC-SEC-05 / DEV-p5-security-09: the served CSP is exactly the expected policy: no unsafe-* source, no wildcard, images from self and Gravatar only` |
+| -09 | R9 script-src `'unsafe-eval'` | 3 passed | failed | same |
+| -09 | R10 `connect-src *` | 3 passed | failed | same |
+| -10 | R15 `if (!match) return stored.length > 0` | 72 passed | failed | `AC-SEC-01 / DEV-p5-security-10: malformed, truncated, wrong-length and out-of-range values reject every password, the "right" one included` |
+| -11 | R14 `secureCookies: options.production ?? false` | 72 passed | failed | `AC-SEC-02 / AC-SEC-03 / DEV-p5-security-11: startApi() with no settings at all is production: Secure cookies, no reset route, throttling on` |
+| -12 | R1 hex-string compare instead of `timingSafeEqual` | 72 passed | failed | `AC-SEC-01 / DEV-p5-security-12: each verification compares the two 32-byte keys with timingSafeEqual, and its answer decides` |
+| -12 | R20 decoy line removed | 72 passed | failed | `AC-SEC-01 / DEV-p5-security-12: PgStore.findLogin runs exactly one verification for an unknown e-mail, as for a known one with a wrong password` |
+
+With no mutant, every test is green.
+
+### What each test does, and its limits
+- **-09** (`web/e2e/security.spec.ts`):
+  - The expected policy is written out in the test, not imported, and the served header is parsed and compared with it, directive by directive.
+  - It also asserts the rules any future policy must keep: no `'unsafe-*'` or `'wasm-unsafe-eval'` source, no `*`, no bare scheme, `data:` only in `img-src`, and `img-src` limited to `'self'`, `data:` and `https://www.gravatar.com`.
+  - Changing the policy now means changing the test on purpose.
+- **-10** (`api/src/passwords.test.ts`):
+  - 18 malformed values, each with the "right" and with an empty password: plain text, truncated or lengthened key or salt, another or upper-case name, whitespace, an extra field, a non-base64url character, `log2N` 0 and 21, `r` 0, `p` 0 and a negative `r`.
+  - A well-formed hash in the same test is the control.
+  - **Not done:** the reviewer also suggested capping `r` and `p` the way `log2N` is capped. That is a code change, and this step was tests only, so it stays open in -10. I did not test large `r`/`p` either: today they would make scrypt allocate gigabytes, which is exactly the problem.
+- **-11** (`api/src/security.test.ts`): `startApi()` gets only a pool and a port (and the cheap test hash). The test asserts `Secure` on both cookies, a 404 reset route, and the default throttle (5 failures, then 429).
+  - The other half of -11's suggestion, refusing `production && allowReset` inside `startApi()`, is a code change and stays open.
+- **-12, structural only and labelled as such.** The reviewer logged -12 as untestable by timing, and I agree: no test here measures time.
+  - R1: `vi.mock('node:crypto')` wraps the real `timingSafeEqual` with a spy. The test asserts that each verification calls it on two 32-byte buffers, and that its answer decides: forced `false`, the right password fails; forced `true`, a wrong one passes.
+    - This proves the constant-time primitive decides the result. It does not prove the function is constant-time end to end; for example, the length check before it is not covered.
+  - R20: `vi.mock('./passwords.ts')` wraps the real `verifyPassword` with a spy. `PgStore.findLogin` makes exactly one verification for a known e-mail with a wrong password, and exactly one for an unknown e-mail, twice (the decoy is cached after the first).
+    - It counts work, not time. The decoy's own `hashPassword` on the first unknown e-mail is an extra scrypt run once per process, which is not counted. I noticed it here and did not change it.
+  - Both mocks wrap the real functions, so the code under test runs unchanged. Nothing in `web/src/api` is mocked.
+
+### Mistakes and wrong turns
+- My first `passwords.test.ts` typed the hoisted spies with `undefined as unknown as …` casts. I replaced them with typed `vi.fn<typeof …>()` plus `mockImplementation(real)` before committing, so the file has no type assertion.
+
+### Gates (from `web/`, `DATABASE_URL` on the cluster's Postgres, ports 3801/4973/4974)
+`pnpm verify` on `47acc6d`, exit 0:
+```
+All matched files use Prettier code style!
+ Test Files  41 passed (41)
+      Tests  435 passed (435)        # unit, unchanged
+ Test Files  5 passed (5)            # integration, +1 file (passwords.test.ts)
+      Tests  76 passed (76)          # was 72: +3 passwords.test.ts, +1 startApi default
+✓ built in 408ms
+✓ built in 428ms
+  41 passed (24.7s)                  # Playwright, was 40: +1 CSP pin
+```

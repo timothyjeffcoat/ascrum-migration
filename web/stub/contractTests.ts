@@ -19,12 +19,26 @@ import {
 } from './handlers.ts'
 import { BACKLOG, CREDENTIALS, PROJECT, SPRINT, USER } from './seed.ts'
 import { startStubServer } from './server.ts'
+import type { Clock } from './session.ts'
 import { COLLECTIONS, type WireDoc } from './store.ts'
+import type { ThrottleLimits } from './throttle.ts'
 
 /** A store under test. Every context it creates is fresh, seeded and independent of the others. */
 export type Backend = {
   name: string
-  createContext(opts: { allowReset: boolean }): Promise<StubContext>
+  createContext(opts: ContextOptions): Promise<StubContext>
+}
+
+/**
+ * What a test may ask of a new context. Only allowReset existed before p5-security; the rest default to
+ * the stub's behaviour (no throttling, the default idle lifetime, the real clock).
+ */
+export type ContextOptions = {
+  allowReset: boolean
+  /** Login throttling (S-p5-3, AC-SEC-04); absent means none, as legacy. */
+  throttle?: ThrottleLimits
+  sessionIdleSeconds?: number
+  clock?: Clock
 }
 
 /** The in-memory store: `pnpm test` runs every suite here on it. */
@@ -38,14 +52,18 @@ export class Client {
   cookies: Record<string, string> = {}
   sendXsrf = true
   readonly ctx: StubContext
-  constructor(ctx: StubContext) {
+  /** The address the adapter saw (StubRequest.clientIp); undefined, as under MSW, unless a test sets it. */
+  readonly clientIp: string | undefined
+  constructor(ctx: StubContext, clientIp?: string) {
     this.ctx = ctx
+    this.clientIp = clientIp
   }
 
   async call(method: string, path: string, body?: unknown, query: Record<string, string> = {}): Promise<StubResponse> {
     const headers: Record<string, string | undefined> = {}
     if (this.sendXsrf && this.cookies['XSRF-TOKEN']) headers['x-xsrf-token'] = this.cookies['XSRF-TOKEN']
-    const res = await handle({ method, path, query, headers, cookies: { ...this.cookies }, body }, this.ctx)
+    const cookies = { ...this.cookies }
+    const res = await handle({ method, path, query, headers, cookies, body, clientIp: this.clientIp }, this.ctx)
     for (const c of res.setCookies) this.cookies[c.name] = c.value
     return res
   }
@@ -74,6 +92,12 @@ export const INJECTED_EMAILS = [
   "admin@abc.com' --",
   "x' OR admin --",
   "x' UNION SELECT id FROM users WHERE admin --",
+  // DEV-p5-store-10: a list only catches the quoting it was written for. These break out of a
+  // dollar-quoted literal ($e$...$e$, or $$...$$), and of an E'' string whose builder doubles quotes
+  // but forgets that a backslash escapes the first of them.
+  'x$e$ OR admin --',
+  'x$$ OR admin --',
+  "x\\' OR admin --",
 ]
 
 export function body(res: StubResponse): unknown {
@@ -434,7 +458,16 @@ export function defineContractTests(backend: Backend): void {
         const created = body(await admin.call('POST', coll(c), { name: 'last' })) as WireDoc
         expect(ids(await admin.call('GET', coll(c))), c).toEqual([...before, created._id.$oid])
       }
-      // A filtered list keeps the same order.
+      // A filtered list keeps the same order. DEV-p5-store-11: the edits above change no indexed column,
+      // so PostgreSQL makes them HOT updates and an index scan on project_id still finds the rows in
+      // insertion order even without ORDER BY. Moving an item to another project and back changes the
+      // indexed column (a non-HOT update: a new index entry at the end), so a filtered read that is not
+      // ordered by insertion returns it last.
+      const checkout = body(await admin.call('GET', coll('productbacklog', BACKLOG.checkout))) as WireDoc
+      for (const projectId of [PROJECT.mobileApp, PROJECT.webshop]) {
+        const moved = await admin.call('PUT', coll('productbacklog', BACKLOG.checkout), { ...checkout, projectId })
+        expect(moved.status).toBe(200)
+      }
       const webshopBacklog = q({ projectId: PROJECT.webshop })
       const backlog = ids(await admin.call('GET', coll('productbacklog'), undefined, webshopBacklog))
       expect(backlog).toEqual([

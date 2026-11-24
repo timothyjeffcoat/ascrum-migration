@@ -38,6 +38,7 @@ describe('AC-PG-02: migrations', () => {
     )
     expect(tables.rows.map((r) => r.tablename)).toEqual([
       'backlog_items',
+      'login_throttle',
       'project_team_members',
       'projects',
       'schema_migrations',
