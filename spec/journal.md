@@ -821,3 +821,13 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "The first review found two PRs that were each green and together could not start. The fix was not adding the missing file to a list; it was deleting the list. The image now asks Node what it actually loads. The re-review then found the one thing Node cannot tell you at build time: a file loaded only when someone signs in. The image check missed it, and the end-to-end suite caught it."
+
+## 2026-11-24: Wave B closed (orchestrator)
+- **Merged.** p5-security as `ae6405a` (#59), then p5-containers as `9fd4f88` (#60), in that order, because the image serves #59's security headers. Squash merges, one at a time, each with every required check green on its head (`gh pr view --json statusCheckRollup`).
+- **One more required check.** `e2e-compose` (build both images, check them, start the five-service stack, run Playwright against nginx, prove the throttle sees each client through the proxy, check health) became required on `migration` right after #60 merged: 11 required checks now, strict, admins included (`gh api .../required_status_checks`). It has had one green run on a PR. The re-reviewer saw one `--no-cache` build hang at `corepack prepare` for more than ten minutes before a retry went through, so its first runs on `migration` are being watched for that flake.
+- **Deviations.** 88 rows: 3 blocking, all fixed before merge. Open and non-blocking, carried into a hardening PR before wave C: DEV-p5-security-13 (per-address limit over IPv6), -15 (cap scrypt cost read from stored rows), -16 (`startApi()` refusing production with reset), and DEV-p5-containers-11..14 (lazy imports, pinning gaps, secrets without a telltale name, Gitleaks pinned twice).
+- **Nothing left running.** The worker's compose stack was taken down with its volume; worktrees and branches deleted locally and on GitHub.
+- **Next.** Wave C (p5-infra, AWS) stays closed until the owner's prerequisites in spec §11 are done and the owner opens it.
+
+**Moment (article candidate)**
+- "Wave B was the first time two halves of one release were built in parallel and only worked together. The order of merging was a decision, not an accident, and the check that proves the merged result works became a merge rule the moment it existed."
