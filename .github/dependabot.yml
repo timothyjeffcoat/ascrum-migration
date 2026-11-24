@@ -12,6 +12,13 @@ updates:
       # One PR for the routine minor/patch churn; majors stay separate so each can be reviewed.
       web-minor-and-patch:
         update-types: [minor, patch]
+    # Majors that move only with a deliberate decision (owner, 2026-11-23, after #54 and #55):
+    # `@types/node` follows the Node major in web/.nvmrc; React Router 8 gets its own spec after Phase 5.
+    ignore:
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'react-router'
+        update-types: ['version-update:semver-major']
     commit-message:
       prefix: deps
 
