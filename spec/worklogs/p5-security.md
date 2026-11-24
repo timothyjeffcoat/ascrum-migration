@@ -222,3 +222,103 @@ $ tsc --noEmit -p tsconfig.json
 ✓ built in 369ms                     # dist-pages
   40 passed (24.3s)                  # Playwright, was 37: +3 in e2e/security.spec.ts
 ```
+
+## 2026-11-23, session 2 (worker): DEV-p5-security-08, the throttle under concurrency
+
+The review of #59 found that the login throttle could be bypassed with concurrent attempts (blocking).
+`handle()` asked `retryAfter()` before the password check and called `recordFailure()` only after the
+0.25 s scrypt check, so attempts sent together all saw "under the limit". The reviewer's probe: 100
+concurrent wrong passwords for one account from one address, production defaults: 100 checked, 0 × 429.
+My mistake in session 1: every throttle test sent its attempts one after another, so the suite could not
+see this. This session fixes -08 only.
+
+### Red, then green
+Tests written first and committed alone (`310374c`), red on `d13e310`:
+
+| Test | Store | Before (red) | After |
+|---|---|---|---|
+| `AC-SEC-04 / DEV-p5-security-08: concurrent failures for one account reach the password check at most the per-account limit of times` (9 at once, limit 3) | Memory | 9 checks | 3 checks, 6 × 429 |
+| same | Pg | 9 checks | 3, 6 × 429 |
+| `AC-SEC-04 / DEV-p5-security-08: concurrent failures from one address reach the password check at most the per-IP limit of times` (15 at once, limit 5) | Memory | 15 checks | 5, 10 × 429 |
+| same | Pg | 15 checks | 5, 10 × 429 |
+| `AC-SEC-04 / DEV-p5-security-08: a password check that throws still counts as a failed attempt (fails closed)` | both | right password then got 200 | 429 |
+| `AC-SEC-04 / DEV-p5-security-08: 3× the per-account limit of wrong passwords at once: …` (real API over HTTP, production hashing and limits, 15 at once) | Pg | `{ checked: 15, refused: 0 }` | `{ checked: 5, refused: 10 }`, table 5 / 5 |
+| `AC-SEC-04 / DEV-p5-security-08: 3× the per-IP limit of wrong sign-ins at once from one address: …` (60 at once) | Pg | `{ checked: 60, refused: 0 }` | `{ checked: 20, refused: 40 }`, table ip 20, 20 account rows |
+
+The shared tests count password checks by wrapping `ctx.store.findLogin` with a counter and a 20 ms
+delay (scrypt stands in); the HTTP tests count 200s (handle() answers 200 `{user:null}` only after the
+store's check) and read `login_throttle`. Two more shared tests pin new code paths and were green before
+the fix too, as sequential behaviour should be: `AC-SEC-04: successful sign-ins do not count against the
+address (only failures do)` and `AC-SEC-04: an attempt refused for its account is not counted against its
+address either`.
+
+**No existing AC-SEC-04 test was edited** (`git diff d13e310` removes no line from either test file).
+
+### The fix (`638ecee`)
+- `LoginThrottle` is now `admit(attempt)` → `{allowed, reservation}` or `{allowed: false, retryAfter}`,
+  and `succeeded(reservation)`; `retryAfter`/`recordFailure`/`recordSuccess` are gone. `admit()` counts
+  the attempt as a failure against every key *before* the password is checked, or refuses and counts
+  nothing. A wrong password keeps the count; a right one clears the account and gives the address its
+  place back.
+- **Pg:** one `INSERT … ON CONFLICT (key) DO UPDATE SET … WHERE window_start <= expired OR failures < max
+  RETURNING window_start` per key. PostgreSQL locks the conflicting row and evaluates the `WHERE` on its
+  latest committed version, so the check and the count are one statement and two requests (one container
+  or several) cannot both take the last place. No row back = refused. Keys go address first; if the
+  account then refuses, the address place already taken is given back, so an attempt refused for its
+  account costs its address nothing (as before). `Retry-After` is computed afterwards over all keys, as
+  `retryAfter()` was (max over blocked keys); if the blocking row vanished in between, 1 s.
+- **Memory:** check all keys, then count all, with no `await` in between, which is atomic in JavaScript.
+- `throttleKeys()` now lists the address before the account (order matters only for Pg, above).
+- No migration change: the `failures > 0` check stays, so giving back the last failure deletes the row.
+
+### The three questions from the brief
+- **A success after reserved failures.** A right password deletes the account row, which also forgets
+  failures that concurrent wrong attempts reserved and are still checking. That is the sequential rule
+  ("a success clears the account's failures") applied at the moment of success; it gives an attacker
+  nothing, because only someone who knows the password can trigger it. Those in-flight wrong attempts
+  were already checked when they reserved, and they do not count again when they finish. The address
+  count is decremented only in the window the attempt reserved in (`window_start` must match), so a
+  success never eats a newer window's failure. The give-back is two statements (UPDATE `failures > 1`,
+  else DELETE `failures = 1`): if another request counts between them, the give-back may do nothing and
+  the count stays one too high. That fails closed and is rare.
+- **scrypt throws.** The reservation stays: the attempt counts as a failure. We cannot tell whether the
+  password was compared before the error, and releasing would give a free guess for every error an
+  attacker could provoke. Pinned by the "throws" test above.
+- **One shared session.** The throttle keys are the account and the address, never the session, and a
+  failed sign-in does not touch the session. Sending every attempt on one `sid` therefore changes
+  nothing: each request reserves for itself. (Two *successful* sign-ins at once on one `sid` both call
+  `rotate()`; the second finds no row and answers with a `sid` that is a new anonymous session. That is
+  the attacker's own session, unrelated to throttling, and was the same before.)
+- **The trade-off, stated:** while `max` sign-ins for one key are in flight at once, one more is refused
+  even if they all turn out to be right. With the defaults that needs 5 concurrent sign-ins for one
+  account, or 20 from one address within the ~0.25 s of a check. Sequentially nothing changed.
+
+### Mutations (each alone, restored, tree clean after)
+- Give-back of the address place on success removed (memory and Pg): `successful sign-ins do not count
+  against the address` red on both ("sign-in 6: expected {message} to match {user}").
+- Give-back of earlier places on refusal removed (Pg): `an attempt refused for its account …` red.
+- Limit removed from the Pg upsert's `WHERE` (`failures < max + 1000`): 7 tests red, including all four
+  concurrent ones.
+
+### Probe (throwaway, not committed)
+The reviewer's scenario: `node api/src/main.ts` with `APP_ENV` unset (production mode, production scrypt,
+default limits), a fresh database, 100 browsers each primed with `GET /current-user`, then 100 wrong
+passwords for `po@ascrum.test` sent at once from 127.0.0.1.
+- Before (`d13e310` code): `{"200":100}` in 7.6 s; `login_throttle` held account 100, ip 100.
+- After (`638ecee`): `{"200":5,"429":95}` in 0.76 s; `login_throttle` holds account 5, ip 5.
+  **5 reached the password check (limit 5).**
+
+### Gates (this session, from `web/`, `DATABASE_URL` on the cluster's own Postgres, ports 3801/4973/4974)
+`pnpm verify` on `638ecee`, exit 0:
+```
+$ eslint --max-warnings 0 . ../api && prettier --check . ../api
+All matched files use Prettier code style!
+$ tsc --noEmit -p tsconfig.json
+ Test Files  41 passed (41)          # unit
+      Tests  435 passed (435)        # was 430: +5 shared tests on the memory store
+ Test Files  4 passed (4)            # integration
+      Tests  72 passed (72)          # was 65: +5 shared tests on Pg, +2 over HTTP
+✓ built in 370ms                     # dist
+✓ built in 395ms                     # dist-pages
+  40 passed (24.9s)                  # Playwright
+```
