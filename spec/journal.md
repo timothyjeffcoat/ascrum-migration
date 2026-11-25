@@ -960,3 +960,27 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Live run 1 failed, and it was the most useful two minutes of the project so far. It proved the sign-in, the push, the teardown and the 'nothing left' check for real, at a cost of effectively zero, and it found two things no test could. The design decision that paid off was ordering: the cheap, failure-prone steps run before anything expensive exists, and teardown runs whatever happens."
+
+## 2026-11-25: Live run 2: the scanner refuses an image index (p5-infra, PR #75)
+- **The run.** Run 45640099889, on `migration` at `38bceb9`, with the bootstrap at #74's version.
+  - Job times: gate 14:59:39-14:59:48, deploy 14:59:54-15:03:13 (failed), destroy 15:03:19-15:03:56, evidence 15:03:58-15:04:04 (UTC).
+  - Green: the gate, OIDC, the registry deploy, the build and the push.
+  - The image-scan step waited 2 minutes for a scan on push. None appeared, so it started one, as #74 designed. AWS refused: `UnsupportedImageTypeException … An artifact with media type 'application/vnd.oci.image.index.v1+json' cannot be scanned.` The step failed closed.
+  - The demo stack was skipped. Destroy and the leftover check were green ("Remaining: 0", "OK: nothing from the demo remains."). The evidence job was green, downloading both parts on the first attempt (#74's evidence fix, live).
+- **The cause, from the build log.** Three lines: `exporting manifest`, `exporting attestation manifest`, `exporting manifest list`. The runner's Docker added BuildKit's default provenance attestation, which Docker documents as "added to images by default" and as attached "as a manifest in the image index". So the tag named an index, which ECR's basic scanner refuses. Run 1's build log has the same three lines. Run 1's "no scan found" therefore had two sufficient causes, the registry's manual-scan default and the index, and one run cannot separate them. The worker's worklog says so and calls its own run-1 diagnosis incomplete.
+- **Why no test saw it.** Every fake `aws` answered with a single-manifest scan reply. Nothing modelled what the tag names, so #74's fix passed every test and still could not work on the runner.
+- **The fix (worker, `dabc850`).**
+  - The build is now `docker build --platform linux/amd64 --provenance=false --sbom=false`. The worker measured locally that this pushes one OCI image manifest.
+  - Before any scan, the gate reads the tag's media type and requires exactly one single-image manifest. It then scans and reads findings by digest.
+  - No IAM change, and no bootstrap update.
+  - The provenance attestation is given up on purpose. Nothing reads it today, and the run's evidence artifact already records the commit, ref, actor and run URL.
+- **Review.** The reviewer read Docker's attestation page and ECR's `ImageDetail` reference, confirmed the `linux/amd64` pin matches the Fargate task's `X86_64`, and confirmed that the task runs the scanned digest: the tag is immutable, the deploy role cannot delete an image, and ECS resolves a tag to a digest per deployment. 18 breakages: 13 red, 5 survived. Two survivors still fail closed. Three are test gaps, logged as DEV-p5-infra-19 (low):
+  - run 2's exact refusal, turned into a pass, survives;
+  - the task switched to ARM64 while the build stays amd64 survives;
+  - empty `describe-images` output has no test.
+- **Gate results (reviewer, `dabc850`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 149 passed (149)", synth OK. web `pnpm verify` exit 0, 443 / 87 / 41 passed. Branch protection on `migration` now requires 12 checks (`infra` added in wave C).
+- **Counts.** DEV-p5-infra-18 (blocking, fixed) and -19 (open, low). 112 rows, 10 blocking; four of them were found by live runs after #69 merged. Every live failure so far has failed closed, and every run has ended with "nothing from the demo remains".
+- **Decision.** No blocking findings. Not merged; the owner decides. The next run should show the media type `application/vnd.oci.image.manifest.v1+json` and a `COMPLETE` scan in the evidence. ECR's docs do not list the media types basic scanning accepts, so only that run can confirm it.
+
+**Moment (article candidate)**
+- "Run 1 failed with 'no scan found', and we fixed the cause we could see: the registry doesn't scan on push. Run 2 got further and showed a second cause that had been there all along: the build was pushing an image index, which the scanner can't read. Both runs failed closed and cost close to nothing. The lesson is to look at what was actually pushed, not just at the error."

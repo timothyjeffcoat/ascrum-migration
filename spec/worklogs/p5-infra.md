@@ -731,3 +731,137 @@ pnpm exec cdk deploy AscrumBootstrap -c githubRepository="$REPO" -c githubOwnerI
 - Not provable offline: whether `gh run download` fetches an artifact of the run that is still in
   progress on the first try (documented for v4 artifacts; the retries and MISSING.txt cover a miss), and
   which of the two scan cases the next live run hits (`startedByThisRun` in the evidence will say).
+
+## 2026-11-25, live run 2 (worker): ECR cannot scan the image index BuildKit pushed
+Branch `convert/p5-infra-live-run-2`, reset to `origin/migration` (`38bceb9`, after #74). The owner had
+updated `AscrumBootstrap`, so the deploy role has `ecr:StartImageScan` on `repository/ascrum-demo-api`.
+
+### What happened (run 45640099889 on `38bceb9`)
+- Green: the gate, the OIDC sign-in, the registry deploy, the build and the push. Destroy, the leftover
+  check and the evidence job (the live-run-1 retry fix) were also green.
+- `imageScan.ts` waited about 2 minutes, logged "No scan appeared after the push (the registry scans
+  this repository manually); starting one.", and then StartImageScan failed:
+  `UnsupportedImageTypeException … An artifact with media type 'application/vnd.oci.image.index.v1+json'
+  cannot be scanned.`
+- The script threw, so the step failed closed, which is what it should do. The demo stack was skipped.
+
+### Cause
+The runner's Docker uses the containerd image store, and BuildKit adds a provenance attestation by
+default. The build log of run 2 shows `exporting manifest sha256:…`, `exporting attestation manifest
+sha256:…` and `exporting manifest list sha256:…`, so the tag named an OCI image index holding the image
+and an attestation manifest. ECR basic scanning refuses an index.
+
+Docs (read 2026-11-25):
+- https://docs.docker.com/build/metadata/attestations/: "Provenance attestations with the `mode=min`
+  level are added to images by default."; "Attestations attach to images as a manifest in the image
+  index."; "To build attestations with the `docker` driver, turn on the containerd image store."; "opt
+  out of attestations with `--provenance=false --sbom=false`."
+- https://docs.docker.com/engine/storage/containerd/: "The containerd image store is the default storage
+  backend for Docker Engine 29.0 and later on fresh installations." Attestations "use image indices
+  that the classic store doesn't support."
+- https://docs.docker.com/build/exporters/: the image exporters "support both Docker media types
+  (default) and OCI media types".
+- https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_StartImageScan.html:
+  `UnsupportedImageTypeException`, "The image is of a type that cannot be scanned."
+- https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_ImageDetail.html: DescribeImages returns
+  `imageManifestMediaType`, "The media type of the image manifest", and `imageDigest`.
+- None of the ECR user-guide scanning pages I read (image-scanning, image-scanning-basic,
+  troubleshooting, multi-architecture push) says which manifest media types basic scanning accepts. The
+  run's error message is the primary evidence that an index is refused.
+
+None of the docs says outright what a single-platform `docker build` pushes without attestations when the
+containerd store is on. **So I measured it locally** (Docker Engine 29.6.2, containerd snapshotter, buildx
+0.35.0, a throwaway local `registry:3` container on 127.0.0.1, an `alpine` Dockerfile; no AWS):
+
+| build command | Content-Type of the pushed tag |
+|---|---|
+| `docker build` (the run-2 command) | `application/vnd.oci.image.index.v1+json`: an amd64 image plus an `unknown/unknown` manifest with `vnd.docker.reference.type: attestation-manifest` |
+| `docker build --provenance=false --sbom=false` | `application/vnd.oci.image.manifest.v1+json` |
+| `docker build --platform linux/amd64 --provenance=false --sbom=false` | `application/vnd.oci.image.manifest.v1+json` |
+
+So turning attestations off is enough to get a single OCI image manifest. No `--output
+type=image,oci-mediatypes=…` is needed: ECR accepts OCI and Docker v2 manifests alike.
+
+### Item 4: was run 1's "no scan on push" the same cause?
+Yes, at least in part. Run 1's build log (45552933643) has the same three lines, ending in `exporting
+manifest list sha256:…`, so run 1 also pushed an index under the tag. `describe-image-scan-findings
+--image-id imageTag=…` asks for the scan of the manifest that the tag names, which was the index, and an
+index can never have a basic scan. So ScanNotFoundException in run 1 needs no other explanation.
+The registry's default of manual scanning (live run 1 entry, quoted from the ECR docs) may also be true;
+one run can't separate the two, and the ECR docs say nothing about how scan on push treats an index.
+**My live-run-1 diagnosis was incomplete.** I blamed manual scanning only and didn't look at what the
+build actually pushed.
+
+### Decision: option (a), one image manifest, and the gate checks it
+- **The build** is now `docker build --platform linux/amd64 --provenance=false --sbom=false …`.
+  - The platform pin matches the Fargate task (`CpuArchitecture.X86_64` in `demoStack.ts`), so it
+    doesn't depend on what the runner happens to be.
+  - The pushed manifest is what the immutable tag names (`TagMutability.IMMUTABLE` in `registryStack.ts`)
+    and what the task definition runs, so the scanned image is the image that runs.
+- **`imageScan.ts`** now starts with `ecr describe-images --image-ids imageTag=…`.
+  - Exactly one image must come back, with a digest and an `imageManifestMediaType` that is a single
+    image manifest (`application/vnd.oci.image.manifest.v1+json` or
+    `application/vnd.docker.distribution.manifest.v2+json`).
+  - Anything else fails the step before any scan is waited for: an index, a manifest list, an artifact,
+    a missing type, no image or two. The status is `UNSCANNABLE_MEDIA_TYPE`, and the media type and
+    digest go in the evidence.
+  - It then waits for, starts and reads the scan **by digest**, so the scanned image is the checked one.
+  - Every non-COMPLETE outcome, and any HIGH or CRITICAL finding, still fails, as before.
+- **Why not option (b)** (resolve the index and scan the linux/amd64 child by digest):
+  - (b) keeps the provenance attestation, which has real supply-chain value: who built the image, from
+    which commit and with which builder.
+  - But it needs index parsing in the gate, and a rule for choosing the child that must match what
+    Fargate selects.
+  - Nothing reads the attestation today: no consumer in the spec, and no signature verification.
+  - Provenance for this demo already exists in the evidence artifact: `run.json` (sha, ref, actor, run
+    URL) and the step timings.
+  - So (a) is simpler, and its one assumption (a single manifest) is checked at run time, not trusted.
+  - If attestations are wanted later, (b) plus a verification step is the way back.
+- **IAM: no change and no bootstrap update.** The deploy role's `PushApiImageAndReadItsScan` statement
+  already allows `ecr:DescribeImages`, `ecr:BatchGetImage`, `ecr:DescribeImageScanFindings` and
+  `ecr:StartImageScan` on `ascrum-demo-api` (`bootstrapStack.ts`). Scanning by digest needs nothing new.
+
+### Mistake: the test fakes hid the media type
+The unit and entry-point fakes answered with single-manifest scan replies only. Nothing in them modelled
+what the tag points to, so live run 1's fix passed every test and still could not work on the runner.
+What changed:
+- The fakes now answer `describe-images` with a media type.
+- The index case is a test of its own, in both the unit tests and the entry-point tests.
+- The build command is pinned in `workflows.test.ts`.
+
+### Tests (5 new, 3 updated)
+- `scripts/imageScan.test.ts`:
+  - an OCI index fails before any scan, with the media type in the summary;
+  - a manifest list, an artifact manifest, a missing type, a missing digest, no image or two images all
+    fail;
+  - `describe-images` failing (ImageNotFound) throws;
+  - OCI and Docker v2 manifests are scanned by digest, never by tag.
+- `scripts/entrypoints.test.ts`:
+  - with the fake `aws`, an index under the tag fails the step;
+  - no scan call is made, and the evidence names the media type;
+  - the earlier scan cases now answer `describe-images` and match on `imageDigest=`.
+- `scripts/workflows.test.ts`:
+  - the build is exactly `docker build --platform linux/amd64 --provenance=false --sbom=false -f
+    docker/api.Dockerfile -t "$REPOSITORY_URI:$IMAGE_TAG" .`;
+  - there is one build and one push;
+  - no `--attest`, `--push`, `BUILDX_NO_DEFAULT_ATTESTATIONS` or `oci-artifact` anywhere in the workflow;
+  - the push step exists (its name changed, and the ordering check now asserts it was found).
+
+Breakages, one at a time; all 9 went red:
+- X1: no media-type check. 3 tests red: the unit index test, the manifest-list test, and the
+  entry-point index test.
+- X2: index accepted as scannable. The unit and entry-point index tests went red.
+- X3: scan by tag again. The digest test and three entry-point tests went red.
+- X4: take the first of several images. The manifest-list/no-image test went red.
+- X5: the run-2 build command (`docker build` with no flags). The build pin went red.
+- X6: provenance back on. The build pin went red.
+- X7: SBOM allowed. The build pin went red.
+- X8: no platform pin. The build pin went red.
+- X9: an extra `--attest`. The build pin went red.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no `aws`, no
+`cdk deploy` or `destroy`)
+- infra `pnpm verify` exit 0: "All matched files use Prettier code style!", "Test Files 11 passed (11)",
+  "Tests 149 passed (149)", "Successfully synthesized to …/infra/cdk.out".
+- Can't be proven offline: that the runner's Docker gives the same result as my local Docker 29.6.2.
+  If it doesn't, the gate stops at `UNSCANNABLE_MEDIA_TYPE` and names the type.

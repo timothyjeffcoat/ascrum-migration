@@ -113,7 +113,8 @@ describe('spec §6 image-scan: the gate before the service exists', () => {
     const names = deploy.steps.map((s) => s.name ?? '')
     const scanIndex = names.findIndex((n) => n.startsWith('image-scan'))
     const demoIndex = names.indexOf('Deploy the demo stack (network, database, API, web bucket, CloudFront)')
-    const pushIndex = names.indexOf('Push the API image (ECR scans it on push)')
+    const pushIndex = names.indexOf('Push the API image')
+    expect(pushIndex).toBeGreaterThanOrEqual(0)
     expect(scanIndex).toBeGreaterThan(pushIndex)
     expect(demoIndex).toBeGreaterThan(scanIndex)
     const scan = deploy.steps[scanIndex] as Step
@@ -125,6 +126,18 @@ describe('spec §6 image-scan: the gate before the service exists', () => {
     expect(scan.env).toBeUndefined()
     // Only the entry-point tests shorten the poll.
     expect(workflowText(DEPLOY)).not.toContain('IMAGE_SCAN_POLL_MS')
+  })
+
+  it('image-scan (live run 2): the API image is built as one linux/amd64 manifest with no attestation index, so ECR can scan it', () => {
+    const build = step(DEPLOY, 'deploy', 'Build the API image from this commit')
+    expect(build.run?.trim()).toBe(
+      'docker build --platform linux/amd64 --provenance=false --sbom=false -f docker/api.Dockerfile -t "$REPOSITORY_URI:$IMAGE_TAG" .',
+    )
+    // Nothing else builds or pushes an image, and nothing turns attestations back on.
+    const text = workflowText(DEPLOY)
+    expect(text.match(/docker (buildx )?build /g)).toHaveLength(1)
+    expect(text.match(/docker push /g)).toHaveLength(1)
+    expect(text).not.toMatch(/--attest|--push\b|BUILDX_NO_DEFAULT_ATTESTATIONS|oci-artifact/)
   })
 })
 

@@ -24,12 +24,35 @@ const findings = (status: string, counts: Record<string, number> = {}): AwsResul
   }),
 })
 
-/** describe-image-scan-findings answers in order (the last repeats); start-image-scan as given. */
-function scripted(describes: AwsResult[], start: AwsResult = { code: 0, stdout: '{}', stderr: '' }) {
+const DIGEST = 'sha256:' + 'a'.repeat(64)
+const OCI_MANIFEST = 'application/vnd.oci.image.manifest.v1+json'
+const OCI_INDEX = 'application/vnd.oci.image.index.v1+json'
+/** describe-images for the tag: what ECR stored under it. */
+const images = (...details: { imageDigest?: string; imageManifestMediaType?: string }[]): AwsResult => ({
+  code: 0,
+  stderr: '',
+  stdout: JSON.stringify({
+    imageDetails: details.map((d) => ({ registryId: '123456789012', imageTags: ['abc'], ...d })),
+  }),
+})
+const SINGLE = images({ imageDigest: DIGEST, imageManifestMediaType: OCI_MANIFEST })
+
+/**
+ * describe-images answers `image` (by default one OCI image manifest); describe-image-scan-findings answers
+ * in order (the last repeats); start-image-scan as given. `argv` keeps each call's full arguments.
+ */
+function scripted(
+  describes: AwsResult[],
+  start: AwsResult = { code: 0, stdout: '{}', stderr: '' },
+  image: AwsResult = SINGLE,
+) {
   const calls: string[] = []
+  const argv: string[] = []
   let next = 0
   const aws: Aws = async (args) => {
     calls.push(args.slice(0, 2).join(' '))
+    argv.push(args.join(' '))
+    if (args[1] === 'describe-images') return image
     if (args[1] === 'start-image-scan') return start
     if (args[1] === 'describe-image-scan-findings') {
       const answer = describes[Math.min(next, describes.length - 1)] as AwsResult
@@ -38,7 +61,7 @@ function scripted(describes: AwsResult[], start: AwsResult = { code: 0, stdout: 
     }
     return { code: 99, stdout: '', stderr: `unexpected ${args.join(' ')}` }
   }
-  return { aws, calls }
+  return { aws, calls, argv }
 }
 
 const run = (aws: Aws) =>
@@ -84,7 +107,7 @@ describe('spec §6 image-scan: the scan gate', () => {
     expect(summary).toMatchObject({ status: 'COMPLETE', startedByThisRun: true })
     expect(verdict(summary)).toBeNull()
     expect(calls.filter((c) => c === 'ecr start-image-scan')).toHaveLength(1)
-    expect(calls.indexOf('ecr start-image-scan')).toBe(4) // after the four describes of the wait
+    expect(calls.indexOf('ecr start-image-scan')).toBe(5) // after describe-images and the four describes of the wait
   })
 
   it('image-scan: never passes without a completed scan: still missing after the start, or never completing', async () => {
@@ -121,5 +144,56 @@ describe('spec §6 image-scan: the scan gate', () => {
   it('image-scan: the evidence summary carries no registry (account) id', async () => {
     const summary = await run(scripted([findings('COMPLETE', { LOW: 1 })]).aws)
     expect(JSON.stringify(summary)).not.toContain('123456789012')
+  })
+
+  it('image-scan (live run 2): an OCI image index under the tag fails the gate before any scan, with the media type', async () => {
+    // Run 2 pushed the image plus a BuildKit attestation manifest as an index; StartImageScan refused it.
+    const index = images({ imageDigest: DIGEST, imageManifestMediaType: OCI_INDEX })
+    const { aws, calls } = scripted([findings('COMPLETE')], undefined, index)
+    const summary = await run(aws)
+    expect(summary).toMatchObject({ status: 'UNSCANNABLE_MEDIA_TYPE', mediaType: OCI_INDEX, imageDigest: DIGEST })
+    expect(verdict(summary)).toMatch(/did not complete \(UNSCANNABLE_MEDIA_TYPE\)/)
+    expect(calls).toEqual(['ecr describe-images'])
+  })
+
+  it('image-scan (live run 2): a manifest list, an unknown or missing media type, no image or two fail the gate', async () => {
+    for (const image of [
+      images({
+        imageDigest: DIGEST,
+        imageManifestMediaType: 'application/vnd.docker.distribution.manifest.list.v2+json',
+      }),
+      images({ imageDigest: DIGEST, imageManifestMediaType: 'application/vnd.oci.artifact.manifest.v1+json' }),
+      images({ imageDigest: DIGEST }),
+      images({ imageManifestMediaType: OCI_MANIFEST }),
+      images(),
+      images(
+        { imageDigest: DIGEST, imageManifestMediaType: OCI_MANIFEST },
+        { imageDigest: DIGEST, imageManifestMediaType: OCI_MANIFEST },
+      ),
+    ]) {
+      const summary = await run(scripted([findings('COMPLETE')], undefined, image).aws)
+      expect(verdict(summary), image.stdout).toMatch(/UNSCANNABLE_MEDIA_TYPE/)
+    }
+    const missing: AwsResult = { code: 254, stdout: '', stderr: 'An error occurred (ImageNotFoundException)' }
+    await expect(run(scripted([findings('COMPLETE')], undefined, missing).aws)).rejects.toThrow(
+      /describe-images failed/,
+    )
+  })
+
+  it('image-scan (live run 2): a single manifest (OCI or Docker v2) is scanned by its digest, never by the tag', async () => {
+    for (const mediaType of [OCI_MANIFEST, 'application/vnd.docker.distribution.manifest.v2+json']) {
+      const image = images({ imageDigest: DIGEST, imageManifestMediaType: mediaType })
+      const { aws, argv } = scripted(
+        [NOT_FOUND, NOT_FOUND, NOT_FOUND, NOT_FOUND, findings('COMPLETE')],
+        undefined,
+        image,
+      )
+      const summary = await run(aws)
+      expect(summary).toMatchObject({ status: 'COMPLETE', imageDigest: DIGEST, mediaType, startedByThisRun: true })
+      expect(verdict(summary)).toBeNull()
+      const scans = argv.filter((a) => !a.startsWith('ecr describe-images'))
+      expect(scans.length).toBeGreaterThan(0)
+      for (const call of scans) expect(call).toContain(`--image-id imageDigest=${DIGEST} `)
+    }
   })
 })

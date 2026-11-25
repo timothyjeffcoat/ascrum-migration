@@ -211,8 +211,10 @@ policy with the longest account id, partition and region and checks it against I
   repository's own scan-on-push setting comes from an API ECR is deprecating, so the gate
   (`scripts/imageScan.ts`) waits up to two minutes for a scan on push, starts one if none appears
   (`ecr:StartImageScan` on `ascrum-demo-api` only), and passes only a completed scan. The registry's
-  scanning configuration is left alone: it is account-wide. Only the API image goes to AWS; the web
-  build goes to S3.
+  scanning configuration is left alone: it is account-wide. ECR basic scanning cannot scan an image
+  index, so the image is built as one `linux/amd64` manifest with no BuildKit attestations
+  (`--provenance=false --sbom=false`), and the gate first checks that the tag names a single image
+  manifest, then scans it by digest. Only the API image goes to AWS; the web build goes to S3.
 - **Destroy** deletes the stacks with CloudFormation directly (no synth), so it works after a partial or
   cancelled deploy; it empties the web bucket first. Nothing in the demo stacks is retained, snapshotted
   or deletion-protected, and nothing depends on a Lambda-backed custom resource.
