@@ -161,6 +161,9 @@ export class BootstrapStack extends Stack {
     // change or delete anything else of that kind. EC2's network resources have generated ids, so their
     // changes and deletes require the demo's tag (`aws:ResourceTag/project`), and the tag can only be put
     // on a resource while it is being created (`ec2:CreateAction`), never added to an existing one.
+    // ec2:CreateAction holds the bare API name ("CreateVpc", not "ec2:CreateVpc"): live run 4 failed on
+    // the prefixed form (UnauthorizedTaggingOperation on the VPC and the internet gateway; worklog,
+    // 2026-11-25, live run 4, and src/demoTagging.ts for every type's tagging calls).
     // What cannot be scoped either way is listed in the worklog (2026-11-24, round 4).
     const demoRoles = iamArn(`role/${DEMO_STACK_PREFIX}*`)
     const demoTagged = { [`aws:ResourceTag/${TAG.project.key}`]: TAG.project.value }
@@ -211,11 +214,18 @@ export class BootstrapStack extends Stack {
           conditions: { StringEquals: sameRegion },
         }),
         new iam.PolicyStatement({
-          // The demo's tag, only on a resource being created by one of the calls above (TagSpecifications).
+          // Tags only on a resource being created by one of the calls above (TagSpecifications), and only
+          // when the demo's tag is among them, so every network resource is created already tagged.
           sid: 'NetworkTagOnCreate',
           actions: ['ec2:CreateTags'],
           resources: ['*'],
-          conditions: { StringEquals: { ...sameRegion, 'ec2:CreateAction': networkCreates } },
+          conditions: {
+            StringEquals: {
+              ...sameRegion,
+              'ec2:CreateAction': networkCreates.map((action) => action.replace(/^ec2:/, '')),
+              [`aws:RequestTag/${TAG.project.key}`]: TAG.project.value,
+            },
+          },
         }),
         new iam.PolicyStatement({
           // Changes and deletes: only on network resources that carry the demo's tag.
@@ -394,6 +404,11 @@ export class BootstrapStack extends Stack {
             's3:PutBucketPolicy',
             's3:DeleteBucketPolicy',
             's3:PutBucketTagging',
+            // CreateBucket with Tags needs s3:TagResource (S3 API reference, CreateBucket); the handler reads
+            // tags back with ListTagsForResource (live run 4 review; src/demoTagging.ts).
+            's3:TagResource',
+            's3:UntagResource',
+            's3:ListTagsForResource',
             's3:PutBucketPublicAccessBlock',
             's3:PutBucketOwnershipControls',
             's3:PutEncryptionConfiguration',
@@ -462,6 +477,7 @@ export class BootstrapStack extends Stack {
           actions: [
             'iam:TagRole',
             'iam:UntagRole',
+            'iam:ListRoleTags',
             'iam:UpdateRoleDescription',
             'iam:GetRole',
             'iam:GetRolePolicy',

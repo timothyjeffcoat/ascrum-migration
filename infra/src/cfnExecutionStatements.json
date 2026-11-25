@@ -50,12 +50,13 @@
           "Ref": "AWS::Region"
         },
         "ec2:CreateAction": [
-          "ec2:CreateVpc",
-          "ec2:CreateSubnet",
-          "ec2:CreateRouteTable",
-          "ec2:CreateInternetGateway",
-          "ec2:CreateSecurityGroup"
-        ]
+          "CreateVpc",
+          "CreateSubnet",
+          "CreateRouteTable",
+          "CreateInternetGateway",
+          "CreateSecurityGroup"
+        ],
+        "aws:RequestTag/project": "ascrum-migration"
       }
     },
     "Effect": "Allow",
@@ -576,12 +577,15 @@
       "s3:DeleteBucketPolicy",
       "s3:Get*",
       "s3:ListBucket",
+      "s3:ListTagsForResource",
       "s3:PutBucketOwnershipControls",
       "s3:PutBucketPolicy",
       "s3:PutBucketPublicAccessBlock",
       "s3:PutBucketTagging",
       "s3:PutBucketVersioning",
-      "s3:PutEncryptionConfiguration"
+      "s3:PutEncryptionConfiguration",
+      "s3:TagResource",
+      "s3:UntagResource"
     ],
     "Effect": "Allow",
     "Resource": {
@@ -718,6 +722,7 @@
       "iam:ListAttachedRolePolicies",
       "iam:ListInstanceProfilesForRole",
       "iam:ListRolePolicies",
+      "iam:ListRoleTags",
       "iam:TagRole",
       "iam:UntagRole",
       "iam:UpdateRoleDescription"
