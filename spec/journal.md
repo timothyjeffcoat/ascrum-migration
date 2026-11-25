@@ -988,7 +988,8 @@ These come from how the first post's comments went: every question was about tru
 ## 2026-11-25: Why the old code is the reference (a LinkedIn comment)
 - **The comment.** A Director of Engineering wrote that a review against the spec only proves the spec was followed, that a fresh pass over the original behaviour catches what the spec left out, and that sign-offs at each stage keep surprises small. They asked how the original code was chosen as the reference for the final check.
 - **What the record says.**
-  - The old app could not run: its hosted database service (MongoLab) shut down in 2020, and there were no users or product docs to ask. The code was the only full record of what the app did.
+  - The old app is the sample app for an AngularJS book (*Mastering Web Application Development with AngularJS*; upstream README: "demonstrate how to write a typical, non-trivial CRUD application"). It never had production users. Its README and the book explain how it was built, not what it must do. `legacy/` keeps only `client/` and `server/`, and the book was not consulted.
+  - It also cannot run: its hosted database service (MongoLab) shut down in 2020 (inventory, "Hard external fact"). That left the code and its own tests (133, 113 portable) as the record of what the app did. The tests are part of the same code, so they are not an independent witness.
   - The contract (spec B4 and §6) is "behave like the old app unless a decision says otherwise". The old code is the reference, but not the truth: every known defect has a written fix-or-keep disposition.
   - The audits were blind: the auditor could not see the spec or the inventory. It committed its own reading first, each claim citing a legacy line, and compared only then.
     - Wave A (PR #15): 53 claims, 36 agree, 14 deliberate documented differences, 4 findings.
@@ -996,9 +997,10 @@ These come from how the first post's comments went: every question was about tru
   - Two wave A findings were bugs every gate had passed, and no AC covered them: Enter in a form discarded edits, and Enter no longer signed in.
   - Where the code could not settle a question (browser focus, DEV-owner-01), the orchestrator rebuilt one form from the old app's own parts and ran the same keystrokes against both.
 - **The correction to the comment.** There was no single final check. An audit ran after each wave, so a finding could change the spec (P4, P6) before the next wave built on it.
+- **Correction (same day).** The first draft of the reply and of this entry said there were "no users or product docs to ask" and that the code was "the only full record". The owner questioned it; the upstream README shows a book sample app with docs about its construction, and the legacy tests are a second (non-independent) record. Both were corrected before posting.
 - **The limit, stated in the reply.**
   - The code shows what the app did, not what users relied on; the owner made those calls.
   - The auditor ran on the same model as the authors, so they can share blind spots. Since 2026-11-23 the owner adds breakages of their own (DEV-owner-03).
 
 **Moment (article candidate)**
-- "A reader asked why the old code was the reference. Because it was the only witness left: the database service was gone, and there were no docs or users. But a reference is not the truth. Every bug in it has a written keep-or-fix decision, and the auditor read it without seeing our spec, so it could disagree with us."
+- "A reader asked why the old code was the reference. Because nothing better was left: it was a book's sample app with no real users, its docs explain how it was built rather than what it must do, and its database service was gone. But a reference is not the truth. Every bug in it has a written keep-or-fix decision, and the auditor read it without seeing our spec, so it could disagree with us."
