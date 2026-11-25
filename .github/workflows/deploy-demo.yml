@@ -130,10 +130,16 @@ jobs:
             -c cloudFrontPrefixListId="$PREFIX_LIST"
           echo "REPOSITORY_URI=$(jq -r '.AscrumDemoRegistry.ApiRepositoryUri' "$RUNNER_TEMP/registry.json")" >> "$GITHUB_ENV"
 
+      # One image manifest, not an image index: by default BuildKit adds a provenance attestation, stored
+      # as a second manifest in an image index, and ECR basic scanning refuses an index (live run 2:
+      # UnsupportedImageTypeException). The platform is the Fargate task's (X86_64, demoStack.ts).
+      # imageScan.ts checks the pushed media type and fails the run on anything but a single manifest.
       - name: Build the API image from this commit
-        run: docker build -f docker/api.Dockerfile -t "$REPOSITORY_URI:$IMAGE_TAG" .
+        run: >-
+          docker build --platform linux/amd64 --provenance=false --sbom=false
+          -f docker/api.Dockerfile -t "$REPOSITORY_URI:$IMAGE_TAG" .
 
-      - name: Push the API image (ECR scans it on push)
+      - name: Push the API image
         run: |
           aws ecr get-login-password | docker login --username AWS --password-stdin "${REPOSITORY_URI%%/*}"
           docker push "$REPOSITORY_URI:$IMAGE_TAG"

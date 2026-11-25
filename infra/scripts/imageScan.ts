@@ -9,11 +9,21 @@
 // is deprecating. So: wait a bounded time for a scan on push to appear, start one if none does, and wait
 // a bounded time for it to complete. Only COMPLETE passes; every other outcome, a timeout or an error
 // fails the step. The findings summary is written to the evidence file whatever the result.
+//
+// The second live run (worklog, 2026-11-25, live run 2) pushed an OCI image index (the image plus a
+// BuildKit attestation manifest), and StartImageScan refused it: "An artifact with media type
+// 'application/vnd.oci.image.index.v1+json' cannot be scanned." The workflow now builds a single image
+// manifest (--provenance=false --sbom=false), and this script checks that first: the tag (immutable) must
+// name a single image manifest, which is then scanned by its digest. Anything else fails the step before
+// any scan is waited for.
 import { writeFileSync } from 'node:fs'
 import { awsCli, realSleep, redact, type Aws, type Sleep } from './aws.ts'
 
 export type ScanSummary = {
   status: string
+  /** The scanned manifest, which the immutable tag names and the demo's task definition runs. */
+  imageDigest: string | null
+  mediaType: string | null
   completedAt: string | null
   /** Whether this script had to start the scan (no scan on push appeared). */
   startedByThisRun: boolean
@@ -36,7 +46,14 @@ export type ScanOptions = {
 }
 
 const SCAN_NOT_FOUND = /\(ScanNotFoundException\)/
+/** Single image manifests, which ECR basic scanning accepts. An image index or a manifest list is not one. */
+export const SCANNABLE_MEDIA_TYPES = [
+  'application/vnd.oci.image.manifest.v1+json',
+  'application/vnd.docker.distribution.manifest.v2+json',
+]
 const BLOCKING = ['HIGH', 'CRITICAL']
+
+type ImageDetail = { imageDigest?: string; imageManifestMediaType?: string }
 
 type Findings = {
   imageScanStatus?: { status?: string; description?: string }
@@ -56,7 +73,29 @@ export async function scanImage(options: ScanOptions): Promise<ScanSummary> {
   const sleep = options.sleep ?? realSleep
   const log = options.log ?? ((line: string) => console.log(line))
   const pollMs = options.pollMs ?? 10_000
-  const image = ['--repository-name', repository, '--image-id', `imageTag=${imageTag}`, '--region', region]
+  const empty = { completedAt: null, startedByThisRun: false, counts: {}, findings: [] }
+
+  // What the tag names. Any error (the image missing, access denied) stops the step.
+  const described = await aws([
+    'ecr',
+    'describe-images',
+    '--repository-name',
+    repository,
+    '--image-ids',
+    `imageTag=${imageTag}`,
+    '--region',
+    region,
+  ])
+  if (described.code !== 0) throw new Error(`describe-images failed: ${redact(described.stderr.trim())}`)
+  const details = (JSON.parse(described.stdout) as { imageDetails?: ImageDetail[] }).imageDetails ?? []
+  const detail = details.length === 1 ? details[0] : undefined
+  const mediaType = detail?.imageManifestMediaType ?? null
+  const imageDigest = detail?.imageDigest ?? null
+  if (!imageDigest || !mediaType || !SCANNABLE_MEDIA_TYPES.includes(mediaType)) {
+    log(`${imageTag} is not a single image manifest (${mediaType ?? 'no media type'}); ECR cannot scan it.`)
+    return { status: 'UNSCANNABLE_MEDIA_TYPE', imageDigest, mediaType, ...empty }
+  }
+  const image = ['--repository-name', repository, '--image-id', `imageDigest=${imageDigest}`, '--region', region]
 
   /** The scan's findings, or null while ECR has no scan for the image. Any other error stops the step. */
   const describe = async (): Promise<Findings | null> => {
@@ -88,6 +127,8 @@ export async function scanImage(options: ScanOptions): Promise<ScanSummary> {
   const status = body?.imageScanStatus?.status ?? 'NOT_FOUND'
   const summary: ScanSummary = {
     status,
+    imageDigest,
+    mediaType,
     completedAt: body?.imageScanFindings?.imageScanCompletedAt ?? null,
     startedByThisRun,
     counts: body?.imageScanFindings?.findingSeverityCounts ?? {},

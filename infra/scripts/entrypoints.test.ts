@@ -146,10 +146,16 @@ describe('spec §6 image-scan: the scan step, as the workflow runs it', () => {
   )
   const evidence = mkdtempSync(join(tmpdir(), 'ascrum-scan-evidence-'))
   const env = { IMAGE_TAG: 'abc123', EVIDENCE: evidence, IMAGE_SCAN_POLL_MS: '1' }
+  const DIGEST = 'sha256:' + 'b'.repeat(64)
   const scan = (status: string, counts: Record<string, number> = {}): Rule => ({
-    match: 'ecr describe-image-scan-findings --repository-name ascrum-demo-api --image-id imageTag=abc123 ',
+    match: `ecr describe-image-scan-findings --repository-name ascrum-demo-api --image-id imageDigest=${DIGEST} `,
     stdout: { imageScanStatus: { status }, imageScanFindings: { findingSeverityCounts: counts, findings: [] } },
   })
+  const described = (imageManifestMediaType: string): Rule => ({
+    match: 'ecr describe-images --repository-name ascrum-demo-api --image-ids imageTag=abc123 ',
+    stdout: { imageDetails: [{ imageDigest: DIGEST, imageManifestMediaType }] },
+  })
+  const single = described('application/vnd.oci.image.manifest.v1+json')
   const notFound: Rule = {
     match: 'ecr describe-image-scan-findings',
     code: 254,
@@ -158,7 +164,7 @@ describe('spec §6 image-scan: the scan step, as the workflow runs it', () => {
   }
 
   it('image-scan: a completed clean scan passes and is written to the evidence', () => {
-    const { status, output, calls } = runStep(scanStep.run, [scan('COMPLETE', { LOW: 1 })], { env })
+    const { status, output, calls } = runStep(scanStep.run, [single, scan('COMPLETE', { LOW: 1 })], { env })
     expect(status, output).toBe(0)
     expect(calls).not.toContain('start-image-scan')
     expect(JSON.parse(readFileSync(join(evidence, 'image-scan.json'), 'utf8'))).toMatchObject({
@@ -169,16 +175,18 @@ describe('spec §6 image-scan: the scan step, as the workflow runs it', () => {
 
   it('image-scan: a HIGH or CRITICAL finding fails the step', () => {
     for (const counts of [{ HIGH: 1 }, { CRITICAL: 1 }] as Record<string, number>[]) {
-      const { status, output } = runStep(scanStep.run, [scan('COMPLETE', counts)], { env })
+      const { status, output } = runStep(scanStep.run, [single, scan('COMPLETE', counts)], { env })
       expect(status, output).toBe(1)
       expect(output).toContain('HIGH or CRITICAL findings')
     }
   })
 
   it('image-scan (live run 1): no scan at all: the step starts one, and fails when it never shows up', () => {
-    const { status, output, calls } = runStep(scanStep.run, [notFound, { match: 'ecr start-image-scan' }], { env })
+    const { status, output, calls } = runStep(scanStep.run, [single, notFound, { match: 'ecr start-image-scan' }], {
+      env,
+    })
     expect(status, output).toBe(1)
-    expect(calls).toContain('ecr start-image-scan --repository-name ascrum-demo-api --image-id imageTag=abc123 ')
+    expect(calls).toContain(`ecr start-image-scan --repository-name ascrum-demo-api --image-id imageDigest=${DIGEST} `)
     expect(output).toContain('did not complete (NOT_FOUND)')
   })
 
@@ -188,8 +196,21 @@ describe('spec §6 image-scan: the scan step, as the workflow runs it', () => {
       code: 254,
       stderr: 'An error occurred (AccessDeniedException)',
     }
-    const { status, output } = runStep(scanStep.run, [notFound, refused], { env })
+    const { status, output } = runStep(scanStep.run, [single, notFound, refused], { env })
     expect(status, output).not.toBe(0)
+  })
+
+  it('image-scan (live run 2): an OCI image index under the tag fails the step and is named in the evidence', () => {
+    const index = described('application/vnd.oci.image.index.v1+json')
+    const { status, output, calls } = runStep(scanStep.run, [index, scan('COMPLETE')], { env })
+    expect(status, output).toBe(1)
+    expect(output).toContain('did not complete (UNSCANNABLE_MEDIA_TYPE)')
+    expect(calls).not.toContain('describe-image-scan-findings')
+    expect(calls).not.toContain('start-image-scan')
+    expect(JSON.parse(readFileSync(join(evidence, 'image-scan.json'), 'utf8'))).toMatchObject({
+      status: 'UNSCANNABLE_MEDIA_TYPE',
+      mediaType: 'application/vnd.oci.image.index.v1+json',
+    })
   })
 })
 
