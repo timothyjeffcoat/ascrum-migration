@@ -109,6 +109,8 @@ Cluster `n` exports `STUB_PORT=3001+100n PREVIEW_PORT=4173+100n PAGES_PORT=4174+
 - **Blocking findings:** stop and report them to the orchestrator; don't fix the worker's code yourself.
 - **No blocking findings:** commit row = `verified` plus a journal entry on the PR branch. When CI is green, run `gh pr merge --squash`. Then open the `chore/status-<cluster>` PR (row = `merged`) and merge it once green.
 
+- **Security second review:** PRs touching `infra/`, `docker/`, `.github/`, `api/src/`, `web/src/auth/` or `web/stub/` also get the `security-reviewer` agent (`.claude/agents/security-reviewer.md`). It reports and never edits; the regular reviewer logs its findings.
+
 ## Git
 - Workers: branch `convert/<cluster>` from `migration` in their own worktree. Make small commits, each ending with the attribution trailer the session provides.
 - Changes reach `migration` only through PRs. Never force-push a shared branch, and never rewrite `master` (the legacy snapshot).
