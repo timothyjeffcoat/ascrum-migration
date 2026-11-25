@@ -27,6 +27,62 @@ test.describe('Enter in forms (P4)', () => {
     await expect(page.getByRole('link', { name: 'Admin User' })).toBeVisible()
   })
 
+  // P7 / DEV-owner-04: the jsdom test in src/auth/LoginModal.test.tsx submits twice in one tick. Here the
+  // reply to the first POST /login is held open in a real browser, the slow reply legacy got wrong.
+  // No fixed sleeps: the reply is released only after the second Enter and a sentinel request have
+  // both reached the route. A second POST would be issued synchronously by the second Enter's submit
+  // handler, before the sentinel, so the sentinel's arrival proves it had its chance to show up.
+  // Chromium project only: the `pages` project matches e2e/pages/ alone, and there MSW answers in the
+  // service worker, where page.route does not see the requests (see the fix-slow-login worklog).
+  test('P7 / DEV-owner-04: Enter twice while the sign-in reply is held sends one POST /login', async ({ page }) => {
+    const SENTINEL = 'e2e-p7-sentinel'
+    let loginPosts = 0
+    let release!: () => void
+    const released = new Promise<void>((resolve) => (release = resolve))
+    let firstPostSeen!: () => void
+    const firstPost = new Promise<void>((resolve) => (firstPostSeen = resolve))
+
+    await page.route(
+      (url) => url.pathname === '/login',
+      async (route) => {
+        const request = route.request()
+        if (new URL(request.url()).searchParams.has(SENTINEL)) {
+          await route.fulfill({ status: 204 })
+          return
+        }
+        if (request.method() !== 'POST') {
+          await route.fallback()
+          return
+        }
+        loginPosts += 1 // counted before any await, in the order the browser sent them
+        firstPostSeen()
+        await released
+        await route.continue() // the real stub answers
+      },
+    )
+
+    await page.goto('/admin/projects')
+    const modal = await fillAdminLogin(page)
+    const password = modal.getByLabel('Password')
+    await password.press('Enter')
+    await firstPost
+    await password.press('Enter')
+    // Issued after the second Enter was handled; when it has reached the route, so has any second POST.
+    await page.evaluate(async (sentinel) => {
+      await fetch(`/login?${sentinel}`)
+    }, SENTINEL)
+
+    expect(loginPosts).toBe(1)
+    await expect(modal).toBeVisible()
+    await expect(modal.locator('.alert-error')).toHaveCount(0)
+
+    release()
+    await expect(modal).toHaveCount(0)
+    await expect(page.getByRole('link', { name: 'Admin User' })).toBeVisible()
+    await expect(page.locator('.alert-error')).toHaveCount(0)
+    expect(loginPosts).toBe(1)
+  })
+
   test('DSC-1 / P4: Enter in the project Name field keeps the edits and does not reload the page', async ({ page }) => {
     await page.goto('/admin/projects')
     const modal = await fillAdminLogin(page)
