@@ -58,6 +58,10 @@ const arn = (service: string, resource: string, region: string = Aws.REGION) =>
 const iamArn = (resource: string) => `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:${resource}`
 const sameRegion = { 'aws:RequestedRegion': Aws.REGION }
 
+/** The managed policies the execution role holds, each `${NAMES.cfnExecutionPolicy}-<part>`. */
+export const EXECUTION_POLICY_PARTS = ['network', 'compute', 'data', 'cdn', 'iam'] as const
+export type ExecutionPolicyPart = (typeof EXECUTION_POLICY_PARTS)[number]
+
 export class BootstrapStack extends Stack {
   readonly deployRole: iam.Role
 
@@ -147,10 +151,12 @@ export class BootstrapStack extends Stack {
       'ec2:CreateInternetGateway',
       'ec2:CreateSecurityGroup',
     ]
-    const execution = new iam.ManagedPolicy(this, 'CfnExecutionPolicy', {
-      managedPolicyName: NAMES.cfnExecutionPolicy,
-      description: `What CloudFormation may do for the AscrumDemo* stacks (role ${NAMES.cfnExecutionRole})`,
-      statements: [
+    // One managed policy per part: IAM caps a managed policy at 6,144 characters without whitespace, and
+    // the single policy of round 4 (about 9,600) failed the first live bootstrap with ServiceLimitExceeded
+    // (worklog, 2026-11-24, policy size). The statements are unchanged; only their grouping is new, and
+    // the tests pin both the union and each part's worst-case size.
+    const executionStatements: Record<ExecutionPolicyPart, iam.PolicyStatement[]> = {
+      network: [
         new iam.PolicyStatement({
           sid: 'ReadOnly',
           actions: [
@@ -215,6 +221,8 @@ export class BootstrapStack extends Stack {
           resources: ['*'],
           conditions: { StringEquals: { ...sameRegion, ...demoTagged } },
         }),
+      ],
+      compute: [
         new iam.PolicyStatement({
           sid: 'LoadBalancer',
           actions: [
@@ -291,6 +299,8 @@ export class BootstrapStack extends Stack {
           ],
           resources: [arn('ecr', `repository/${NAMES.apiRepository}`)],
         }),
+      ],
+      data: [
         new iam.PolicyStatement({
           // CreateDBInstance is also authorised against the default option and parameter groups it uses.
           sid: 'Database',
@@ -368,6 +378,8 @@ export class BootstrapStack extends Stack {
           ],
           resources: [`arn:${Aws.PARTITION}:s3:::${webBucketName(Aws.ACCOUNT_ID, Aws.REGION)}`],
         }),
+      ],
+      cdn: [
         new iam.PolicyStatement({
           sid: 'CdnFunction',
           actions: [
@@ -410,6 +422,8 @@ export class BootstrapStack extends Stack {
           ],
           resources: ['*'],
         }),
+      ],
+      iam: [
         new iam.PolicyStatement({
           // The keys IAM evaluates iam:PermissionsBoundary for: a role is created, or given a policy, only
           // with the boundary.
@@ -459,13 +473,21 @@ export class BootstrapStack extends Stack {
           resources: ['*'],
         }),
       ],
-    })
+    }
+    const executionPolicies = EXECUTION_POLICY_PARTS.map(
+      (part) =>
+        new iam.ManagedPolicy(this, `CfnExecutionPolicy-${part}`, {
+          managedPolicyName: `${NAMES.cfnExecutionPolicy}-${part}`,
+          description: `What CloudFormation may do for the AscrumDemo* stacks (role ${NAMES.cfnExecutionRole}): ${part}`,
+          statements: executionStatements[part],
+        }),
+    )
 
     const executionRole = new iam.Role(this, 'CfnExecutionRole', {
       roleName: NAMES.cfnExecutionRole,
       description: 'CloudFormation, for the AscrumDemo* stacks only (passed by the deploy role)',
       assumedBy: new iam.ServicePrincipal('cloudformation.amazonaws.com'),
-      managedPolicies: [execution],
+      managedPolicies: executionPolicies,
     })
 
     // --- The deploy role (assumed by the workflows through OIDC) ---------------------------------------
