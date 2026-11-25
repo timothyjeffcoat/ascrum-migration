@@ -43,6 +43,12 @@ never sees. ECR's gate stays as the final check on the exact image that is deplo
 answer because it is a new tool in CI (CLAUDE.md: no new dependencies or actions without an answered
 question).
 
+*Note, 2026-11-25 (worker, after the security review's sec-03):* Node carries its own, statically linked
+OpenSSL (3.5.9 in `node:24.22.3`; `ldd` shows no libssl), which the Alpine package fix does not change;
+OpenSSL rates all five CVEs Low and fixes them in 3.5.10. Whether Trivy (or ECR) detects Node's bundled
+OpenSSL at all, as opposed to Alpine's `libssl3`/`libcrypto3` packages, is **unverified**; the follow-up
+should check it rather than assume either way.
+
 **Q-p5-image-cves-3. The web image's nginx base has the same unpatched packages.**
 Context: `docker/web.Dockerfile` builds on `node:24.22.3-alpine3.24` (the same digest as the API) but only
 in its build stage, which ships nothing; its runtime stage is

@@ -51,7 +51,7 @@ none of these), the v3.24 main `APKINDEX` (what is installable now), aports `3.2
 
 aports `main/openssl` 3.5.9-r1 adds exactly the five patches `CVE-2026-88822.patch`, `-88823`, `-95691`,
 `-95692`, `-107496` (commit message cites the 2026-11-10 advisory). ECR's severities differ from
-OpenSSL's own ("Low" for 88822 and 88823); ECR uses the distribution's severity when there is one, else
+OpenSSL's own (the advisory rates all five Low; session 2 corrects my "88822 and 88823" here); ECR uses the distribution's severity when there is one, else
 CVSS (ECR user guide, basic scanning), and Alpine's secdb has no severity. Not material here: all five are
 fixed by the same package.
 
@@ -166,3 +166,111 @@ missing fields; with the change, `Tests 12 passed (12)`. `entrypoints.test.ts` p
   (`AC-CTR-03: probes create no session; unhealthy without the database; healthy again when it is back`);
   `down --volumes --remove-orphans` exit 0.
 - Not run: anything against AWS. Whether ECR's next scan is clean is for the next live run.
+
+## 2026-11-25, session 2 (worker): sec-01 fail-open fix, sec-02, sec-03
+
+**Why.** The security review of #78 found a blocking fail-open path (sec-01). Session 1's Dockerfile
+loop and check-images.sh failed only when `apk version -t` printed `<`. Anything else counted as "at or
+above": empty output, which is what a malformed version gives (`1.5r0`, `1.4_r0`, `3.5.9-1`, `v1.4-r0`
+all print nothing, rc 0, re-checked in the patched image this session), and an error such as
+`apk: not found`. That was my mistake. I tested the case I expected (a valid higher floor) and never the
+outputs that are neither `<` nor `>`/`=`.
+
+**Branch.** Fast-forwarded to `origin/convert/p5-image-cves` (the reviewer's `d19a92a` and the
+orchestrator's `5f6c276` with the owner's answers), then merged `origin/migration` (#79) with a merge
+commit. No rebase, no force-push.
+
+### Before → after: the floor mechanism
+
+- **Before:** `apk upgrade --no-cache libcrypto3 libssl3 zlib`, then a shell loop over
+  `libcrypto3=3.5.9-r1 libssl3=3.5.9-r1 zlib=1.4-r0` that failed only on `<`. check-images.sh read the
+  `for min in …` list and also failed only on `<`; when it found no list, it checked nothing.
+- **After, Dockerfile:** `RUN apk add --no-cache 'libcrypto3>=3.5.9-r1' 'libssl3>=3.5.9-r1' 'zlib>=1.4-r0'`.
+  apk's solver enforces the floors itself, so the step fails closed by construction: an unsatisfiable
+  floor exits 3, a malformed one exits 99. This line is the one list of floors (it also settles hadolint
+  DL3017, an unpinned `apk upgrade`).
+- **After, check-images.sh:**
+  - It reads the floors from that `apk add` line and checks each against a strict apk-version pattern
+    (`<name>>=<digits>(.<digits>)*[letter](_suffix<n>)*(-r<n>)`).
+  - It fails when there are no floors, when an entry is malformed, or when an `apk add` option other than
+    `--no-cache` appears.
+  - In the image, apk's comparison must print exactly `>` or `=` for every floor, and the number of
+    confirmed floors must equal the number of floors. Anything else fails: empty output, an error, a
+    package that is not installed, or no apk at all.
+- **Packages, base → patched:** `libcrypto3` 3.5.9-r0 → 3.5.9-r1, `libssl3` 3.5.9-r0 → 3.5.9-r1, `zlib`
+  1.3.2-r1 → 1.4-r0. Nothing else changes: 19 packages before and after (`apk info -v` diffed against the
+  pinned base). The build log: `Upgrading libcrypto3 (3.5.9-r0 -> 3.5.9-r1)`, the same for libssl3, and
+  `zlib (1.3.2-r1 -> 1.4-r0)`, then `OK: 10.9 MiB in 19 packages`.
+- **World:** `/etc/apk/world` gains `libcrypto3>=3.5.9-r1`, `libssl3>=3.5.9-r1` and `zlib>=1.4-r0`
+  (base: `alpine-baselayout alpine-keys alpine-release apk-tools busybox libatomic libstdc++ musl-utils`).
+  This does not matter here. The world file only steers a later apk run, the API never runs apk, and the
+  container runs as `node`, which cannot. If someone did run apk in it, the floors would stop a downgrade
+  below the fixed versions, which is the intent. The three packages were already installed as
+  dependencies, so naming them adds no package.
+
+### sec-02: no unsigned packages or other repositories
+
+check-images.sh fails if any instruction in api.Dockerfile that runs apk uses `--allow-untrusted`,
+`--repository…`, `--repositories-file…`, `-X…` or `--keys-dir…`. The `apk add` step accepts only
+`--no-cache` among its options.
+
+### Proofs, one case at a time (each a separate run; the Dockerfile restored afterwards, `cmp` equal)
+
+The check-images cases ran `docker/check-images.sh <api image> ascrum-web:p5cves2` with project
+`ascrum-p5cves2` and the Gitleaks copy re-verified against the pinned SHA-256 (`g.tgz: OK`, `cmp`
+equal, `8.30.1`).
+
+| Case | Exit | Output line |
+|---|---|---|
+| Dockerfile: malformed floor `'zlib>=1.5r0'` (docker build) | 1 (apk 99) | `ERROR: 'zlib>=1.5r0' is not a valid world dependency, format is name(@tag)([<>~=]version)` |
+| Dockerfile: unsatisfiable floor `'zlib>=1.5-r0'` (docker build) | 1 (apk 3) | `ERROR: unable to select packages:` / `breaks: world[zlib>=1.5-r0]` |
+| check-images: malformed floor `'zlib>=1.5r0'` in api.Dockerfile, patched image | 1 | `check-images FAIL: docker/api.Dockerfile: apk add argument zlib>=1.5r0 is not a '<package>>=<apk version>' floor` |
+| check-images: apk removed from the patched image (`rm /sbin/apk` on top) | 1 | `check-images FAIL: p5cves-api:noapk: zlib 1.4-r0 is not shown at or above 1.4-r0 (apk version -t printed 'sh: line 5: apk: not found')` (also for the other two; `0 of 3 OS package floors confirmed`) |
+| check-images: the unpatched image (built from `3d2f9b9`'s Dockerfile) | 1 | `check-images FAIL: p5cves-api:unpatched: zlib 1.3.2-r1 is not shown at or above 1.4-r0 (apk version -t printed '<')` (libcrypto3, libssl3 likewise; `0 of 3`) |
+| check-images: empty floor list (the `apk add` line removed) | 1 | `check-images FAIL: docker/api.Dockerfile: no apk add '<package>>=<version>' floors found; if the base image now has the fixes, remove this check with the step` |
+| check-images (sec-02): `--allow-untrusted` added | 1 | `check-images FAIL: docker/api.Dockerfile: an apk step uses --allow-untrusted (unsigned packages, or another repository or key set)` |
+| check-images (sec-02): `-X https://example.invalid/alpine` added | 1 | `check-images FAIL: docker/api.Dockerfile: an apk step uses -X (unsigned packages, or another repository or key set)` |
+| check-images: the patched image, real Dockerfile | 0 | `ascrum-api:p5cves2: OS packages at or above their floors: libcrypto3 3.5.9-r1 = 3.5.9-r1;libssl3 3.5.9-r1 = 3.5.9-r1;zlib 1.4-r0 = 1.4-r0;` |
+
+### sec-03: wording
+
+Node's own OpenSSL is not fixed by this change. `node:24.22.3` bundles OpenSSL 3.5.9 statically
+(`process.versions.openssl` 3.5.9; `ldd` shows no libssl). The Alpine `libssl3`/`libcrypto3` this step
+raises are used only by apk-tools and busybox's `ssl_client`. OpenSSL's advisory rates all five CVEs Low
+(re-read this session: Severity Low for each) and fixes them in 3.5.10, due 2026-12-01.
+
+What changed:
+- The Dockerfile comment now says this.
+- Session 1's "Low for 88822 and 88823" is corrected above.
+- Q-p5-image-cves-2 has a dated note: whether Trivy or ECR sees Node's bundled OpenSSL is unverified.
+- The PR body is updated to match.
+
+### Mistakes and refusals this session
+
+- **sec-01 was my fail-open.** The session 1 "failure branch" proof only tried a valid higher floor and a
+  missing package, never malformed input or a missing apk.
+- **Three refusals by the worktree guard ("too complex to verify that it stays inside the worktree").**
+  These are mechanical refusals, and each message itself says to split the command. They were not the
+  permission classifier. The reviewer's rule (DEV-p5-image-cves-03) says not to retry a refused command
+  in another form, so I record exactly what I did:
+  - a python heredoc that rewrote check-images.sh: I made the same change with the Edit tool;
+  - a combined command that exported the unpatched Dockerfile with `git show` and built it: I ran the
+    `git show` alone, as the message asked;
+  - an auxiliary bash loop testing the floor pattern on sample strings: I did not retry it. The
+    check-images malformed-floor case above covers the same ground through the real script.
+
+### Gates (this session, unpiped)
+
+- **infra** (credential sources pointed at /dev/null, no AWS variables): `pnpm verify` exit 0. Lint
+  `All matched files use Prettier code style!`, `Test Files 11 passed (11)`, `Tests 151 passed (151)`,
+  synth.
+- **Images, as e2e-compose runs them** (project `ascrum-p5cves2`, `IMAGE_TAG=p5cves2`): all exit 0.
+  - `docker compose --profile prod-check build`
+  - `docker/check-images.sh ascrum-api:p5cves2 ascrum-web:p5cves2` (the "patched" row above)
+  - `up --wait --wait-timeout 180`
+  - `pnpm e2e:compose`, `48 passed (32.5s)`
+  - `docker/check-client-address.sh`
+  - `docker/check-health.sh` (`AC-CTR-03: probes create no session; unhealthy without the database; healthy again when it is back`)
+  - `down --volumes --remove-orphans`
+- **web `pnpm verify`:** not run, because nothing under `web/` changed (`git diff --stat` shows docker/
+  and spec/ only).
