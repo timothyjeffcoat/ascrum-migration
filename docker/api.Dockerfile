@@ -64,6 +64,25 @@ RUN printf '{ "type": "module" }\n' > web/package.json \
 FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS runtime
 ENV NODE_ENV=production \
     PORT=3000
+# Alpine's security fixes that the pinned base image does not carry yet (live deploy run 3, the image-scan
+# gate; spec/worklogs/p5-image-cves.md has the table and the sources). Fixed versions from Alpine's secdb,
+# v3.24 main (secdb.alpinelinux.org/v3.24/main.json):
+#   libcrypto3, libssl3 >= 3.5.9-r1 (openssl): CVE-2026-95691, CVE-2026-95692, CVE-2026-88823,
+#     CVE-2026-107496 (HIGH), CVE-2026-88822 (MEDIUM); OpenSSL advisory of 2026-11-10, backported by Alpine.
+#   zlib >= 1.4-r0: CVE-2026-4738 (CRITICAL as scanned; Alpine lists it fixed in 1.4-r0, although the
+#     affected contrib/infback9 code is not built into Alpine's libz).
+# Only the runtime stage: the deps stage ships no OS package into the image. The build fails when a package
+# ends up below its fixed version (and docker/check-images.sh checks the built image against the same list).
+# Remove this step once Dependabot moves the FROM lines to a base image that already has these versions.
+RUN apk upgrade --no-cache libcrypto3 libssl3 zlib \
+ && for min in libcrypto3=3.5.9-r1 libssl3=3.5.9-r1 zlib=1.4-r0; do \
+      name=${min%%=*}; want=${min#*=}; \
+      have=$(awk -v p="P:$name" '$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }' /lib/apk/db/installed); \
+      if [ -z "$have" ] || [ "$(apk version -t "$have" "$want")" = "<" ]; then \
+        echo "$name ${have:-<not installed>} is below the fixed version $want" >&2; exit 1; \
+      fi; \
+      echo "$name $have (fixed in $want)"; \
+    done
 # The API never installs anything at run time, so the base image's package managers go: fewer tools for
 # an attacker, fewer packages for the image scan (wave C). They live in the base layers, so this does
 # not make the image smaller.

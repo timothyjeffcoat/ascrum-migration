@@ -303,6 +303,31 @@ check_startup() {
 }
 check_startup "$api_image"
 
+# OS package fixes (p5-image-cves, live deploy run 3): docker/api.Dockerfile upgrades the Alpine packages
+# its pinned base image ships below a security fix and lists them as `for min in <package>=<fixed version>…`.
+# The built image must hold each at that version or later. apk's own comparison, run in the image; the
+# list is read from the Dockerfile, so there is one list. No list (the base image already has the fixes):
+# nothing to check.
+read -ra minimums <<< "$(instructions docker/api.Dockerfile | sed -nE 's/.*[[:space:]]for min in ([^;]*);.*/\1/p')"
+if ((${#minimums[@]} > 0)); then
+  if versions=$(docker run --rm --network none --entrypoint sh "$api_image" -c '
+    for min in "$@"; do
+      name=${min%%=*}; want=${min#*=}
+      have=$(awk -v p="P:$name" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed)
+      if [ -z "$have" ] || [ "$(apk version -t "$have" "$want")" = "<" ]; then
+        echo "BELOW $name ${have:-<not installed>} < $want"
+      else
+        echo "$name $have >= $want"
+      fi
+    done' sh "${minimums[@]}" 2>&1); then
+    below=$(grep '^BELOW ' <<< "$versions" || true)
+    [[ -z $below ]] || fail "$api_image: OS packages below their fixed versions: $(sed 's/^BELOW //' <<< "$below" | tr '\n' ' ')"
+    [[ -n $below ]] || echo "$api_image: OS packages at or above their fixed versions: $(tr '\n' ';' <<< "$versions")"
+  else
+    fail "$api_image: could not read its OS package versions: $versions"
+  fi
+fi
+
 # Dev dependencies: none of api/package.json's devDependencies is installed (pnpm keeps every installed
 # package as node_modules/.pnpm/<name>@<version>, scoped names with + for /).
 while read -r dev; do
