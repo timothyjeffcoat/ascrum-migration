@@ -170,6 +170,7 @@ export class BootstrapStack extends Stack {
     const lb = (resource: string) => arn('elasticloadbalancing', resource)
     const rdsArn = (resource: string) => arn('rds', resource)
     const ecsArn = (resource: string) => arn('ecs', resource)
+    const demoRequestTag = { [`aws:RequestTag/${TAG.project.key}`]: TAG.project.value }
     const networkCreates = [
       'ec2:CreateVpc',
       'ec2:CreateSubnet',
@@ -177,6 +178,8 @@ export class BootstrapStack extends Stack {
       'ec2:CreateInternetGateway',
       'ec2:CreateSecurityGroup',
     ]
+    /** The creates that put a new resource inside an existing VPC. */
+    const networkChildCreates = ['ec2:CreateSubnet', 'ec2:CreateRouteTable', 'ec2:CreateSecurityGroup']
     // One managed policy per part: IAM caps a managed policy at 6,144 characters without whitespace, and
     // the single policy of round 4 (about 9,600) failed the first live bootstrap with ServiceLimitExceeded
     // (worklog, 2026-11-24, policy size). The statements are unchanged; only their grouping is new, and
@@ -205,11 +208,39 @@ export class BootstrapStack extends Stack {
           ],
           resources: ['*'],
         }),
+        // New network resources have generated ids, so no ARN can name them; the demo tag scopes them instead.
+        // A subnet, security group or route table is created *inside* an existing VPC, and IAM authorises
+        // the call against that VPC as well as the new resource (Service Authorization Reference, EC2:
+        // CreateSubnet and CreateRouteTable require `vpc*`, CreateSecurityGroup lists `vpc`). So the parent
+        // VPC must already carry the demo tag, and the new resource must be requested with it. The two
+        // conditions sit in separate statements on purpose: a request's tags are in the context of every
+        // resource it touches, so one statement with RequestTag on `vpc/*` would let a child be created in
+        // any VPC (security review of #82, sec-01).
         new iam.PolicyStatement({
-          // New network resources (ids are generated, so no ARN to name). Creating something touches
-          // nothing that exists; the tag rules below decide what may be changed or deleted afterwards.
-          sid: 'NetworkCreate',
-          actions: [...networkCreates, 'ec2:GetManagedPrefixListEntries'],
+          // A VPC or internet gateway has no parent: only with the demo tag in the request.
+          sid: 'NetworkCreateTagged',
+          actions: ['ec2:CreateVpc', 'ec2:CreateInternetGateway'],
+          resources: [arn('ec2', 'vpc/*'), arn('ec2', 'internet-gateway/*')],
+          conditions: { StringEquals: { ...sameRegion, ...demoRequestTag } },
+        }),
+        new iam.PolicyStatement({
+          // The parent side of a child create: only in a VPC that carries the demo tag.
+          sid: 'NetworkCreateInDemoVpc',
+          actions: networkChildCreates,
+          resources: [arn('ec2', 'vpc/*')],
+          conditions: { StringEquals: { ...sameRegion, ...demoTagged } },
+        }),
+        new iam.PolicyStatement({
+          // The new child itself: only with the demo tag in the request.
+          sid: 'NetworkCreateChildTagged',
+          actions: networkChildCreates,
+          resources: [arn('ec2', 'subnet/*'), arn('ec2', 'security-group/*'), arn('ec2', 'route-table/*')],
+          conditions: { StringEquals: { ...sameRegion, ...demoRequestTag } },
+        }),
+        new iam.PolicyStatement({
+          // Reads the CloudFront origin-facing prefix list for the load balancer's security group.
+          sid: 'NetworkPrefixLists',
+          actions: ['ec2:GetManagedPrefixListEntries'],
           resources: ['*'],
           conditions: { StringEquals: sameRegion },
         }),
@@ -223,7 +254,7 @@ export class BootstrapStack extends Stack {
             StringEquals: {
               ...sameRegion,
               'ec2:CreateAction': networkCreates.map((action) => action.replace(/^ec2:/, '')),
-              [`aws:RequestTag/${TAG.project.key}`]: TAG.project.value,
+              ...demoRequestTag,
             },
           },
         }),

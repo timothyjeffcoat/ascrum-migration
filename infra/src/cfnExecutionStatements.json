@@ -23,14 +23,170 @@
     "Sid": "ReadOnly"
   },
   {
-    "Action": [
-      "ec2:CreateInternetGateway",
-      "ec2:CreateRouteTable",
-      "ec2:CreateSecurityGroup",
-      "ec2:CreateSubnet",
-      "ec2:CreateVpc",
-      "ec2:GetManagedPrefixListEntries"
+    "Action": ["ec2:CreateInternetGateway", "ec2:CreateVpc"],
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestedRegion": {
+          "Ref": "AWS::Region"
+        },
+        "aws:RequestTag/project": "ascrum-migration"
+      }
+    },
+    "Effect": "Allow",
+    "Resource": [
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":ec2:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":internet-gateway/*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":ec2:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":vpc/*"
+          ]
+        ]
+      }
     ],
+    "Sid": "NetworkCreateTagged"
+  },
+  {
+    "Action": ["ec2:CreateRouteTable", "ec2:CreateSecurityGroup", "ec2:CreateSubnet"],
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestedRegion": {
+          "Ref": "AWS::Region"
+        },
+        "aws:ResourceTag/project": "ascrum-migration"
+      }
+    },
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":ec2:",
+          {
+            "Ref": "AWS::Region"
+          },
+          ":",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":vpc/*"
+        ]
+      ]
+    },
+    "Sid": "NetworkCreateInDemoVpc"
+  },
+  {
+    "Action": ["ec2:CreateRouteTable", "ec2:CreateSecurityGroup", "ec2:CreateSubnet"],
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestedRegion": {
+          "Ref": "AWS::Region"
+        },
+        "aws:RequestTag/project": "ascrum-migration"
+      }
+    },
+    "Effect": "Allow",
+    "Resource": [
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":ec2:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":route-table/*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":ec2:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":security-group/*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":ec2:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":subnet/*"
+          ]
+        ]
+      }
+    ],
+    "Sid": "NetworkCreateChildTagged"
+  },
+  {
+    "Action": "ec2:GetManagedPrefixListEntries",
     "Condition": {
       "StringEquals": {
         "aws:RequestedRegion": {
@@ -40,7 +196,7 @@
     },
     "Effect": "Allow",
     "Resource": "*",
-    "Sid": "NetworkCreate"
+    "Sid": "NetworkPrefixLists"
   },
   {
     "Action": "ec2:CreateTags",

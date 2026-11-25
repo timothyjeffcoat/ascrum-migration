@@ -53,7 +53,11 @@ describe('live run 4: how each demo resource type is tagged, and what allows it'
   })
 
   it('live run 4: ec2:CreateAction holds the bare API names of the network creates ("CreateVpc", never "ec2:CreateVpc"), with the demo tag in the request', () => {
-    const creates = actionsOf(bySid('NetworkCreate') as Statement).filter((a) => a.startsWith('ec2:Create'))
+    const creates = [
+      ...new Set(
+        ['NetworkCreateTagged', 'NetworkCreateChildTagged'].flatMap((sid) => actionsOf(bySid(sid) as Statement)),
+      ),
+    ]
     const condition = (bySid('NetworkTagOnCreate') as Statement).Condition?.StringEquals ?? {}
     expect(condition['ec2:CreateAction']).toEqual(expect.arrayContaining(creates.map((a) => a.replace(/^ec2:/, ''))))
     expect((condition['ec2:CreateAction'] as string[]).every((value) => /^Create[A-Za-z]+$/.test(value))).toBe(true)
