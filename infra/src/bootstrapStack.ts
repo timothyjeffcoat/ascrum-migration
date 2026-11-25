@@ -245,6 +245,18 @@ export class BootstrapStack extends Stack {
           conditions: { StringEquals: sameRegion },
         }),
         new iam.PolicyStatement({
+          // Elastic Load Balancing makes these EC2 calls as the caller while it creates the load balancer.
+          // No CloudFormation schema lists them; live run 5 failed on the first ("not authorized to perform:
+          // ec2:GetSecurityGroupsForVpc"), and the AWS managed policy ElasticLoadBalancingFullAccess names
+          // both. Both are reads that take a tagged resource (Service Authorization Reference: `vpc*` and
+          // `security-group*`, aws:ResourceTag), so only on the demo's VPC and security groups
+          // (worklog, 2026-11-25, live run 5).
+          sid: 'LoadBalancerEc2Reads',
+          actions: ['ec2:GetSecurityGroupsForVpc', 'ec2:ValidateSecurityGroupQuotasForInterface'],
+          resources: [arn('ec2', 'vpc/*'), arn('ec2', 'security-group/*')],
+          conditions: { StringEquals: { ...sameRegion, ...demoTagged } },
+        }),
+        new iam.PolicyStatement({
           // Tags only on a resource being created by one of the calls above (TagSpecifications), and only
           // when the demo's tag is among them, so every network resource is created already tagged.
           sid: 'NetworkTagOnCreate',
