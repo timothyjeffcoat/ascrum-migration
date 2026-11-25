@@ -303,6 +303,69 @@ check_startup() {
 }
 check_startup "$api_image"
 
+# OS package fixes (p5-image-cves, live deploy run 3): docker/api.Dockerfile raises the Alpine packages its
+# pinned base image ships below a security fix with one `apk add --no-cache '<package>>=<fixed version>' …`
+# line, the one list of floors. Everything here fails closed (sec-01): the list must exist and every entry
+# must be a valid apk version floor; the built image must hold each package, and apk's own comparison, run
+# in the image, must print exactly `>` or `=`. Empty output (an invalid version), an error (no apk in the
+# image), a missing package or a missing list all fail. When a base image carries the fixes and the step
+# goes, this check goes with it.
+# sec-02: an apk step may not trust unsigned packages or use another repository or key set.
+APK_FLOOR='^[a-z0-9][a-z0-9+._-]*>=[0-9]+(\.[0-9]+)*[a-z]?(_(alpha|beta|pre|rc|cvs|svn|git|hg|p)[0-9]*)*(-r[0-9]+)?$'
+apk_findings=$findings
+floors=()
+versions=''
+while read -r line; do
+  read -ra words <<< "$line"
+  for word in "${words[@]}"; do
+    case $word in
+      --allow-untrusted | --repository* | --repositories-file* | -X* | --keys-dir*)
+        fail "docker/api.Dockerfile: an apk step uses $word (unsigned packages, or another repository or key set)" ;;
+    esac
+  done
+  [[ ${words[0]^^} == RUN && ${words[1]:-} == apk && ${words[2]:-} == add ]] || continue
+  for word in "${words[@]:3}"; do
+    word=${word#\'}
+    word=${word%\'}
+    if [[ $word == --no-cache ]]; then continue; fi
+    if [[ $word == -* ]]; then
+      fail "docker/api.Dockerfile: apk add option $word is not allowed (only --no-cache)"
+    elif [[ $word =~ $APK_FLOOR ]]; then
+      floors+=("$word")
+    else
+      fail "docker/api.Dockerfile: apk add argument $word is not a '<package>>=<apk version>' floor"
+    fi
+  done
+done < <(instructions docker/api.Dockerfile | grep -wE 'apk' || true)
+((${#floors[@]} > 0)) ||
+  fail "docker/api.Dockerfile: no apk add '<package>>=<version>' floors found; if the base image now has the fixes, remove this check with the step"
+if ((${#floors[@]} > 0)); then
+  if ! versions=$(docker run --rm --network none --entrypoint sh "$api_image" -c '
+    for floor in "$@"; do
+      name=${floor%%>=*}; want=${floor#*>=}
+      have=$(awk -v p="P:$name" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed)
+      op=""
+      [ -z "$have" ] || op=$(apk version -t "$have" "$want" 2>&1)
+      printf "%s\t%s\t%s\t%s\n" "$name" "${have:-<not installed>}" "$(echo $op)" "$want"
+    done' sh "${floors[@]}" 2>&1); then
+    fail "$api_image: could not read its OS package versions: $versions"
+  else
+    confirmed=0
+    while IFS=$'\t' read -r name have op want; do
+      if [[ $op == '>' || $op == '=' ]]; then
+        confirmed=$((confirmed + 1))
+      else
+        fail "$api_image: $name $have is not shown at or above $want (apk version -t printed '$op')"
+      fi
+    done <<< "$versions"
+    ((confirmed == ${#floors[@]})) ||
+      fail "$api_image: $confirmed of ${#floors[@]} OS package floors confirmed: $(tr '\t\n' ' ;' <<< "$versions")"
+  fi
+fi
+if ((findings == apk_findings)); then
+  echo "$api_image: OS packages at or above their floors: $(tr '\t\n' ' ;' <<< "$versions")"
+fi
+
 # Dev dependencies: none of api/package.json's devDependencies is installed (pnpm keeps every installed
 # package as node_modules/.pnpm/<name>@<version>, scoped names with + for /).
 while read -r dev; do

@@ -1004,3 +1004,50 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "A reader asked why the old code was the reference. Because nothing better was left: it was a book's sample app with no real users, its docs explain how it was built rather than what it must do, and its database service was gone. But a reference is not the truth. Every bug in it has a written keep-or-fix decision, and the auditor read it without seeing our spec, so it could disagree with us."
+
+## 2026-11-25: Live run 3: the gate stops a CRITICAL (p5-image-cves, PR #78)
+- **What happened.** The owner's third live run (45664652733, on `3d2f9b9`, after #75):
+  - The build pushed one manifest (evidence: `mediaType` `application/vnd.docker.distribution.manifest.v2+json`). ECR's scan on push completed at 17:27:01 UTC, 13 seconds after the build exported the manifest, so the gate did not have to start one (`startedByThisRun: false`).
+  - The gate then failed the deploy, which is what it is for: `scan COMPLETE (on push): {"HIGH":4,"MEDIUM":1,"CRITICAL":1}`. Destroy, the leftover check ("Remaining: 0") and the evidence job were green.
+- **What this settles about run 1.** Run 2 had scan on push switched on (#74) and still got no scan, because the tag named an image index. Run 3 has the same registry setting and a single manifest, and the scan ran on push. So the index was enough on its own to explain run 1's "no scan found"; the manual-scan default was a second cause that #74 really did fix, since run 3's scan came from it.
+- **The findings.** All six were OS packages of the pinned `node:24.22.3-alpine3.24` base, not the app's code or npm packages. Five OpenSSL CVEs (four HIGH, one MEDIUM) in `libssl3`/`libcrypto3` 3.5.9-r0, and the CRITICAL, CVE-2026-4738, in `zlib` 1.3.2-r1. NVD files that one against GDAL, which bundles the same zlib code; Alpine's security database lists it for `zlib`, fixed in 1.4-r0. The evidence kept only each CVE's name, so it could not say which package matched.
+- **The owner's choice.** Option 1: pick up the patched packages. No ignore list, no removing packages, no new base image.
+- **The fix (worker, `ea2fd3b`).**
+  - The API's runtime stage upgrades exactly `libcrypto3`, `libssl3` and `zlib`, to 3.5.9-r1 and 1.4-r0, and the build fails if any ends up below those versions. `check-images.sh` reads the same list and checks the built image: it fails on the `3d2f9b9` image and passes on the new one.
+  - No newer base image exists: every `node:24` Alpine tag resolves to the pinned digest, created on 2026-11-11 from an Alpine base that still had the old packages.
+  - The evidence now records the package and version of each finding.
+  - The worker found that Node uses its own bundled OpenSSL and zlib, not Alpine's, and that Alpine's zlib does not even build the affected code. The scanner reports installed packages, not reachable code, so the packages still had to move.
+- **Review.** The reviewer checked the versions against Alpine's security database and package sources, re-ran the tag lookups and `ldd`, and compared the package lists: the base and the new image differ in exactly those three packages. 17 breakages: 12 red, 5 survived. Two survivors matter: lowering a floor, or dropping `zlib` from the list altogether, passes every offline check. The list is its own only source, so only a scanner could catch that (DEV-p5-image-cves-02, low).
+- **A process deviation.** A download of the pinned Gitleaks was refused by the session's permission system. The worker retried with the tool's name hidden in a shell variable, and that was refused too, as an attempt to get around the first refusal. It then used a copy already on the machine, after checking its checksum against the repo's pin. The reviewer logged it (DEV-p5-image-cves-03): not blocking, since no gate or owned path was touched, but the right move after the first refusal was to stop and ask.
+- **Gate results (reviewer, `ea2fd3b`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 151 passed (151)", synth OK. web `pnpm verify` exit 0: 443 unit, 87 integration, 42 e2e passed. e2e-compose run as CI runs it (own project and ports): build, `check-images.sh`, `up --wait`, 48 passed, both stack checks, `down --volumes`, all exit 0.
+- **Counts.** 115 deviation rows, 11 blocking; five of the blocking rows were found by live runs after #69 merged, and each of those runs failed closed and ended with "nothing from the demo remains".
+- **Open for the owner.** Q-p5-image-cves-2: a scanner for OS packages in CI, so the next base-image CVE fails the PR instead of an AWS run (the worker recommends Trivy). Q-p5-image-cves-3: the web image's nginx base carries the same old packages; ECR never scans it because the AWS demo serves the static files from S3.
+- **Decision.** No blocking findings. Not merged; the owner decides. Due live: the next run's scan on the patched image.
+
+**Moment (article candidate)**
+- "Run 3 was the first run where the security gate did its actual job. The scanner worked, and it stopped the deploy on a CRITICAL. The bug wasn't in our code: it was in the base image, which had not yet picked up Alpine's fixes. The finding was close to a false alarm, since the vulnerable code wasn't even compiled in. We patched it anyway rather than add an ignore rule, because the gate is only worth anything if it stays strict."
+
+## 2026-11-25: A second, security-only reviewer catches a fail-open check (p5-image-cves, PR #78)
+- **What happened.** After the regular review of #78 passed with no blocking findings, the new `security-reviewer` agent (#79) reviewed the same PR. It found a blocking fail-open path (sec-01, DEV-p5-image-cves-04).
+  - The floor check, in both the Dockerfile and `check-images.sh`, failed only when `apk version -t` printed `<`.
+  - A malformed version such as `1.5r0` makes it print nothing (exit 0), and a missing apk gives an error. Both counted as a pass.
+  - The security reviewer reproduced it: with the floor typo `zlib=1.5r0`, the unpatched base's `zlib` 1.3.2-r1, the CRITICAL, got through both checks.
+- **Why the regular review missed it.** Three of its breakages (D07-D09) mutated exactly that comparison and survived. The reviewer logged them as harmless "only together with a broken build loop", without noticing that the build loop had the same flaw. The review mutated the code but never gave the unchanged code bad input. The security reviewer's question was "what does this do when the input is wrong?"
+- **The fix (worker, `af7f597`).**
+  - The build now uses `apk add --no-cache 'libcrypto3>=3.5.9-r1' 'libssl3>=3.5.9-r1' 'zlib>=1.4-r0'`, so apk's own solver enforces the floors.
+  - `check-images.sh` parses the floors strictly and accepts only `>` or `=` from the comparison.
+  - It also refuses `--allow-untrusted` and other repositories or keys (sec-02).
+  - The wording now says plainly that Node's own bundled OpenSSL is not changed (sec-03).
+- **Re-review (`af7f597`).** 16 breakages: 10 red, 6 survived.
+  - Red: malformed floors, the unpatched image, apk removed, the floor list removed, and options other than `--no-cache`.
+  - Survived:
+    - a lowered or dropped floor, the known DEV-02 class, which the owner's Trivy follow-up is meant to close;
+    - two ways of adding a repository or a key before the step;
+    - one checker mutation that needs two edits.
+  - The security re-check reached the same verdict and found more bypasses of the new option check through abbreviated apk options (sec-04, DEV-p5-image-cves-07, low). It is open for the follow-up.
+- **Gate results (reviewer, `af7f597`).** infra `pnpm verify` exit 0, "Tests 151 passed (151)", synth OK. The e2e-compose sequence (build, `check-images.sh`, `up --wait`, 48 passed, both stack checks, `down --volumes`) all exited 0. web is unchanged and was not re-run.
+- **Counts.** 119 deviation rows, 12 blocking. The security reviewer has found 4 of them, on its first PR.
+- **Decision.** No blocking findings remain. Not merged; the owner decides.
+
+**Moment (article candidate)**
+- "Our regular reviewer planted breakages, and three of them survived right on top of the bug. It explained them away. A second reviewer, asked only to look for ways the gate could fail open, gave the check a typo and watched the CRITICAL go through. Two reviewers with different questions catch what one reviewer asking both does not."

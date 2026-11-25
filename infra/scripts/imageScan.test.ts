@@ -77,6 +77,45 @@ const run = (aws: Aws) =>
     completeMs: 50,
   })
 
+/**
+ * Live run 3 (run 45664652733): two of its six findings, shaped as ECR basic scanning returns them (the
+ * DescribeImageScanFindings reference). The package values are illustrative: run 3's evidence did not keep them.
+ */
+const RUN_3: AwsResult = {
+  code: 0,
+  stderr: '',
+  stdout: JSON.stringify({
+    registryId: '123456789012',
+    imageScanStatus: { status: 'COMPLETE' },
+    imageScanFindings: {
+      imageScanCompletedAt: '2026-11-25T08:00:00Z',
+      findingSeverityCounts: { HIGH: 1, CRITICAL: 1 },
+      findings: [
+        {
+          name: 'CVE-2026-95691',
+          severity: 'HIGH',
+          uri: 'https://nvd.nist.gov/vuln/detail/CVE-2026-95691',
+          description: 'OpenSSL QUIC client use-after-free',
+          attributes: [
+            { key: 'package_version', value: '3.5.9-r0' },
+            { key: 'package_name', value: 'openssl' },
+            { key: 'CVSS3_SCORE', value: '7.5' },
+          ],
+        },
+        {
+          name: 'CVE-2026-4738',
+          severity: 'CRITICAL',
+          uri: 'https://nvd.nist.gov/vuln/detail/CVE-2026-4738',
+          attributes: [
+            { key: 'package_name', value: 'zlib' },
+            { key: 'package_version', value: '1.3.2-r1' },
+          ],
+        },
+      ],
+    },
+  }),
+}
+
 describe('spec §6 image-scan: the scan gate', () => {
   it('image-scan: a scan on push that completes clean passes, and no scan is started', async () => {
     const { aws, calls } = scripted([findings('IN_PROGRESS'), findings('COMPLETE', { LOW: 2 })])
@@ -144,6 +183,36 @@ describe('spec §6 image-scan: the scan gate', () => {
   it('image-scan: the evidence summary carries no registry (account) id', async () => {
     const summary = await run(scripted([findings('COMPLETE', { LOW: 1 })]).aws)
     expect(JSON.stringify(summary)).not.toContain('123456789012')
+  })
+
+  it('image-scan (live run 3): each finding in the evidence names the package and version ECR matched', async () => {
+    const summary = await run(scripted([RUN_3]).aws)
+    expect(summary.findings).toEqual([
+      {
+        name: 'CVE-2026-95691',
+        severity: 'HIGH',
+        uri: 'https://nvd.nist.gov/vuln/detail/CVE-2026-95691',
+        package_name: 'openssl',
+        package_version: '3.5.9-r0',
+      },
+      {
+        name: 'CVE-2026-4738',
+        severity: 'CRITICAL',
+        uri: 'https://nvd.nist.gov/vuln/detail/CVE-2026-4738',
+        package_name: 'zlib',
+        package_version: '1.3.2-r1',
+      },
+    ])
+    // The verdict still reads only the counts: the package fields change the evidence, not the gate.
+    expect(verdict(summary)).toMatch(/2 HIGH or CRITICAL findings/)
+  })
+
+  it('image-scan (live run 3): a finding without package attributes keeps null package fields', async () => {
+    const summary = await run(scripted([findings('COMPLETE', { MEDIUM: 1 })]).aws)
+    expect(summary.findings).toEqual([
+      { name: 'CVE-MEDIUM', severity: 'MEDIUM', uri: 'https://x', package_name: null, package_version: null },
+    ])
+    expect(verdict(summary)).toBeNull()
   })
 
   it('image-scan (live run 2): an OCI image index under the tag fails the gate before any scan, with the media type', async () => {

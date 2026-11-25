@@ -16,6 +16,13 @@
 // manifest (--provenance=false --sbom=false), and this script checks that first: the tag (immutable) must
 // name a single image manifest, which is then scanned by its digest. Anything else fails the step before
 // any scan is waited for.
+//
+// The third live run (spec/worklogs/p5-image-cves.md, run 45664652733) failed the gate on six findings, and
+// the evidence could not say which packages they matched: only name, severity and uri were kept. Each
+// finding now also keeps the package ECR matched, from the finding's attributes (`package_name`,
+// `package_version`, as the DescribeImageScanFindings reference shows for basic scanning). Basic scanning
+// documents no fixed-in attribute (fixedInVersion exists only in enhancedFindings, Inspector's), so none
+// is recorded. The pass/fail verdict still reads only the severity counts.
 import { writeFileSync } from 'node:fs'
 import { awsCli, realSleep, redact, type Aws, type Sleep } from './aws.ts'
 
@@ -28,8 +35,36 @@ export type ScanSummary = {
   /** Whether this script had to start the scan (no scan on push appeared). */
   startedByThisRun: boolean
   counts: Record<string, number>
-  findings: { name?: string; severity?: string; uri?: string }[]
+  findings: Finding[]
 }
+
+/** One finding as the evidence keeps it: the package fields are null when ECR's attributes do not name them. */
+export type Finding = {
+  name?: string
+  severity?: string
+  uri?: string
+  package_name: string | null
+  package_version: string | null
+}
+
+type RawFinding = {
+  name?: string
+  severity?: string
+  uri?: string
+  attributes?: { key?: string; value?: string }[]
+}
+
+const attribute = (finding: RawFinding, key: string): string | null =>
+  finding.attributes?.find((a) => a.key === key)?.value ?? null
+
+/** What the evidence keeps of a finding: never its description or CVSS attributes, only what names it. */
+const toFinding = (finding: RawFinding): Finding => ({
+  name: finding.name,
+  severity: finding.severity,
+  uri: finding.uri,
+  package_name: attribute(finding, 'package_name'),
+  package_version: attribute(finding, 'package_version'),
+})
 
 export type ScanOptions = {
   aws: Aws
@@ -60,7 +95,7 @@ type Findings = {
   imageScanFindings?: {
     imageScanCompletedAt?: string
     findingSeverityCounts?: Record<string, number>
-    findings?: { name?: string; severity?: string; uri?: string }[]
+    findings?: RawFinding[]
   }
 }
 
@@ -132,7 +167,7 @@ export async function scanImage(options: ScanOptions): Promise<ScanSummary> {
     completedAt: body?.imageScanFindings?.imageScanCompletedAt ?? null,
     startedByThisRun,
     counts: body?.imageScanFindings?.findingSeverityCounts ?? {},
-    findings: (body?.imageScanFindings?.findings ?? []).map(({ name, severity, uri }) => ({ name, severity, uri })),
+    findings: (body?.imageScanFindings?.findings ?? []).map(toFinding),
   }
   log(`scan ${status}${startedByThisRun ? ' (started by this run)' : ' (on push)'}: ${JSON.stringify(summary.counts)}`)
   return summary
