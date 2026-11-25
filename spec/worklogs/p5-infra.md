@@ -1165,3 +1165,112 @@ unchanged.
   - "Test Files 12 passed (12)", "Tests 157 passed (157)";
   - "Successfully synthesized to …/infra/cdk.out".
 - web `pnpm verify` (`STUB_PORT=4101 PREVIEW_PORT=5273 PAGES_PORT=5274`, Postgres on 55461) exit 0: "Tests 443 passed (443)" (unit), "Tests 87 passed (87)" (integration), "42 passed" (e2e).
+
+## 2026-11-25, live run 5 (worker): Elastic Load Balancing's own EC2 call was refused
+
+### What happened
+Run 45714777383 got 35 of the AscrumDemo stack's 46 resources in, then failed at the load balancer:
+"User: arn:aws:sts::***:assumed-role/ascrum-cfn-exec/AWSCloudFormation is not authorized to perform:
+ec2:GetSecurityGroupsForVpc (Service: ElasticLoadBalancingV2, Status Code: 403)". The RDS instance was
+cancelled as a side effect. Rollback, destroy and the leftovers check passed. The #82 network
+permissions held: the VPC, IGW, subnets, route tables, routes, security groups and their rules all
+reached CREATE_COMPLETE.
+
+### Root cause, with sources
+- Elastic Load Balancing calls `ec2:GetSecurityGroupsForVpc` with the caller's credentials while it
+  creates the load balancer. The caller here is CloudFormation's execution role.
+- The `AWS::ElasticLoadBalancingV2::LoadBalancer` registry schema does **not** list it. Its create
+  handler lists `elasticloadbalancing:CreateLoadBalancer`, `DescribeLoadBalancers`,
+  `ModifyLoadBalancerAttributes`, `ModifyCapacityReservation`, `AddTags`, `SetSecurityGroups` and
+  `ec2:DescribeIpamPools`. The ELB page of the Service Authorization Reference (SAR) gives no dependent
+  action for CreateLoadBalancer either.
+- The source that does name it is the AWS managed policy `ElasticLoadBalancingFullAccess` (v10, AWS
+  managed policy reference). Its EC2 statement lists `ec2:GetSecurityGroupsForVpc` and
+  `ec2:ValidateSecurityGroupQuotasForInterface`, beside Describe calls we already grant through
+  `ec2:Describe*`.
+- **My mistake in #82:** the coverage table for live run 4 compared our statements with the schemas'
+  handler permissions only. Schemas list the handler's own calls, not the calls a service then makes
+  as the caller, so that table could not have predicted this failure. This round adds a second source:
+  the managed FullAccess policies.
+
+### Fix (Task 1)
+- New statement `LoadBalancerEc2Reads` in `ascrum-cdk-cfn-execution-network`. It grants
+  `ec2:GetSecurityGroupsForVpc` and `ec2:ValidateSecurityGroupQuotasForInterface` on `vpc/*` and
+  `security-group/*` in our account and region. Conditions: `aws:RequestedRegion` and
+  `aws:ResourceTag/project = ascrum-migration`.
+- SAR (EC2, and the service reference JSON) for both actions:
+  - GetSecurityGroupsForVpc: resource `vpc*`, keys `aws:ResourceTag/${TagKey}`,
+    `ec2:ResourceTag/${TagKey}`, `ec2:Tenancy`, `ec2:VpcID`; action key `ec2:Region`; access level Read.
+  - ValidateSecurityGroupQuotasForInterface: resource `security-group*`, keys
+    `aws:ResourceTag/${TagKey}`, `ec2:ResourceTag/${TagKey}`, `ec2:SecurityGroupID`, `ec2:Vpc`; action
+    key `ec2:Region`; access level Read.
+  - So both scope to the demo tag. Neither needs `*`.
+- ValidateSecurityGroupQuotasForInterface is added without a live failure behind it. ELB names it in
+  the same managed-policy statement, and it is a tag-scoped read. Granting it now saves a run if ELB
+  calls it next (SetSecurityGroups is in the create handler).
+
+### Tests
+- New: "live run 5: the EC2 reads Elastic Load Balancing makes while creating the load balancer are
+  allowed, on the demo-tagged VPC and security groups only". Exactly one statement grants each action;
+  resources and conditions are pinned.
+- R27 allow-list: the new sid. R26 lists it among the EC2 non-reads, because its `isRead` pattern
+  (`Describe|Get|List`) does not recognise `Validate…`. It passes R26's region and resource-tag rules.
+  The pre-split fixture `cfnExecutionStatements.json` gains the synthesised statement.
+- **Red without the grant:** with the statement removed (scratch script, file restored after):
+  "AssertionError: ec2:GetSecurityGroupsForVpc: expected [] to deeply equal [ 'LoadBalancerEc2Reads' ]",
+  "Tests 1 failed | 34 skipped (35)". **Green with it:** "Tests 1 passed | 34 skipped (35)".
+
+### Look-ahead (Task 2): the 11 types the run never reached
+Two sources per type:
+- (S) the registry schema's create, read and delete handler permissions, compared with our statements
+  by script;
+- (M) the AWS managed FullAccess policy for the service (ELB, ECS, RDS, CloudFront, CloudWatch Logs,
+  Secrets Manager): its cross-service actions that we do not grant.
+
+The template has no custom resources. `AWS::CDK::Metadata` is written by the CLI.
+
+| Resource type | Handler | Action not granted | Source | Added? |
+|---|---|---|---|---|
+| ElasticLoadBalancingV2::LoadBalancer | (service-side, create) | ec2:GetSecurityGroupsForVpc | M + live run 5 | **Yes**: `LoadBalancerEc2Reads`, `vpc/*`, demo tag, region |
+| ElasticLoadBalancingV2::LoadBalancer | (service-side, create) | ec2:ValidateSecurityGroupQuotasForInterface | M | **Yes**: same statement, `security-group/*`, demo tag, region |
+| ElasticLoadBalancingV2::LoadBalancer | create | elasticloadbalancing:ModifyCapacityReservation | S | No: only with `MinimumLoadBalancerCapacity`, which we do not set |
+| ElasticLoadBalancingV2::LoadBalancer | (service-side) | ec2:GetCoipPoolUsage | M | No: Outposts customer-owned IPs |
+| ElasticLoadBalancingV2::LoadBalancer | (service-side) | arc-zonal-shift:ListManagedResources, ListZonalShifts | M | No: zonal shift is a console feature; not set |
+| ElasticLoadBalancingV2::Listener / ListenerRule | create | cognito-idp:DescribeUserPoolClient | S + M | No: only for `authenticate-cognito` actions; ours forward and fixed-response |
+| ElasticLoadBalancingV2::TargetGroup | create | elasticloadbalancing:RegisterTargets | S | No: only with `Targets`; ECS registers tasks with its service-linked role. TargetGroup reached CREATE_COMPLETE in run 5 |
+| ECS::Cluster, ::TaskDefinition, ::Service | create/read/delete | none | S | n/a |
+| ECS (all) | (service-side) | application-autoscaling, codedeploy, servicediscovery, events, route53, autoscaling, cloudwatch alarms | M | No: auto scaling, blue/green, Service Connect, EC2 capacity; none in the template |
+| Logs::LogGroup | create | logs:Get/PutDataProtectionPolicy, CreateLogDelivery, PutResourcePolicy, PutIndexPolicy, PutBearerTokenAuthentication, firehose:TagDeliveryStream | S | No: only with `DataProtectionPolicy`, `ResourcePolicyDocument`, field indexes or delivery; not set. LogGroup reached CREATE_COMPLETE in run 5 |
+| RDS::DBInstance | create | rds:AddRoleToDBInstance, CreateDBInstanceReadReplica, RestoreDBInstanceFromDBSnapshot, RestoreDBInstanceToPointInTime, StartDBInstanceAutomatedBackupsReplication, iam:ListRoles | S | No: associated roles, replicas, restores and cross-region backups; none set |
+| RDS::DBInstance | (service-side) | ec2:GetCoipPoolUsage, outposts:GetOutpostInstanceTypes, sns, cloudwatch, devops-guru | M | No: Outposts and console features |
+| RDS::DBInstance | create (ManageMasterUserPassword) | kms:DescribeKey, secretsmanager:CreateSecret, secretsmanager:TagResource | RDS User Guide, "Permissions required for Secrets Manager integration" | Already granted (`DatabaseManagedSecret`, `ManagedKeysThroughRdsAndSecretsManager`). **Residual risk:** the KMS grant is conditioned on `kms:ViaService`; if RDS's DescribeKey on `aws/secretsmanager` doesn't arrive through RDS or Secrets Manager, the run fails here. Not changed: no evidence, and a wider KMS grant would be a loosening |
+| SecretsManager (managed secret) | (service-side) | lambda, cloudformation, kms:ListKeys/ListAliases, tag:GetResources, redshift, docdb | M | No: console and rotation-Lambda features; RDS rotates its managed secret itself |
+| CloudFront::Distribution | create | cloudfront:CreateConnectionGroup, GetConnectionGroup, GetVpcOrigin | S | No: multi-tenant connection groups and VPC origins; not used |
+| CloudFront::Distribution | create | cloudfront:CreateDistributionWithTags | S | No IAM action of that name: the SAR authorises the API as CreateDistribution plus TagResource, both granted |
+| CloudFront (all) | (service-side) | acm, iam:ListServerCertificates, wafv2, kinesis, shield, ec2:GetIpamPoolCidrs, pricingplanmanager | M | No: custom certificates, WAF, real-time logs, Anycast IPs, flat-rate plans; we use the default certificate |
+| CloudFront::OriginAccessControl | create/read/delete | none | S | n/a; reached CREATE_COMPLETE in run 5 |
+| S3::BucketPolicy | create/read/delete | none | S | n/a |
+| IAM::Policy | create/delete | iam:Get/Put/DeleteUserPolicy, iam:Get/Put/DeleteGroupPolicy | S | No: ours attaches to a role only; the role calls are granted |
+
+**Limit of this look-ahead:** the managed policies are the broadest public list of a service's
+side calls, but AWS doesn't promise they are complete. A service can still call something neither
+source names; if so, the next run will show it.
+
+### Policy sizes (worst case, minified, limit 6,144)
+network 2,729 → **3,113** (8 statements); compute 2,367, data 1,926, cdn 1,103, iam 1,309, deploy role
+3,036 and boundary 872 are unchanged.
+
+### Bootstrap diff to expect
+- `ascrum-cdk-cfn-execution-network` (AWS::IAM::ManagedPolicy): one statement added,
+  `LoadBalancerEc2Reads`. It allows `ec2:GetSecurityGroupsForVpc` and
+  `ec2:ValidateSecurityGroupQuotasForInterface` on `arn:${Partition}:ec2:${Region}:${Account}:vpc/*` and
+  `…:security-group/*`, where `aws:RequestedRegion` equals the region and `aws:ResourceTag/project`
+  equals `ascrum-migration`. The policy is updated in place.
+- No other policy, role, trust policy or boundary changes.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck clean;
+  - "Test Files 12 passed (12)", "Tests 158 passed (158)";
+  - "Successfully synthesized to …/infra/cdk.out".

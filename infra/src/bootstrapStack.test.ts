@@ -366,6 +366,7 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
       NetworkCreateInDemoVpc: ['ec2:CreateRouteTable', 'ec2:CreateSecurityGroup', 'ec2:CreateSubnet'],
       NetworkCreateChildTagged: ['ec2:CreateRouteTable', 'ec2:CreateSecurityGroup', 'ec2:CreateSubnet'],
       NetworkPrefixLists: ['ec2:GetManagedPrefixListEntries'],
+      LoadBalancerEc2Reads: ['ec2:GetSecurityGroupsForVpc', 'ec2:ValidateSecurityGroupQuotasForInterface'],
       NetworkTagOnCreate: ['ec2:CreateTags'],
       NetworkChangeTagged: [
         'ec2:AssociateRouteTable',
@@ -589,7 +590,10 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
 
   it('DEV-p5-infra-05 (R26): every EC2 write is region-bound; deletes and changes need the demo tag, and the tag can only be set while creating', () => {
     const ec2Writes = allow.filter((s) => actionsOf(s).some((a) => a.startsWith('ec2:') && !isRead(a)))
+    // ValidateSecurityGroupQuotasForInterface is a read (Service Authorization Reference) that isRead's
+    // Describe/Get/List pattern does not recognise.
     expect(ec2Writes.map((s) => s.Sid).sort()).toEqual([
+      'LoadBalancerEc2Reads',
       'NetworkChangeTagged',
       'NetworkCreateChildTagged',
       'NetworkCreateInDemoVpc',
@@ -606,6 +610,23 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
       }
     }
     expect(actionsOf(sid('NetworkTagOnCreate'))).toEqual(['ec2:CreateTags'])
+  })
+
+  // Live run 5: Elastic Load Balancing called ec2:GetSecurityGroupsForVpc as CloudFormation's role and was
+  // refused. It and ValidateSecurityGroupQuotasForInterface take a tagged VPC / security group.
+  it('live run 5: the EC2 reads Elastic Load Balancing makes while creating the load balancer are allowed, on the demo-tagged VPC and security groups only', () => {
+    for (const action of ['ec2:GetSecurityGroupsForVpc', 'ec2:ValidateSecurityGroupQuotasForInterface']) {
+      const granting = allow.filter((s) => actionsOf(s).some((pattern) => grantsAction(pattern, action)))
+      expect(
+        granting.map((s) => s.Sid),
+        action,
+      ).toEqual(['LoadBalancerEc2Reads'])
+    }
+    const reads = sid('LoadBalancerEc2Reads')
+    expect(resourcesOf(reads).sort()).toEqual([ARN('ec2', 'security-group/*'), ARN('ec2', 'vpc/*')])
+    expect(reads.Condition).toEqual({
+      StringEquals: { 'aws:RequestedRegion': { Ref: 'AWS::Region' }, 'aws:ResourceTag/project': 'ascrum-migration' },
+    })
   })
 
   // Security review of #82, sec-02: the old check (/^ec2:Create/) let ec2:CreateTags through.
