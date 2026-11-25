@@ -138,3 +138,25 @@ the API task cannot read its secret and the first live run fails at task start, 
 (c) the owner reads the tags of any RDS-managed secret once (`describe-secret`, no secret value) and
 confirms the key. *Implemented: (a), with (c) as the check for the first live run.* No answer needed to
 proceed; it is recorded so the first run's owner knows what a "secret: AccessDenied" at task start means.
+
+**Q-p5-infra-11. The immutable OIDC subject: its `job_workflow_ref` part, and no name-form fallback.**
+Context: in the first live setup GitHub's read-back of the repository's subject customisation showed
+`use_immutable_subject: true` with the owner and repository ids in `sub_claim_prefix`, and a PUT with
+`false` was ignored. The deploy role trusted the name-only subject, so it could not be assumed (fail
+closed). GitHub documents that the ids are always in the `repo` segment, also with `include_claim_keys`,
+and cannot be removed. It does not document an immutable example with `job_workflow_ref`; its examples
+of that claim use names (`owner/repo/.github/workflows/<file>@refs/heads/<branch>`), and the claims table
+calls it "the ref path to the reusable workflow".
+Options for `job_workflow_ref`: (a) the name path, as documented for the claim; (b) an id form, which
+GitHub documents nowhere, so there is no exact string to trust; (c) both via a wildcard (refused: no
+wildcards in the trust). *Implemented: (a).* If the first deploy run fails to assume the role while
+`sub_claim_prefix` equals the bootstrap stack's `OidcSubjectPrefix` output, (a) is wrong: the owner
+reads the actual `sub` (for example by decoding a token's payload in a throwaway workflow, or from the
+CloudTrail `AssumeRoleWithWebIdentity` event, if it records it) and the trust is changed to that exact
+string.
+Name-form fallback: not kept. Recommendation and reasoning: trusting the name-only subjects as well would
+reopen exactly what immutable subjects close (a renamed owner or repository name taken over by someone
+else, with the same environment and workflow paths, could assume the role); GitHub says the ids cannot be
+removed and renames and transfers move a repository to the immutable form, so the fallback could only
+ever help an attacker. If GitHub ever emitted the name form again, the role fails closed and the fix is a
+bootstrap redeploy. Owner: confirm, or ask for the fallback explicitly.

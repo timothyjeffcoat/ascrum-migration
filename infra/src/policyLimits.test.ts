@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { EXECUTION_POLICY_PARTS } from './bootstrapStack.ts'
 import { NAMES } from './names.ts'
 import { ofType, resources, synth, type Resource, type Statement } from './testApp.ts'
-import { LONGEST_REPOSITORY, resolver, size, type Json } from './testPolicySize.ts'
+import { LONGEST_GITHUB_ID, LONGEST_REPOSITORY, resolver, size, type Json } from './testPolicySize.ts'
 
 // IAM counts characters without whitespace.
 const MANAGED_POLICY_MAX = 6_144
@@ -21,11 +21,22 @@ const TEMPLATE_RESOURCES_MAX = 500
 const TEMPLATE_OUTPUTS_MAX = 200
 const TEMPLATE_PARAMETERS_MAX = 200
 
-const { templates } = synth({ githubRepository: LONGEST_REPOSITORY })
+const { templates } = synth({
+  githubRepository: LONGEST_REPOSITORY,
+  githubOwnerId: LONGEST_GITHUB_ID,
+  githubRepositoryId: LONGEST_GITHUB_ID,
+})
 const stacks = Object.entries(templates)
 const document = (resource: Resource) => resource.Properties?.PolicyDocument as Json
 
 describe('IAM and CloudFormation quotas, on worst-case values', () => {
+  it('the stacks are built from the worst-case repository and ids (the trust policy names all three)', () => {
+    const [owner, repo] = LONGEST_REPOSITORY.split('/')
+    templates.bootstrap.hasOutput('OidcSubjectPrefix', {
+      Value: `repo:${owner}@${LONGEST_GITHUB_ID}/${repo}@${LONGEST_GITHUB_ID}`,
+    })
+  })
+
   it('every managed policy (the execution parts and the boundary included) fits IAM’s 6,144 characters', () => {
     let checked = 0
     for (const [stack, template] of stacks) {

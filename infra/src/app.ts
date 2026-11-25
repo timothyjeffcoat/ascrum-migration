@@ -3,6 +3,8 @@
 //
 // Context keys:
 //   githubRepository        `owner/repo` (bootstrap stack). Falls back to $GITHUB_REPOSITORY (set in CI).
+//   githubOwnerId           GitHub's numeric owner id. Falls back to $GITHUB_REPOSITORY_OWNER_ID (set in CI).
+//   githubRepositoryId      GitHub's numeric repository id. Falls back to $GITHUB_REPOSITORY_ID (set in CI).
 //   existingOidcProviderArn the account's GitHub OIDC provider, if it already has one (bootstrap stack).
 //   demoDeploy=true         a real deploy: the three values below are required, no placeholders.
 //   imageTag                the API image tag in the registry (the commit SHA).
@@ -54,6 +56,15 @@ export function buildStacks(app: App, env: Record<string, string | undefined> = 
   if (!githubRepository) {
     throw new Error('context githubRepository (owner/repo) is required, or $GITHUB_REPOSITORY (see infra/README.md)')
   }
+  // The ids in GitHub's immutable OIDC subject (Q-p5-infra-11). In a workflow GitHub sets both variables.
+  const githubOwnerId = text(context, 'githubOwnerId') ?? env.GITHUB_REPOSITORY_OWNER_ID
+  const githubRepositoryId = text(context, 'githubRepositoryId') ?? env.GITHUB_REPOSITORY_ID
+  if (!githubOwnerId || !githubRepositoryId) {
+    throw new Error(
+      'context githubOwnerId and githubRepositoryId (GitHub’s numeric ids) are required, or ' +
+        '$GITHUB_REPOSITORY_OWNER_ID and $GITHUB_REPOSITORY_ID (see infra/README.md)',
+    )
+  }
   const deployFlag = context('demoDeploy')
   const deploy = deployFlag === true || deployFlag === 'true'
 
@@ -63,6 +74,8 @@ export function buildStacks(app: App, env: Record<string, string | undefined> = 
     // The owner's own credentials, template inline: nothing has to exist before it.
     synthesizer: new InlineTemplateSynthesizer(),
     githubRepository,
+    githubOwnerId,
+    githubRepositoryId,
     existingOidcProviderArn: text(context, 'existingOidcProviderArn'),
     terminationProtection: true,
   })

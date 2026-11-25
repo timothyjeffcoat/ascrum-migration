@@ -1,8 +1,8 @@
 import { App } from 'aws-cdk-lib'
-import { Match } from 'aws-cdk-lib/assertions'
+import { Match, Template } from 'aws-cdk-lib/assertions'
 import { describe, expect, it } from 'vitest'
 import { buildStacks } from './app.ts'
-import { EXECUTION_POLICY_PARTS } from './bootstrapStack.ts'
+import { EXECUTION_POLICY_PARTS, subjectPrefix } from './bootstrapStack.ts'
 import { NAMES } from './names.ts'
 import { actionsOf, ofType, resources, synth, TEST_REPOSITORY, type Resource, type Statement } from './testApp.ts'
 import { templateYaml } from './testYaml.ts'
@@ -91,12 +91,46 @@ describe('bootstrap stack: OIDC and the deploy role', () => {
     expect(statement?.Condition?.StringEquals).toEqual({
       'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
       'token.actions.githubusercontent.com:sub': [
-        `repo:${TEST_REPOSITORY}:environment:aws-demo:job_workflow_ref:${TEST_REPOSITORY}/.github/workflows/deploy-demo.yml@refs/heads/migration`,
-        `repo:${TEST_REPOSITORY}:environment:aws-demo:job_workflow_ref:${TEST_REPOSITORY}/.github/workflows/destroy-demo.yml@refs/heads/migration`,
+        'repo:example-owner@123456/ascrum-migration@456789:environment:aws-demo:job_workflow_ref:example-owner/ascrum-migration/.github/workflows/deploy-demo.yml@refs/heads/migration',
+        'repo:example-owner@123456/ascrum-migration@456789:environment:aws-demo:job_workflow_ref:example-owner/ascrum-migration/.github/workflows/destroy-demo.yml@refs/heads/migration',
       ],
     })
     expect(json(statement)).not.toContain('*')
     expect(role.Properties?.MaxSessionDuration).toBe(7200)
+  })
+
+  it('Q-p5-infra-11: the trust is GitHub’s immutable subject only (owner and repository ids), never the name-only form', () => {
+    const subjects = flat(deployRole.Properties?.AssumeRolePolicyDocument)
+    expect(subjects).not.toContain(`repo:${TEST_REPOSITORY}:`)
+    expect(subjects).not.toMatch(/[*?]/)
+    // The repo segment is what GitHub's read-back calls sub_claim_prefix; the stack outputs it to compare.
+    const prefix = 'repo:example-owner@123456/ascrum-migration@456789'
+    expect(
+      subjectPrefix({ githubRepository: TEST_REPOSITORY, githubOwnerId: '123456', githubRepositoryId: '456789' }),
+    ).toBe(prefix)
+    bootstrap.hasOutput('OidcSubjectPrefix', { Value: prefix })
+  })
+
+  it('Q-p5-infra-11: the owner and repository ids are required, digits only (a wildcard or text would widen or break the trust)', () => {
+    for (const key of ['githubOwnerId', 'githubRepositoryId']) {
+      for (const bad of ['*', '12*', '', 'abc', '0123', '12 34', '-1', '1.5']) {
+        expect(() => synth({ [key]: bad }), `${key}=${bad}`).toThrow(key)
+      }
+    }
+    expect(() => buildStacks(new App({ context: { githubRepository: TEST_REPOSITORY } }), {})).toThrow(
+      /githubOwnerId and githubRepositoryId/,
+    )
+    expect(() =>
+      buildStacks(new App({ context: { githubRepository: TEST_REPOSITORY, githubOwnerId: '123456' } }), {}),
+    ).toThrow(/githubOwnerId and githubRepositoryId/)
+    // In a workflow, GitHub's own variables supply them.
+    const fromEnv = buildStacks(new App({ context: { githubRepository: TEST_REPOSITORY } }), {
+      GITHUB_REPOSITORY_OWNER_ID: '123456',
+      GITHUB_REPOSITORY_ID: '456789',
+    })
+    Template.fromStack(fromEnv.bootstrap).hasOutput('OidcSubjectPrefix', {
+      Value: 'repo:example-owner@123456/ascrum-migration@456789',
+    })
   })
 
   it('AC-AWS-02: an existing OIDC provider can be reused (one per account) and nothing else changes', () => {
