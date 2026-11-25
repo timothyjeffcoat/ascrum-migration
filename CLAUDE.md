@@ -97,19 +97,7 @@ Cluster `n` exports `STUB_PORT=3001+100n PREVIEW_PORT=4173+100n PAGES_PORT=4174+
 - The hook records pass/fail from the command's **exit code**. Run gate commands unpiped, or start with `set -o pipefail`; `pnpm test | tail` always "passes" (this undercounted Phase 2's failures, see the journal).
 
 ## Reviewer role
-- You are not the worker. Review against the spec, not the worker's explanation.
-- Follow spec §8.2 exactly:
-  - set the row to `converted`;
-  - for each AC, check the code **and** that a named test asserts it, and post a pass/fail PR checklist;
-  - diff against §5/§6;
-  - check the owned paths;
-  - check that no gate was weakened, including the forms lint can't catch: `rg -n "\.(skip|only|todo|fixme|fails)\b|\['(skip|only)'\]|\.extend\(| as [a-z]+ \}" web/src web/e2e` and any run-time `skip()` (review R2-15);
-  - check the §9 table against the pre-assigned statuses.
-- Log findings in `spec/deviations.md` on the PR branch. Blocking = an AC failing, a contract change, a weakened gate, an edit outside the owned paths, or a §9 status contradicting a pre-assignment.
-- **Blocking findings:** stop and report them to the orchestrator; don't fix the worker's code yourself.
-- **No blocking findings:** commit row = `verified` plus a journal entry on the PR branch. When CI is green, run `gh pr merge --squash`. Then open the `chore/status-<cluster>` PR (row = `merged`) and merge it once green.
-
-- **Security second review:** PRs touching `infra/`, `docker/`, `.github/`, `api/src/`, `web/src/auth/` or `web/stub/` also get the `security-reviewer` agent (`.claude/agents/security-reviewer.md`). It reports and never edits; the regular reviewer logs its findings.
+Reviewers: read `.claude/rules/review.md` in full before starting (spec §8.2 checklist, the gate `rg` check, logging, merging, the security second review).
 
 ## Git
 - Workers: branch `convert/<cluster>` from `migration` in their own worktree. Make small commits, each ending with the attribution trailer the session provides.
