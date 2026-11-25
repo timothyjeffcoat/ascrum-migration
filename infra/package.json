@@ -16,13 +16,13 @@
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm synth"
   },
   "dependencies": {
-    "aws-cdk-lib": "2.275.0",
+    "aws-cdk-lib": "2.278.0",
     "constructs": "10.8.1"
   },
   "devDependencies": {
     "@playwright/test": "link:../web/node_modules/@playwright/test",
     "@types/node": "link:../web/node_modules/@types/node",
-    "aws-cdk": "2.1148.0",
+    "aws-cdk": "2.1149.0",
     "eslint": "link:../web/node_modules/eslint",
     "prettier": "link:../web/node_modules/prettier",
     "typescript": "link:../web/node_modules/typescript",
