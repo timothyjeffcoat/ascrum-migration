@@ -161,12 +161,16 @@ export class BootstrapStack extends Stack {
     // change or delete anything else of that kind. EC2's network resources have generated ids, so their
     // changes and deletes require the demo's tag (`aws:ResourceTag/project`), and the tag can only be put
     // on a resource while it is being created (`ec2:CreateAction`), never added to an existing one.
+    // ec2:CreateAction holds the bare API name ("CreateVpc", not "ec2:CreateVpc"): live run 4 failed on
+    // the prefixed form (UnauthorizedTaggingOperation on the VPC and the internet gateway; worklog,
+    // 2026-11-25, live run 4, and src/demoTagging.ts for every type's tagging calls).
     // What cannot be scoped either way is listed in the worklog (2026-11-24, round 4).
     const demoRoles = iamArn(`role/${DEMO_STACK_PREFIX}*`)
     const demoTagged = { [`aws:ResourceTag/${TAG.project.key}`]: TAG.project.value }
     const lb = (resource: string) => arn('elasticloadbalancing', resource)
     const rdsArn = (resource: string) => arn('rds', resource)
     const ecsArn = (resource: string) => arn('ecs', resource)
+    const demoRequestTag = { [`aws:RequestTag/${TAG.project.key}`]: TAG.project.value }
     const networkCreates = [
       'ec2:CreateVpc',
       'ec2:CreateSubnet',
@@ -174,6 +178,8 @@ export class BootstrapStack extends Stack {
       'ec2:CreateInternetGateway',
       'ec2:CreateSecurityGroup',
     ]
+    /** The creates that put a new resource inside an existing VPC. */
+    const networkChildCreates = ['ec2:CreateSubnet', 'ec2:CreateRouteTable', 'ec2:CreateSecurityGroup']
     // One managed policy per part: IAM caps a managed policy at 6,144 characters without whitespace, and
     // the single policy of round 4 (about 9,600) failed the first live bootstrap with ServiceLimitExceeded
     // (worklog, 2026-11-24, policy size). The statements are unchanged; only their grouping is new, and
@@ -202,20 +208,55 @@ export class BootstrapStack extends Stack {
           ],
           resources: ['*'],
         }),
+        // New network resources have generated ids, so no ARN can name them; the demo tag scopes them instead.
+        // A subnet, security group or route table is created *inside* an existing VPC, and IAM authorises
+        // the call against that VPC as well as the new resource (Service Authorization Reference, EC2:
+        // CreateSubnet and CreateRouteTable require `vpc*`, CreateSecurityGroup lists `vpc`). So the parent
+        // VPC must already carry the demo tag, and the new resource must be requested with it. The two
+        // conditions sit in separate statements on purpose: a request's tags are in the context of every
+        // resource it touches, so one statement with RequestTag on `vpc/*` would let a child be created in
+        // any VPC (security review of #82, sec-01).
         new iam.PolicyStatement({
-          // New network resources (ids are generated, so no ARN to name). Creating something touches
-          // nothing that exists; the tag rules below decide what may be changed or deleted afterwards.
-          sid: 'NetworkCreate',
-          actions: [...networkCreates, 'ec2:GetManagedPrefixListEntries'],
+          // A VPC or internet gateway has no parent: only with the demo tag in the request.
+          sid: 'NetworkCreateTagged',
+          actions: ['ec2:CreateVpc', 'ec2:CreateInternetGateway'],
+          resources: [arn('ec2', 'vpc/*'), arn('ec2', 'internet-gateway/*')],
+          conditions: { StringEquals: { ...sameRegion, ...demoRequestTag } },
+        }),
+        new iam.PolicyStatement({
+          // The parent side of a child create: only in a VPC that carries the demo tag.
+          sid: 'NetworkCreateInDemoVpc',
+          actions: networkChildCreates,
+          resources: [arn('ec2', 'vpc/*')],
+          conditions: { StringEquals: { ...sameRegion, ...demoTagged } },
+        }),
+        new iam.PolicyStatement({
+          // The new child itself: only with the demo tag in the request.
+          sid: 'NetworkCreateChildTagged',
+          actions: networkChildCreates,
+          resources: [arn('ec2', 'subnet/*'), arn('ec2', 'security-group/*'), arn('ec2', 'route-table/*')],
+          conditions: { StringEquals: { ...sameRegion, ...demoRequestTag } },
+        }),
+        new iam.PolicyStatement({
+          // Reads the CloudFront origin-facing prefix list for the load balancer's security group.
+          sid: 'NetworkPrefixLists',
+          actions: ['ec2:GetManagedPrefixListEntries'],
           resources: ['*'],
           conditions: { StringEquals: sameRegion },
         }),
         new iam.PolicyStatement({
-          // The demo's tag, only on a resource being created by one of the calls above (TagSpecifications).
+          // Tags only on a resource being created by one of the calls above (TagSpecifications), and only
+          // when the demo's tag is among them, so every network resource is created already tagged.
           sid: 'NetworkTagOnCreate',
           actions: ['ec2:CreateTags'],
           resources: ['*'],
-          conditions: { StringEquals: { ...sameRegion, 'ec2:CreateAction': networkCreates } },
+          conditions: {
+            StringEquals: {
+              ...sameRegion,
+              'ec2:CreateAction': networkCreates.map((action) => action.replace(/^ec2:/, '')),
+              ...demoRequestTag,
+            },
+          },
         }),
         new iam.PolicyStatement({
           // Changes and deletes: only on network resources that carry the demo's tag.
@@ -394,6 +435,11 @@ export class BootstrapStack extends Stack {
             's3:PutBucketPolicy',
             's3:DeleteBucketPolicy',
             's3:PutBucketTagging',
+            // CreateBucket with Tags needs s3:TagResource (S3 API reference, CreateBucket); the handler reads
+            // tags back with ListTagsForResource (live run 4 review; src/demoTagging.ts).
+            's3:TagResource',
+            's3:UntagResource',
+            's3:ListTagsForResource',
             's3:PutBucketPublicAccessBlock',
             's3:PutBucketOwnershipControls',
             's3:PutEncryptionConfiguration',
@@ -462,6 +508,7 @@ export class BootstrapStack extends Stack {
           actions: [
             'iam:TagRole',
             'iam:UntagRole',
+            'iam:ListRoleTags',
             'iam:UpdateRoleDescription',
             'iam:GetRole',
             'iam:GetRolePolicy',

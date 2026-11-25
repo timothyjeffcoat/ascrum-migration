@@ -865,3 +865,303 @@ Breakages, one at a time; all 9 went red:
   "Tests 149 passed (149)", "Successfully synthesized to …/infra/cdk.out".
 - Can't be proven offline: that the runner's Docker gives the same result as my local Docker 29.6.2.
   If it doesn't, the gate stops at `UNSCANNABLE_MEDIA_TYPE` and names the type.
+
+## 2026-11-25, live run 4 (worker): CloudFormation could not tag the VPC
+Branch `convert/p5-infra-live-run-4`, reset to `origin/migration` (`b40417a`).
+
+### What happened (run 45679955396 on `11da34b`)
+- Green: the gate, OIDC, the registry and the push.
+- **The image scan completed clean**: `COMPLETE`, counts `{}`, zero findings. That makes it the first
+  completed scan, after the live-run-2 fix (one image manifest) and #78 (the apk floor).
+- "Deploy the demo stack" failed about 30 s in: `AscrumDemo | CREATE_FAILED | AWS::EC2::VPC | Vpc …
+  "Encountered a permissions error performing a tagging operation … Did not have IAM permissions to
+  process tags on AWS::EC2::VPC resource." (HandlerErrorCode: UnauthorizedTaggingOperation)`.
+- The same error came for `AWS::EC2::InternetGateway`. The rest was cancelled, and the stack reached
+  ROLLBACK_COMPLETE.
+- CDK's "Could not query CloudTrail … lookup role is missing cloudtrail:LookupEvents" is CDK's own
+  diagnostic on the failed deploy. It doesn't affect the deploy, so I left it alone and grant nothing
+  for it.
+
+### Root cause: our ec2:CreateAction values could never match
+- **The schemas.** The CloudFormation registry schemas (`CloudformationSchema.zip` from
+  `schema.cloudformation.us-east-1.amazonaws.com`, read 2026-11-25) mark `AWS::EC2::VPC` and
+  `AWS::EC2::InternetGateway` as `taggable: true` and `tagOnCreate: true`, with `ec2:CreateTags` in
+  `handlers.create.permissions`. The same holds for Subnet, RouteTable and SecurityGroup. So the handler
+  sends the tags in the create call's TagSpecifications.
+- **What EC2 authorises.** EC2 then authorises `ec2:CreateTags` separately, and the request "fails if the
+  user does not have permissions to use the `ec2:CreateTags` action"
+  (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/supported-iam-actions-tagging.html).
+- **The value it compares.** The same page shows the condition value as the bare API name:
+  `"ec2:CreateAction" : "RunInstances"`, `"ec2:CreateAction" : "CreateVolume"`. It also says that
+  condition values are case-sensitive.
+- **What we had.** `NetworkTagOnCreate` had `ec2:CreateAction` = `["ec2:CreateVpc", …]`. With the prefix,
+  `StringEquals` never matches "CreateVpc".
+- **The fallback didn't help.** `NetworkChangeTagged` also allows `ec2:CreateTags`, but only on a resource
+  that already carries `project=ascrum-migration`. A resource being created has no tags yet.
+- So CreateVpc and CreateInternetGateway, which run first and in parallel, were refused for their tags.
+  Subnet, RouteTable and SecurityGroup would have failed the same way; they were cancelled before they
+  started.
+- The service reference (`servicereference.us-east-1.amazonaws.com/v1/ec2/ec2.json`) confirms that
+  `ec2:CreateAction` is a String key on `CreateTags`.
+
+**Mistake: #69 trusted an untested assumption about how CloudFormation tags EC2 resources.** I wrote the
+condition values in IAM action form (`ec2:CreateVpc`) and never checked the documented value form. The
+test `DEV-p5-infra-05/-10 … a write on "*" only with its condition` then pinned exactly that wrong value.
+So the test locked in the bug instead of catching it. The first review listed "EC2 create-time tags" as
+provable only live, and this run is that proof.
+
+### Fix (bootstrap; the owner must update it)
+- **`NetworkTagOnCreate`** (network policy):
+  - `ec2:CreateAction` is now `CreateVpc | CreateSubnet | CreateRouteTable | CreateInternetGateway |
+    CreateSecurityGroup`, derived from the `NetworkCreate` actions with `ec2:` stripped.
+  - It also requires `aws:RequestTag/project = ascrum-migration`, so a network resource is created
+    already carrying the demo tag (the EC2 page lists `aws:RequestTag` for `ec2:CreateTags`).
+  - Still no `ec2:CreateTags` on an existing resource that doesn't already carry the tag.
+- **Not added: an `aws:TagKeys` restriction.**
+  - CloudFormation adds its own `aws:cloudformation:*` tags (`cloudFormationSystemTags: true` in the EC2
+    schemas), plus CDK's `Name` and `aws-cdk:*` keys.
+  - I found nothing documenting whether the system tags appear in `aws:TagKeys`, so an allow-list of
+    keys would be another untested assumption.
+  - `ec2:CreateAction` plus `aws:RequestTag/project` already confine the statement to tags on new demo
+    resources.
+- **Two gaps found by the full coverage check** (below), both on resources scoped by name:
+  - **`WebBucket`** (data policy) gains `s3:TagResource`, `s3:UntagResource` and
+    `s3:ListTagsForResource`, on the web bucket's ARN only.
+    - The S3 API reference for CreateBucket says: "You must have the `s3:TagResource` permission to
+      create a general purpose bucket with tags."
+    - The `AWS::S3::Bucket` schema lists `s3:TagResource` in its create permissions and
+      `s3:ListTagsForResource` in its read permissions. Our `s3:Get*` covers neither.
+    - The service reference lists `bucket` as a resource type for all three actions.
+    - `s3:DeleteBucketTagging` (in the schema) isn't an IAM action: the service reference maps the
+      DeleteBucketTagging API to `s3:PutBucketTagging`, which we already had.
+  - **`DemoRolesTagReadAndDelete`** (iam policy) gains `iam:ListRoleTags`, on `role/AscrumDemo*` only.
+    The `AWS::IAM::Role` schema lists it under tagging permissions.
+
+### Coverage: every type in the AscrumDemo template
+Source for each row: the type's registry schema (`tagging`, `handlers.create.permissions`). Rows marked
+taggable are taggable and tagOnCreate, and the template gives them the `project` tag. `src/demoTagging.ts`
+holds the table and `src/demoTagging.test.ts` checks it against the synthesised template.
+
+| Type | Tagging actions on create | Allowed by | Before this fix |
+|---|---|---|---|
+| EC2::VPC, Subnet, RouteTable, InternetGateway, SecurityGroup | `ec2:CreateTags` (ec2:CreateAction) | NetworkTagOnCreate | **denied** (prefixed values) |
+| EC2::Route, SecurityGroupIngress/Egress, SubnetRouteTableAssociation, VPCGatewayAttachment | not taggable | n/a | ok |
+| ECS::Cluster, Service, TaskDefinition | `ecs:TagResource` | Containers (named ARNs) | ok |
+| ElasticLoadBalancingV2::LoadBalancer, TargetGroup, Listener, ListenerRule | `elasticloadbalancing:AddTags` | LoadBalancer (named ARNs) | ok |
+| RDS::DBInstance, DBSubnetGroup | `rds:AddTagsToResource` | Database (named ARNs) | ok |
+| Logs::LogGroup | `logs:TagResource` | Logs (named ARN) | ok |
+| S3::Bucket | `s3:TagResource`, `s3:PutBucketTagging`, `s3:ListTagsForResource` | WebBucket (bucket ARN) | **gap**: TagResource, ListTagsForResource |
+| S3::BucketPolicy | not taggable | n/a | ok |
+| IAM::Role | `iam:TagRole`, `iam:ListRoleTags` | DemoRolesTagReadAndDelete | **gap**: ListRoleTags |
+| IAM::Policy | not taggable | n/a | ok |
+| CloudFront::Distribution | `cloudfront:CreateDistribution` + `cloudfront:TagResource` (aws:RequestTag) | CdnDistributionCreate | ok |
+| CloudFront::Function | `cloudfront:TagResource` (aws:RequestTag) | CdnDistributionCreate | ok |
+| CloudFront::OriginAccessControl, ResponseHeadersPolicy | not taggable | n/a | ok |
+| CDK::Metadata | none (added by the CLI) | n/a | ok |
+
+**What the table can't show.** The schemas' create-permission lists also name feature-dependent calls
+that the template doesn't use. A script compared every schema permission with our statements, and these
+were the leftovers:
+- VPC: `ec2:CreateVpcEncryptionControl`;
+- VPCGatewayAttachment: `ec2:AttachVpnGateway`;
+- SubnetRouteTableAssociation: `ec2:ReplaceRouteTableAssociation`;
+- Listener and ListenerRule: `cognito-idp:DescribeUserPoolClient`;
+- LoadBalancer: `elasticloadbalancing:ModifyCapacityReservation`;
+- TargetGroup: `RegisterTargets`;
+- LogGroup: data-protection and delivery calls;
+- DBInstance: read replicas and restores;
+- Bucket: replication, website, lifecycle and so on;
+- IAM::Policy: user and group policies.
+
+I didn't add any of these: each belongs to a property the template doesn't set. The table covers tagging
+only. A non-tagging gap on a later resource would still show up only live.
+
+### Tests (4 new, 3 updated)
+- `src/demoTagging.test.ts` (new):
+  - every type in the synthesised AscrumDemo template has a row, and no row is stale;
+  - each taggable type carries `project=ascrum-migration` in the template, and each untagged type has no
+    `Tags`;
+  - every row's tagging actions are allowed by the statement the row names;
+  - `ec2:CreateAction` holds exactly the bare names of the `NetworkCreate` creates, with the demo tag in
+    the request, and covers every network type tagged on create.
+  - The in-process synth leaves out `AWS::CDK::Metadata`, which the CLI adds; the test names that one
+    type explicitly.
+- `src/bootstrapStack.test.ts`: the allow-list for `WebBucket` and `DemoRolesTagReadAndDelete`, and the
+  `NetworkTagOnCreate` condition (bare names plus `aws:RequestTag/project`).
+- `src/cfnExecutionStatements.json`, the pre-split fixture that pins the union of the parts: the same
+  three statements changed. The split test still passes.
+
+### Policy sizes (worst case, minified, limit 6,144)
+| Policy | Before | After |
+|---|---|---|
+| network | 1,707 | 1,731 |
+| compute | 2,367 | 2,367 |
+| data | 1,865 | 1,926 |
+| cdn | 1,103 | 1,103 |
+| iam | 1,290 | 1,309 |
+
+### Owner: update the bootstrap, then re-run the deploy
+Three managed policies change in place; their names are unchanged, so nothing is replaced. The deploy
+role, the trust policy and the boundary don't change. What `cdk diff AscrumBootstrap` should show:
+- `ascrum-cdk-cfn-execution-network`, NetworkTagOnCreate: the condition `ec2:CreateAction` changes from
+  `ec2:CreateVpc, …` to `CreateVpc, …`, and `aws:RequestTag/project: ascrum-migration` is added.
+- `ascrum-cdk-cfn-execution-data`, WebBucket: adds `s3:ListTagsForResource`, `s3:TagResource` and
+  `s3:UntagResource`.
+- `ascrum-cdk-cfn-execution-iam`, DemoRolesTagReadAndDelete: adds `iam:ListRoleTags`.
+
+```sh
+cd infra
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+OWNER_ID=$(gh api "repos/$REPO" -q .owner.id)
+REPO_ID=$(gh api "repos/$REPO" -q .id)
+pnpm exec cdk diff AscrumBootstrap -c githubRepository="$REPO" -c githubOwnerId="$OWNER_ID" -c githubRepositoryId="$REPO_ID"
+pnpm exec cdk deploy AscrumBootstrap -c githubRepository="$REPO" -c githubOwnerId="$OWNER_ID" -c githubRepositoryId="$REPO_ID"
+```
+
+### Breakages (one at a time; all 9 red)
+- T1: the `ec2:`-prefixed `ec2:CreateAction` values of #69. Red: the bare-names test, the condition
+  test and the pre-split union test.
+- T2: no `aws:RequestTag/project`. Red: the same three tests.
+- T3: no `ec2:CreateAction`, which would allow CreateTags whenever the demo tag is requested. Red: the
+  same three tests.
+- T4: no `s3:TagResource`. Red: the row-allowed test, the allow-list and the union.
+- T5: no `s3:ListTagsForResource`. Red: the same three tests.
+- T6: no `iam:ListRoleTags`. Red: the same three tests.
+- T7: a type without a row (`AWS::EC2::Route` removed). Red: the every-type test.
+- T8: a row naming the wrong statement. Red: the row-allowed test.
+- T9: a tagged type marked untagged (the VPC). Red: the template-tags test.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no `aws`, no
+`cdk deploy`, `diff` or `destroy`)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck clean;
+  - "Test Files 12 passed (12)", "Tests 155 passed (155)";
+  - "Successfully synthesized to …/infra/cdk.out".
+- The CLI-synthesised `cdk.out/AscrumDemo.template.json` has 29 types. These are the table's 29 rows,
+  including `AWS::CDK::Metadata`.
+- Can't be proven offline: that CloudFormation's EC2 handlers send the tags as TagSpecifications, which
+  the schemas' `tagOnCreate: true` says. If one tags after create instead, `ec2:CreateAction` is absent,
+  this statement doesn't apply, and the run fails closed the same way. That would be the next live
+  finding, not a silent widening.
+
+## 2026-11-25, live run 4, round 2 (worker): security-review findings sec-01 and sec-02 on #82
+The `security-reviewer` agent's second review of #82 raised two findings. Both are non-blocking, but the
+owner wanted them in #82 so the bootstrap is updated only once. The new commits sit on top of the regular
+reviewer's commit `25f9d77`, with no force-push.
+
+### sec-01 (medium): NetworkCreate allowed child creates in any VPC
+**Problem.** `NetworkCreate` allowed `ec2:CreateSubnet`, `ec2:CreateSecurityGroup` and
+`ec2:CreateRouteTable` on `*`, conditioned on the region only.
+- Its comment, "Creating something touches nothing that exists", was **wrong**, and it was mine (#69): a
+  child create attaches the new resource to an existing VPC.
+- #82's tag-on-create fix makes this path work end to end, so the role could have put a demo-tagged
+  subnet, security group or route table into any VPC in the region.
+
+**Source.** Service Authorization Reference, EC2
+(https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html, Actions table,
+read 2026-11-25; the same data is in
+https://servicereference.us-east-1.amazonaws.com/v1/ec2/ec2.json, version v1.5). `*` marks a required
+resource type:
+
+| Action | Resource types (condition keys used here) |
+|---|---|
+| CreateVpc | `vpc*` (aws:RequestTag), `ipam-pool`, `ipv6pool-ec2` (not used) |
+| CreateInternetGateway | `internet-gateway*` (aws:RequestTag) |
+| CreateSubnet | `subnet*` (aws:RequestTag), `vpc*` (aws:ResourceTag), `ipam-pool` (not used) |
+| CreateRouteTable | `route-table*` (aws:RequestTag), `vpc*` (aws:ResourceTag) |
+| CreateSecurityGroup | `security-group*` (aws:RequestTag), `vpc` (aws:ResourceTag; listed, not marked required) |
+
+Every action supports the key I needed on the resource type I needed it on, so I didn't need to raise a
+question.
+
+**Fix** (`bootstrapStack.ts`): `NetworkCreate` is split into four statements, each also bound to the
+region.
+- `NetworkCreateTagged`: `ec2:CreateVpc` and `ec2:CreateInternetGateway` on `vpc/*` and
+  `internet-gateway/*`, only with `aws:RequestTag/project = ascrum-migration`.
+- `NetworkCreateInDemoVpc`: the three child creates on `vpc/*`, only with
+  `aws:ResourceTag/project = ascrum-migration`.
+- `NetworkCreateChildTagged`: the three child creates on `subnet/*`, `security-group/*` and
+  `route-table/*`, only with `aws:RequestTag/project = ascrum-migration`.
+- `NetworkPrefixLists`: `ec2:GetManagedPrefixListEntries` on `*`. It was in NetworkCreate; it's a read,
+  and the region condition stays.
+
+**Why (b) and (c) are separate statements.** A request's tags are in the request context for every
+resource the call touches. If one statement put `aws:RequestTag` on `vpc/*` as well as on the child
+types, it would let a child be created in any VPC as long as the tags were requested. The rewritten
+comment says this.
+
+**Liveness check: AuthorizeSecurityGroupIngress/Egress on `security-group-rule`.**
+- The reference says: "Policies using the security-group-rule resource-level permission are only
+  enforced when the API request includes TagSpecifications".
+- `AWS::EC2::SecurityGroupIngress` and `SecurityGroupEgress` are not taggable (registry schemas, live run
+  4 table), so CloudFormation sends no TagSpecifications for them. The `security-group-rule` resource is
+  then not evaluated, and `NetworkChangeTagged` covers the `security-group` side through the group's demo
+  tag.
+- The inline egress rule CDK puts on a SecurityGroup goes the same way.
+- That statement is unchanged by this split. I widened nothing. If a handler did send rule tags, the call
+  would be denied and the run would fail closed, which would be a new live finding.
+- **Other liveness assumptions** (the run will show them): the VPC carries the demo tag before its
+  subnets, route tables and security groups are created. That holds because CreateVpc puts the tags in
+  its TagSpecifications (`tagOnCreate`), and CloudFormation creates children only after their parent.
+
+### sec-02 (low, test only): the CreateTags check had a hole
+**Problem.** `R26` checked `NetworkCreate`'s actions with `/^ec2:Create/`, so `ec2:CreateTags` added to
+that statement would have passed unnoticed.
+
+**Fix** (`bootstrapStack.test.ts`):
+- The old line is gone (its statement no longer exists).
+- New test `sec-02`: every execution-policy statement that grants `ec2:CreateTags` (wildcards included)
+  must condition it either on `ec2:CreateAction` together with `aws:RequestTag/project`, or on
+  `aws:ResourceTag/project`.
+- New test `sec-01` pins the split:
+  - no child create on `*`;
+  - on `vpc/*`, the only statement is `NetworkCreateInDemoVpc`, with the resource tag;
+  - on the child types, the only statement is `NetworkCreateChildTagged`, with the request tag;
+  - CreateVpc and CreateInternetGateway appear only in `NetworkCreateTagged`, with the request tag and
+    never on `*`.
+- I didn't add the optional Deny statement, as asked.
+
+**Proof, from `vitest run src/bootstrapStack.test.ts -t "sec-0"`:**
+- Against the old statement (HEAD's `bootstrapStack.ts` put back temporarily):
+  "× sec-01: a subnet, route table or security group is created only in a VPC carrying the demo tag …",
+  "AssertionError: NetworkCreate: expected [ '*' ] to not include '*'", "Tests 1 failed | 1 passed | 32
+  skipped (34)".
+- Against the new split: "Tests 2 passed | 32 skipped (34)".
+- sec-02 passed against the old code too, because the old code had no extra CreateTags. Its proof is
+  the breakages T1-T3 below, run with `-t "sec-02"` only, all red:
+  - T1: CreateTags added to NetworkPrefixLists;
+  - T2: CreateTags added to NetworkCreateTagged, which has a request tag but no CreateAction;
+  - T3: `ec2:Create*` added.
+
+**Breakages, full suite, one at a time; all 8 red:**
+- S1: child creates on `*`. Red: sec-01, the on-`*` condition test and the union.
+- S2: the VPC side on the request tag instead of the resource tag. Red: sec-01 and the union.
+- S3: a child without the request tag. Red: sec-01 and the union.
+- S4: CreateVpc without the request tag. Red: sec-01 and the union.
+- S5: `vpc/*` added to the child statement, which merges request-tag and VPC. Red: sec-01 and the union.
+- T1-T3: red, as above. In the full suite they also break the allow-list, R26 and the no-`*` action
+  test.
+
+### Other updates
+- The allow-list test (R27) and the on-`*` condition test now list the four new statements.
+- `demoTagging.test.ts` takes the network creates from the two RequestTag statements.
+- The pre-split fixture `cfnExecutionStatements.json` replaces `NetworkCreate` with the four synthesised
+  statements, copied from `cdk.out` after I checked them by hand.
+
+### Policy sizes (worst case, minified, limit 6,144)
+network 1,731 → **2,729** (7 statements); compute 2,367, data 1,926, cdn 1,103 and iam 1,309 are
+unchanged.
+
+### Bootstrap diff to expect (adds to the live-run-4 list above)
+- `ascrum-cdk-cfn-execution-network`: `NetworkCreate` is removed. `NetworkCreateTagged`,
+  `NetworkCreateInDemoVpc`, `NetworkCreateChildTagged` and `NetworkPrefixLists` are added. The policy is
+  updated in place.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck clean;
+  - "Test Files 12 passed (12)", "Tests 157 passed (157)";
+  - "Successfully synthesized to …/infra/cdk.out".
+- web `pnpm verify` (`STUB_PORT=4101 PREVIEW_PORT=5273 PAGES_PORT=5274`, Postgres on 55461) exit 0: "Tests 443 passed (443)" (unit), "Tests 87 passed (87)" (integration), "42 passed" (e2e).

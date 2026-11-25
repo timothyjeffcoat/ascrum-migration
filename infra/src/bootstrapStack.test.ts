@@ -56,6 +56,9 @@ function managedPolicy(name: string): [string, Statement[]] {
 
 const json = (value: unknown) => JSON.stringify(value)
 const isRead = (action: string) => /:(Describe|Get|List)[A-Za-z]*\*?$/.test(action)
+/** Whether an action pattern of a policy (wildcards allowed) grants the action. */
+const grantsAction = (pattern: string, action: string) =>
+  new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`).test(action)
 
 describe('bootstrap stack: OIDC and the deploy role', () => {
   it('AC-AWS-02: GitHub OIDC provider for sts.amazonaws.com, as a plain CloudFormation resource (no Lambda)', () => {
@@ -359,14 +362,10 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
         'rds:ListTagsForResource',
         'secretsmanager:DescribeSecret',
       ],
-      NetworkCreate: [
-        'ec2:CreateInternetGateway',
-        'ec2:CreateRouteTable',
-        'ec2:CreateSecurityGroup',
-        'ec2:CreateSubnet',
-        'ec2:CreateVpc',
-        'ec2:GetManagedPrefixListEntries',
-      ],
+      NetworkCreateTagged: ['ec2:CreateInternetGateway', 'ec2:CreateVpc'],
+      NetworkCreateInDemoVpc: ['ec2:CreateRouteTable', 'ec2:CreateSecurityGroup', 'ec2:CreateSubnet'],
+      NetworkCreateChildTagged: ['ec2:CreateRouteTable', 'ec2:CreateSecurityGroup', 'ec2:CreateSubnet'],
+      NetworkPrefixLists: ['ec2:GetManagedPrefixListEntries'],
       NetworkTagOnCreate: ['ec2:CreateTags'],
       NetworkChangeTagged: [
         'ec2:AssociateRouteTable',
@@ -465,12 +464,15 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
         's3:DeleteBucketPolicy',
         's3:Get*',
         's3:ListBucket',
+        's3:ListTagsForResource',
         's3:PutBucketOwnershipControls',
         's3:PutBucketPolicy',
         's3:PutBucketPublicAccessBlock',
         's3:PutBucketTagging',
         's3:PutBucketVersioning',
         's3:PutEncryptionConfiguration',
+        's3:TagResource',
+        's3:UntagResource',
       ],
       CdnFunction: [
         'cloudfront:CreateFunction',
@@ -501,6 +503,7 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
         'iam:ListAttachedRolePolicies',
         'iam:ListInstanceProfilesForRole',
         'iam:ListRolePolicies',
+        'iam:ListRoleTags',
         'iam:TagRole',
         'iam:UntagRole',
         'iam:UpdateRoleDescription',
@@ -513,17 +516,18 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
 
   it('DEV-p5-infra-05/-10: a write on "*" only with its condition: region, tag-on-create, the demo tag in the request, a service; only origin access controls and response headers policies have none', () => {
     const conditioned: Record<string, unknown> = {
-      NetworkCreate: { StringEquals: region },
       NetworkTagOnCreate: {
         StringEquals: {
           ...region,
+          // Bare API names: the "ec2:"-prefixed values of #69 never matched (live run 4).
           'ec2:CreateAction': [
-            'ec2:CreateVpc',
-            'ec2:CreateSubnet',
-            'ec2:CreateRouteTable',
-            'ec2:CreateInternetGateway',
-            'ec2:CreateSecurityGroup',
+            'CreateVpc',
+            'CreateSubnet',
+            'CreateRouteTable',
+            'CreateInternetGateway',
+            'CreateSecurityGroup',
           ],
+          'aws:RequestTag/project': 'ascrum-migration',
         },
       },
       NetworkChangeTagged: { StringEquals: { ...region, 'aws:ResourceTag/project': 'ascrum-migration' } },
@@ -585,7 +589,13 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
 
   it('DEV-p5-infra-05 (R26): every EC2 write is region-bound; deletes and changes need the demo tag, and the tag can only be set while creating', () => {
     const ec2Writes = allow.filter((s) => actionsOf(s).some((a) => a.startsWith('ec2:') && !isRead(a)))
-    expect(ec2Writes.map((s) => s.Sid).sort()).toEqual(['NetworkChangeTagged', 'NetworkCreate', 'NetworkTagOnCreate'])
+    expect(ec2Writes.map((s) => s.Sid).sort()).toEqual([
+      'NetworkChangeTagged',
+      'NetworkCreateChildTagged',
+      'NetworkCreateInDemoVpc',
+      'NetworkCreateTagged',
+      'NetworkTagOnCreate',
+    ])
     for (const statement of ec2Writes) {
       expect(statement.Condition?.StringEquals?.['aws:RequestedRegion'], statement.Sid).toEqual({ Ref: 'AWS::Region' })
     }
@@ -595,10 +605,62 @@ describe('bootstrap stack: what CloudFormation may do for the demo stacks', () =
         expect(changes, action).toContain(action)
       }
     }
-    expect(
-      actionsOf(sid('NetworkCreate')).filter((a) => !/^ec2:Create|^ec2:GetManagedPrefixListEntries$/.test(a)),
-    ).toEqual([])
     expect(actionsOf(sid('NetworkTagOnCreate'))).toEqual(['ec2:CreateTags'])
+  })
+
+  // Security review of #82, sec-02: the old check (/^ec2:Create/) let ec2:CreateTags through.
+  it('sec-02: ec2:CreateTags is allowed only on a resource being created (ec2:CreateAction, with the demo tag in the request) or on one that already carries the demo tag', () => {
+    const tagging = allow.filter((s) => actionsOf(s).some((a) => grantsAction(a, 'ec2:CreateTags')))
+    expect(tagging.length).toBeGreaterThan(0)
+    for (const statement of tagging) {
+      const equals = statement.Condition?.StringEquals ?? {}
+      const onCreate =
+        equals['ec2:CreateAction'] !== undefined && equals['aws:RequestTag/project'] === 'ascrum-migration'
+      const onTagged = equals['aws:ResourceTag/project'] === 'ascrum-migration'
+      expect(onCreate || onTagged, statement.Sid).toBe(true)
+    }
+  })
+
+  // Security review of #82, sec-01: a subnet, route table or security group is created inside an existing
+  // VPC, and IAM checks that VPC too. Before the split, NetworkCreate allowed them in any VPC.
+  it('sec-01: a subnet, route table or security group is created only in a VPC carrying the demo tag, and only with the demo tag in the request; a VPC or internet gateway only with the demo tag in the request', () => {
+    const children = ['ec2:CreateSubnet', 'ec2:CreateRouteTable', 'ec2:CreateSecurityGroup']
+    const parents = ['ec2:CreateVpc', 'ec2:CreateInternetGateway']
+    const vpc = ARN('ec2', 'vpc/*')
+    const childArns = [ARN('ec2', 'subnet/*'), ARN('ec2', 'security-group/*'), ARN('ec2', 'route-table/*')]
+    const grantsAny = (s: Statement, actions: string[]) =>
+      actionsOf(s).some((pattern) => actions.some((action) => grantsAction(pattern, action)))
+    const requestTagged = (s: Statement) => s.Condition?.StringEquals?.['aws:RequestTag/project'] === 'ascrum-migration'
+    const resourceTagged = (s: Statement) =>
+      s.Condition?.StringEquals?.['aws:ResourceTag/project'] === 'ascrum-migration'
+    for (const statement of allow.filter((s) => grantsAny(s, children))) {
+      const on = resourcesOf(statement)
+      expect(on, statement.Sid).not.toContain('*')
+      if (on.includes(vpc)) {
+        // The parent VPC: exactly vpc/*, and only when it carries the demo tag.
+        expect(on, statement.Sid).toEqual([vpc])
+        expect(resourceTagged(statement), statement.Sid).toBe(true)
+      } else {
+        // The new child: only its own resource types, and only requested with the demo tag.
+        expect(
+          on.every((r) => childArns.includes(r)),
+          statement.Sid,
+        ).toBe(true)
+        expect(requestTagged(statement), statement.Sid).toBe(true)
+      }
+    }
+    // Both sides are granted, so a child create needs both: a tagged VPC and the tag in the request.
+    expect(allow.filter((s) => grantsAny(s, children) && resourcesOf(s).includes(vpc)).map((s) => s.Sid)).toEqual([
+      'NetworkCreateInDemoVpc',
+    ])
+    expect(allow.filter((s) => grantsAny(s, children) && !resourcesOf(s).includes(vpc)).map((s) => s.Sid)).toEqual([
+      'NetworkCreateChildTagged',
+    ])
+    for (const statement of allow.filter((s) => grantsAny(s, parents))) {
+      expect(resourcesOf(statement), statement.Sid).not.toContain('*')
+      expect(requestTagged(statement), statement.Sid).toBe(true)
+    }
+    expect(allow.filter((s) => grantsAny(s, parents)).map((s) => s.Sid)).toEqual(['NetworkCreateTagged'])
   })
 
   it('DEV-p5-infra-05: load balancer, ECS, RDS and the CloudFront function by name only; the demo stack uses exactly those names', () => {
