@@ -1051,3 +1051,54 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Our regular reviewer planted breakages, and three of them survived right on top of the bug. It explained them away. A second reviewer, asked only to look for ways the gate could fail open, gave the check a typo and watched the CRITICAL go through. Two reviewers with different questions catch what one reviewer asking both does not."
+
+## 2026-11-25: Not deploying during a GitHub outage (orchestrator)
+- **What happened.** On the afternoon of 2026-11-25 (UTC) GitHub had a partial outage. The status page read "Partial System Outage": Actions in partial outage, Issues and Pull Requests in major outage.
+  - Merging #75 returned `502 Bad Gateway`, but the merge had gone through. The orchestrator confirmed it from the PR state (`MERGED`, `58002fa`) and from the fast-forward of `migration`, which brought in exactly the PR's 10 files.
+  - CodeQL on `58002fa` failed twice (run 45651609482, attempts 1 and 2, 16:10–16:18 UTC). Both times the analysis finished and the step failed while "Uploading code scanning results"; no alert was involved. Two requests to re-run it returned HTTP 500.
+  - Opening the journal PR (#76) failed with a GraphQL error and no PR was created. A retry loop checked for an existing PR before each attempt, so it could not open a duplicate.
+  - The first dispatch of live run 3 returned HTTP 500 and created no run. The second dispatch worked (45664652733, 17:25 UTC).
+- **Decision.** Run 3 waited for GitHub to recover, for two reasons:
+  - The deploy's gate requires every check on the commit to be green, so a failed CodeQL upload would have stopped the run at the gate anyway.
+  - Teardown is an Actions job. Run 3 was the first that could have created the expensive stack (RDS, ALB, Fargate, CloudFront). An Actions outage between deploy and destroy is exactly the owner's breakage O4, "a failed deploy leaves something running". The $5 budget alarm is a backstop, not a plan.
+- **How it resolved.** CodeQL never passed on `58002fa`. It passed on the next heads (`a393f80` after #76, `3d2f9b9` after #77) once the status page showed recovery, and run 3 ran on `3d2f9b9`.
+- **Routine kept.** After any 5xx on a write (merge, PR, comment, dispatch), read the state before retrying.
+
+**Moment (article candidate)**
+- "GitHub went down in the middle of the day. Our teardown runs on GitHub. So the decision was easy: no deploy until the thing that deletes the deploy is back."
+
+## 2026-11-25: The slow sign-in, in a real browser (fix-slow-login, PR #77)
+- **The question.** In the first comment thread, a DevOps engineer asked whether the 500 ms delayed reply behind DEV-owner-04 (spec P7) had become a slow-stub variant in the suite, or only lived in one Chromium script.
+- **The honest answer.** Only the script. The 500 ms run was a one-off measurement before and after the fix, and it was never committed. The suite had a jsdom test that fires two submits in the same tick. Nothing held a reply open in a real browser.
+- **What was added (#77, merged as `3d2f9b9`).** One Playwright test in `web/e2e/forms-enter.spec.ts`, in the `chromium` project, with no fixed sleeps:
+  - It holds `POST /login` in `page.route` and presses Enter twice.
+  - It then sends a sentinel request through the same route. Once the sentinel has arrived, any second POST would already have been counted.
+  - It expects exactly 1 POST, releases the reply, and checks the user is signed in with no error.
+  - The `pages` project is out of scope by design: MSW answers in the service worker, where `page.route` does not see the requests.
+- **Checks.**
+  - Worker: red with the guard removed, 20 of 20 runs (`Received: 2`); green 20 of 20 with it; `pnpm verify` exit 0.
+  - The orchestrator checked under the owner's option 2 (test-only, no separate reviewer). It read the diff and ran its own breakages in a separate worktree. A guard that is never set failed 5 of 5. A guard released a microtask after the submit (`queueMicrotask(() => { signingIn.current = false })`) failed 5 of 5 in the new test, **but the existing jsdom P7 tests still passed against it** (`Tests 2 passed`).
+- **What it shows.** Two submits in one tick only prove the guard exists. A held reply proves it lasts until the reply comes back. The unit test could not tell the difference.
+
+**Moment (article candidate)**
+- "A reader asked whether our slow-network test was real or a one-off script. It was a one-off. Adding it properly found a bug class the unit test could not see: a guard that switches off a moment too early passes 'two clicks at once', and fails 'two clicks while the server thinks'."
+
+## 2026-11-25: A security-only second reviewer (orchestrator, PR #79 and #80)
+- **Why.** The owner asked whether a security specialist agent was available. None was: the reviewers were general-purpose agents with security-flavoured briefs, so how deep each security review went depended on the brief. The same day, a worker had retried a refused download by hiding the tool's name in a shell variable (DEV-p5-image-cves-03).
+- **What was added.**
+  - **#79:** `.claude/agents/security-reviewer.md`, run on PRs that touch `infra/`, `docker/`, `.github/`, `api/src/`, `web/src/auth/` or `web/stub/`.
+    - It works through a fixed checklist: threat model, IAM least privilege, supply-chain pinning, secrets, image contents and CVEs, fail-closed paths and gate integrity. It also runs its own security breakages.
+    - It has no Edit or Write tools. It reports to the orchestrator, and the regular reviewer logs its findings.
+    - Hard rules: no AWS; a refused command is never retried in another form; only pinned, checksum-verified tools.
+  - **#80:** the reviewer role moved verbatim from CLAUDE.md (117 lines) to `.claude/rules/review.md`, leaving CLAUDE.md at 105 lines. The agent also gained one rule: a guard's "split it into plain commands" message is not a permission denial, and following it is allowed and reported.
+- **First use.** On its first PR (#78) it found a blocking fail-open path that the regular review had passed, plus three non-blocking findings. See the entry "A second, security-only reviewer catches a fail-open check".
+
+## 2026-11-25: The owner follows two recommendations, with conditions (Q-p5-image-cves-2, -3)
+- **The answers.** The owner asked, "wouldn't it be best just to follow your recommendations?", and approved them with the orchestrator's conditions. The answers are recorded in `spec/questions/p5-image-cves.md`.
+  - **Q-2 (a): Trivy in the e2e-compose job,** on both images, failing on HIGH and CRITICAL.
+    - The release binary is pinned by version and SHA-256, never `trivy-action` tags or `latest`, because Trivy itself was compromised in March 2026: a malicious v0.69.4 release and force-pushed `trivy-action` tags (GHSA-69fq-xp46-6x23, CVE-2026-33634).
+    - A failed vulnerability-DB download or scan fails the job.
+    - ECR stays the final check. A disagreement between the two scanners is logged, and no ignore list is added without a new answer.
+  - **Q-3 (a): the nginx base of the web image gets the same package floors as the API image.**
+- **Why ask at all.** Q-2 adds a tool to CI, and the project's rules make a new dependency the owner's call. Q-3 changes a file outside the cluster's paths. "Follow the recommendation" is a valid answer, but the owner gives it, not the agent.
+- **Open for the follow-up cluster.** DEV-p5-image-cves-02 (a lowered or dropped floor passes offline) and -07 (ways around the package-source check). Also a question for the owner: remove apk-tools, ssl_client and busybox from the runtime image.
