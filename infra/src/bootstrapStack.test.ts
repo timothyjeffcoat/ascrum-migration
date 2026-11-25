@@ -2,6 +2,7 @@ import { App } from 'aws-cdk-lib'
 import { Match } from 'aws-cdk-lib/assertions'
 import { describe, expect, it } from 'vitest'
 import { buildStacks } from './app.ts'
+import { EXECUTION_POLICY_PARTS } from './bootstrapStack.ts'
 import { NAMES } from './names.ts'
 import { actionsOf, ofType, resources, synth, TEST_REPOSITORY, type Resource, type Statement } from './testApp.ts'
 import { templateYaml } from './testYaml.ts'
@@ -185,13 +186,13 @@ describe('bootstrap stack: OIDC and the deploy role', () => {
     expect(imports.Condition).toEqual({ Null: { 'cloudformation:ImportResourceTypes': 'false' } })
   })
 
-  it('DEV-p5-infra-01: the execution role is trusted by CloudFormation only and holds only the execution policy', () => {
+  it('DEV-p5-infra-01: the execution role is trusted by CloudFormation only and holds only the execution policy parts', () => {
     const trust = (executionRole.Properties?.AssumeRolePolicyDocument as { Statement: Statement[] }).Statement
     expect(trust).toEqual([
       { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'cloudformation.amazonaws.com' } },
     ])
-    const [policyId] = managedPolicy('ascrum-cdk-cfn-execution')
-    expect(executionRole.Properties?.ManagedPolicyArns).toEqual([{ Ref: policyId }])
+    const policyIds = EXECUTION_POLICY_PARTS.map((part) => managedPolicy(`ascrum-cdk-cfn-execution-${part}`)[0])
+    expect(executionRole.Properties?.ManagedPolicyArns).toEqual(policyIds.map((id) => ({ Ref: id })))
     expect(executionRole.Properties?.Policies).toBeUndefined()
     const inline = ofType(bootstrap, 'AWS::IAM::Policy').filter(([, r]) =>
       flat(r.Properties?.Roles).includes(`\${${executionRoleId}}`),
@@ -285,7 +286,8 @@ describe('bootstrap stack: OIDC and the deploy role', () => {
 })
 
 describe('bootstrap stack: what CloudFormation may do for the demo stacks', () => {
-  const [, execution] = managedPolicy('ascrum-cdk-cfn-execution')
+  // The execution policy is split by size (policyLimits.test.ts); these tests read the union of its parts.
+  const execution = EXECUTION_POLICY_PARTS.flatMap((part) => managedPolicy(`ascrum-cdk-cfn-execution-${part}`)[1])
   const allow = execution.filter((s) => s.Effect === 'Allow')
   const sid = (name: string) => {
     const found = allow.find((s) => s.Sid === name)

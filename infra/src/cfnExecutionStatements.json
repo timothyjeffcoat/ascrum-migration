@@ -1,0 +1,787 @@
+[
+  {
+    "Action": [
+      "cloudfront:DescribeFunction",
+      "cloudfront:Get*",
+      "cloudfront:List*",
+      "ec2:Describe*",
+      "ecr:DescribeRepositories",
+      "ecr:GetLifecyclePolicy",
+      "ecr:ListTagsForResource",
+      "ecs:Describe*",
+      "ecs:List*",
+      "elasticloadbalancing:Describe*",
+      "logs:Describe*",
+      "logs:ListTagsForResource",
+      "logs:ListTagsLogGroup",
+      "rds:Describe*",
+      "rds:ListTagsForResource",
+      "secretsmanager:DescribeSecret"
+    ],
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "ReadOnly"
+  },
+  {
+    "Action": [
+      "ec2:CreateInternetGateway",
+      "ec2:CreateRouteTable",
+      "ec2:CreateSecurityGroup",
+      "ec2:CreateSubnet",
+      "ec2:CreateVpc",
+      "ec2:GetManagedPrefixListEntries"
+    ],
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestedRegion": {
+          "Ref": "AWS::Region"
+        }
+      }
+    },
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "NetworkCreate"
+  },
+  {
+    "Action": "ec2:CreateTags",
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestedRegion": {
+          "Ref": "AWS::Region"
+        },
+        "ec2:CreateAction": [
+          "ec2:CreateVpc",
+          "ec2:CreateSubnet",
+          "ec2:CreateRouteTable",
+          "ec2:CreateInternetGateway",
+          "ec2:CreateSecurityGroup"
+        ]
+      }
+    },
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "NetworkTagOnCreate"
+  },
+  {
+    "Action": [
+      "ec2:AssociateRouteTable",
+      "ec2:AttachInternetGateway",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:CreateRoute",
+      "ec2:CreateTags",
+      "ec2:DeleteInternetGateway",
+      "ec2:DeleteRoute",
+      "ec2:DeleteRouteTable",
+      "ec2:DeleteSecurityGroup",
+      "ec2:DeleteSubnet",
+      "ec2:DeleteTags",
+      "ec2:DeleteVpc",
+      "ec2:DetachInternetGateway",
+      "ec2:DisassociateRouteTable",
+      "ec2:ModifySubnetAttribute",
+      "ec2:ModifyVpcAttribute",
+      "ec2:RevokeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress"
+    ],
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestedRegion": {
+          "Ref": "AWS::Region"
+        },
+        "aws:ResourceTag/project": "ascrum-migration"
+      }
+    },
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "NetworkChangeTagged"
+  },
+  {
+    "Action": [
+      "elasticloadbalancing:AddTags",
+      "elasticloadbalancing:CreateListener",
+      "elasticloadbalancing:CreateLoadBalancer",
+      "elasticloadbalancing:CreateRule",
+      "elasticloadbalancing:CreateTargetGroup",
+      "elasticloadbalancing:DeleteListener",
+      "elasticloadbalancing:DeleteLoadBalancer",
+      "elasticloadbalancing:DeleteRule",
+      "elasticloadbalancing:DeleteTargetGroup",
+      "elasticloadbalancing:ModifyListener",
+      "elasticloadbalancing:ModifyListenerAttributes",
+      "elasticloadbalancing:ModifyLoadBalancerAttributes",
+      "elasticloadbalancing:ModifyRule",
+      "elasticloadbalancing:ModifyTargetGroup",
+      "elasticloadbalancing:ModifyTargetGroupAttributes",
+      "elasticloadbalancing:RemoveTags",
+      "elasticloadbalancing:SetSecurityGroups",
+      "elasticloadbalancing:SetSubnets"
+    ],
+    "Effect": "Allow",
+    "Resource": [
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":elasticloadbalancing:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":listener-rule/app/ascrum-demo/*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":elasticloadbalancing:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":listener/app/ascrum-demo/*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":elasticloadbalancing:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":loadbalancer/app/ascrum-demo/*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":elasticloadbalancing:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":targetgroup/ascrum-demo-api/*"
+          ]
+        ]
+      }
+    ],
+    "Sid": "LoadBalancer"
+  },
+  {
+    "Action": [
+      "ecs:CreateCluster",
+      "ecs:CreateService",
+      "ecs:DeleteCluster",
+      "ecs:DeleteService",
+      "ecs:TagResource",
+      "ecs:UntagResource",
+      "ecs:UpdateService"
+    ],
+    "Effect": "Allow",
+    "Resource": [
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":ecs:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":cluster/ascrum-demo"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":ecs:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":service/ascrum-demo/*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":ecs:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":task-definition/ascrum-demo-api:*"
+          ]
+        ]
+      }
+    ],
+    "Sid": "Containers"
+  },
+  {
+    "Action": "ecs:RegisterTaskDefinition",
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":ecs:",
+          {
+            "Ref": "AWS::Region"
+          },
+          ":",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":task-definition/ascrum-demo-api:*"
+        ]
+      ]
+    },
+    "Sid": "RegisterDemoTaskDefinition"
+  },
+  {
+    "Action": "ecs:DeregisterTaskDefinition",
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestedRegion": {
+          "Ref": "AWS::Region"
+        }
+      }
+    },
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "DeregisterTaskDefinitions"
+  },
+  {
+    "Action": [
+      "ecr:BatchDeleteImage",
+      "ecr:CreateRepository",
+      "ecr:DeleteLifecyclePolicy",
+      "ecr:DeleteRepository",
+      "ecr:ListImages",
+      "ecr:PutImageScanningConfiguration",
+      "ecr:PutImageTagMutability",
+      "ecr:PutLifecyclePolicy",
+      "ecr:TagResource",
+      "ecr:UntagResource"
+    ],
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":ecr:",
+          {
+            "Ref": "AWS::Region"
+          },
+          ":",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":repository/ascrum-demo-api"
+        ]
+      ]
+    },
+    "Sid": "ApiRepository"
+  },
+  {
+    "Action": [
+      "rds:AddTagsToResource",
+      "rds:CreateDBInstance",
+      "rds:CreateDBSubnetGroup",
+      "rds:DeleteDBInstance",
+      "rds:DeleteDBSubnetGroup",
+      "rds:ModifyDBInstance",
+      "rds:ModifyDBSubnetGroup",
+      "rds:RemoveTagsFromResource"
+    ],
+    "Effect": "Allow",
+    "Resource": [
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":rds:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":db:ascrum-demo-db"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":rds:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":og:default:postgres-*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":rds:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":pg:default.postgres*"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":rds:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":subgrp:ascrum-demo-db"
+          ]
+        ]
+      }
+    ],
+    "Sid": "Database"
+  },
+  {
+    "Action": [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:DeleteSecret",
+      "secretsmanager:RotateSecret",
+      "secretsmanager:TagResource"
+    ],
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":secretsmanager:",
+          {
+            "Ref": "AWS::Region"
+          },
+          ":",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":secret:rds!*"
+        ]
+      ]
+    },
+    "Sid": "DatabaseManagedSecret"
+  },
+  {
+    "Action": ["kms:CreateGrant", "kms:DescribeKey"],
+    "Condition": {
+      "StringEquals": {
+        "kms:ViaService": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "rds.",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ".amazonaws.com"
+              ]
+            ]
+          },
+          {
+            "Fn::Join": [
+              "",
+              [
+                "secretsmanager.",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ".amazonaws.com"
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "ManagedKeysThroughRdsAndSecretsManager"
+  },
+  {
+    "Action": [
+      "logs:CreateLogGroup",
+      "logs:DeleteLogGroup",
+      "logs:DeleteRetentionPolicy",
+      "logs:PutRetentionPolicy",
+      "logs:TagLogGroup",
+      "logs:TagResource",
+      "logs:UntagLogGroup",
+      "logs:UntagResource"
+    ],
+    "Effect": "Allow",
+    "Resource": [
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":logs:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":log-group:/ascrum/demo/api"
+          ]
+        ]
+      },
+      {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":logs:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":log-group:/ascrum/demo/api:*"
+          ]
+        ]
+      }
+    ],
+    "Sid": "Logs"
+  },
+  {
+    "Action": [
+      "s3:CreateBucket",
+      "s3:DeleteBucket",
+      "s3:DeleteBucketPolicy",
+      "s3:Get*",
+      "s3:ListBucket",
+      "s3:PutBucketOwnershipControls",
+      "s3:PutBucketPolicy",
+      "s3:PutBucketPublicAccessBlock",
+      "s3:PutBucketTagging",
+      "s3:PutBucketVersioning",
+      "s3:PutEncryptionConfiguration"
+    ],
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":s3:::ascrum-demo-web-",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          "-",
+          {
+            "Ref": "AWS::Region"
+          }
+        ]
+      ]
+    },
+    "Sid": "WebBucket"
+  },
+  {
+    "Action": [
+      "cloudfront:CreateFunction",
+      "cloudfront:DeleteFunction",
+      "cloudfront:PublishFunction",
+      "cloudfront:UpdateFunction"
+    ],
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":cloudfront::",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":function/ascrum-demo-spa-fallback"
+        ]
+      ]
+    },
+    "Sid": "CdnFunction"
+  },
+  {
+    "Action": ["cloudfront:CreateDistribution", "cloudfront:TagResource"],
+    "Condition": {
+      "StringEquals": {
+        "aws:RequestTag/project": "ascrum-migration"
+      }
+    },
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "CdnDistributionCreate"
+  },
+  {
+    "Action": ["cloudfront:DeleteDistribution", "cloudfront:UntagResource", "cloudfront:UpdateDistribution"],
+    "Condition": {
+      "StringEquals": {
+        "aws:ResourceTag/project": "ascrum-migration"
+      }
+    },
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":cloudfront::",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":distribution/*"
+        ]
+      ]
+    },
+    "Sid": "CdnDistributionChangeTagged"
+  },
+  {
+    "Action": [
+      "cloudfront:CreateOriginAccessControl",
+      "cloudfront:CreateResponseHeadersPolicy",
+      "cloudfront:DeleteOriginAccessControl",
+      "cloudfront:DeleteResponseHeadersPolicy",
+      "cloudfront:UpdateOriginAccessControl",
+      "cloudfront:UpdateResponseHeadersPolicy"
+    ],
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "CdnUnscopable"
+  },
+  {
+    "Action": ["iam:AttachRolePolicy", "iam:CreateRole", "iam:DetachRolePolicy", "iam:PutRolePolicy"],
+    "Condition": {
+      "StringEquals": {
+        "iam:PermissionsBoundary": {
+          "Ref": "DemoRoleBoundary2782AA3C"
+        }
+      }
+    },
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":iam::",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":role/AscrumDemo*"
+        ]
+      ]
+    },
+    "Sid": "DemoRoles"
+  },
+  {
+    "Action": [
+      "iam:DeleteRole",
+      "iam:DeleteRolePolicy",
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListRolePolicies",
+      "iam:TagRole",
+      "iam:UntagRole",
+      "iam:UpdateRoleDescription"
+    ],
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":iam::",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":role/AscrumDemo*"
+        ]
+      ]
+    },
+    "Sid": "DemoRolesTagReadAndDelete"
+  },
+  {
+    "Action": "iam:PassRole",
+    "Condition": {
+      "StringEquals": {
+        "iam:PassedToService": "ecs-tasks.amazonaws.com"
+      }
+    },
+    "Effect": "Allow",
+    "Resource": {
+      "Fn::Join": [
+        "",
+        [
+          "arn:",
+          {
+            "Ref": "AWS::Partition"
+          },
+          ":iam::",
+          {
+            "Ref": "AWS::AccountId"
+          },
+          ":role/AscrumDemo*"
+        ]
+      ]
+    },
+    "Sid": "PassDemoRolesToEcsTasks"
+  },
+  {
+    "Action": "iam:CreateServiceLinkedRole",
+    "Condition": {
+      "StringEquals": {
+        "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com"]
+      }
+    },
+    "Effect": "Allow",
+    "Resource": "*",
+    "Sid": "ServiceLinkedRoles"
+  },
+  {
+    "Action": ["iam:DeleteRolePermissionsBoundary", "iam:PutRolePermissionsBoundary"],
+    "Effect": "Deny",
+    "Resource": "*",
+    "Sid": "NoBoundaryEscape"
+  }
+]

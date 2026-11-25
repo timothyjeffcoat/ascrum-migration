@@ -429,3 +429,82 @@ The RDS-managed secret's tag key (Q-p5-infra-10: a "secret AccessDenied" at task
 differs); whether CloudFormation's distribution create needs `cloudfront:CreateConnectionGroup` (not
 granted; would fail closed with AccessDenied naming it); that the tagged create passes the stack tags in
 the request (the template carries them; pinned).
+
+## 2026-11-24, policy size (worker): the first live bootstrap failed on an IAM quota
+Branch `convert/p5-infra-policy-size` from `origin/migration` (after PR #69 merged as `472274a`). The
+worktree again held `MIGRATION.md`, `spec/deviations.md` and `spec/journal.md` staged in reverse;
+restored to HEAD, not committed.
+
+### The failure (owner's `cdk deploy AscrumBootstrap`, owner's credentials, dedicated account)
+`CREATE_FAILED | AWS::IAM::ManagedPolicy | CfnExecutionPolicy … "Cannot exceed quota for PolicySize:
+6144 (Service: Iam, Status Code: 409 …)" HandlerErrorCode: ServiceLimitExceeded`. The stack rolled back.
+
+### Cause, and why no offline test caught it
+IAM limits a managed policy to 6,144 characters without whitespace. The CloudFormation execution policy
+had grown, statement by statement over rounds 2-4 (DEV-05 named every ARN, DEV-10 split CloudFront and
+the task definitions), to 23 statements: 9,601 characters in template form, 8,180 resolved with
+worst-case values. Every test pinned *what* the policy allows (actions, resources, conditions, denies),
+none pinned how big it is, and the only size test was CloudFormation's inline template limit. I knew
+the quota exists; I never measured against it. Same lesson as DEV-10 in a new form: a property AWS
+enforces at deploy time needs an offline test, or the first live run is the test.
+
+### Fix
+- `infra/src/bootstrapStack.ts`: the execution statements are grouped into five managed policies,
+  `ascrum-cdk-cfn-execution-{network,compute,data,cdn,iam}`, all attached to `ascrum-cfn-exec` (5 of
+  the 10 a role may have). Every statement is unchanged (Sids, actions, resources, conditions); only
+  the grouping is new. `EXECUTION_POLICY_PARTS` names the parts. Deploy role and boundary unchanged
+  (both far under their limits, below).
+- New `infra/src/policyLimits.test.ts` with helper `infra/src/testPolicySize.ts`: resolves every
+  policy document in every stack as CloudFormation would, with the longest values an account could
+  give it (12-digit account id, partition `aws-us-gov`, a 14-character region such as
+  `ap-southeast-7`, URL suffix `sc2s.sgov.gov`, the longest `owner/repo` GitHub allows; any other Ref
+  or GetAtt as 256 characters), and asserts IAM's quotas
+  (https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html): each managed policy
+  ≤ 6,144; each role's inline policies together ≤ 10,240; ≤ 10 managed policies per role; each trust
+  policy ≤ 2,048. Also CloudFormation's per-template counts (≤ 500 resources, 200 outputs, 200
+  parameters). An unknown intrinsic fails the test rather than being skipped.
+- The same file pins the split: the execution role holds exactly the five parts, and the union of their
+  statements equals, exactly and without repeats, the 23 statements of the single policy before the
+  split, kept as `infra/src/cfnExecutionStatements.json` (template form, captured from `472274a`'s
+  synth; no account values). A later policy change updates that file in the same commit, on purpose.
+- `bootstrapStack.test.ts` reads the union of the parts (allow-list R27 and the rest unchanged).
+  README table names the five policies and the new test.
+
+### Red/green
+- The new tests against the old single policy (same 23 statements in one policy, put back by a scratch
+  script): 2 red: "bootstrap CfnExecutionPolicy1CBEA9D3: expected 8180 to be less than or equal to
+  6144", and the parts test. The union test stays green there, as it should (same statements).
+- Breakages on the split, one at a time, all red: an action dropped from a statement; a resource
+  widened (`service/*`); a part not attached to the role; a statement repeated in another part; a
+  condition dropped; the trust limit set to 1,000 (proves the trust policies are actually resolved
+  and measured: the deploy role's is 1,285 worst case).
+
+### Sizes (minified JSON; template form = what `cdk.out` holds; worst case = resolved as above)
+| Policy | Before: template / worst case | After: template / worst case |
+|---|---|---|
+| execution (single) | 9,601 / 8,180 (23 statements) | split, below |
+| execution-network | | 1,722 / 1,707 (4) |
+| execution-compute | | 2,957 / 2,367 (5) |
+| execution-data | | 2,444 / 1,865 (5) |
+| execution-cdn | | 1,211 / 1,103 (4) |
+| execution-iam | | 1,419 / 1,290 (5) |
+| deploy role inline (DefaultPolicy) | 3,585 / 3,015 (12) | unchanged; limit 10,240 |
+| boundary | 1,132 / 872 (4) | unchanged; limit 6,144 |
+| demo task execution role inline | 669 / 1,016 (4) | unchanged; limit 10,240 |
+| deploy role trust | 1,070 (longest repo) / 1,285 | unchanged; limit 2,048 |
+
+### Other quota risks checked
+- Demo roles: the task execution role's inline policy is 1,016 worst case; the task role has none;
+  neither has managed policies. Trust policies 133.
+- Templates: resources 11 / 1 / 44, outputs 3 / 1 / 4, parameters 2 / 0 / 0 (bootstrap / registry /
+  demo), far under 500 / 200 / 200; the inline template size (51,200) was already pinned and still passes.
+- Nothing else found at risk. Not testable offline: account-level quotas (managed policies per account,
+  roles per account), which a dedicated account will not approach.
+
+### Gates (this session, every AWS credential source at `/dev/null`, `AWS_PROFILE` unset)
+- infra `pnpm verify` exit 0: "All matched files use Prettier code style!", "Test Files 10 passed (10)",
+  "Tests 125 passed (125)", "Successfully synthesized to …/infra/cdk.out".
+- web `pnpm verify` (`STUB_PORT=4101 PREVIEW_PORT=5273 PAGES_PORT=5274`, Postgres on 55461) exit 0:
+  "Tests 443 passed (443)" (unit), "Tests 87 passed (87)" (integration), "41 passed" (e2e).
+- No AWS command run; nothing read `~/.aws`. The owner re-runs the bootstrap deploy after the failed
+  stack is deleted (infra/README.md step order unchanged).
