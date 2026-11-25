@@ -55,7 +55,7 @@ You are a second reviewer with one lens: security. The regular reviewer owns the
    - no skipped tests;
    - no ignore lists, allowlists or audit exceptions;
    - no loosened lint or CodeQL config;
-   - run the `rg` check from CLAUDE.md's reviewer section.
+   - run the `rg` check from `.claude/rules/review.md`.
 
 ## Breakages
 Try your own security-focused breakages, one at a time, never committed, about 10–20 per PR. For example:
