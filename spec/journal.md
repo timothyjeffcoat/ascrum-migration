@@ -1131,3 +1131,25 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Run 4 cleared the security scan and then fell over on a single word. Our policy said `ec2:CreateVpc` where AWS expects `CreateVpc`. The test written alongside it checked for the same wrong string, so it passed. More than 150 planted breakages couldn't catch it, because the code and the test agreed with each other. What would have caught it was reading AWS's own example, which is what we did after the run."
+
+## 2026-11-25: Live run 5: 35 of 46, then a call no schema lists (p5-infra, PR #83)
+- **What happened.** The owner updated the bootstrap with #82 and started run 5 (45714777383, on `41ce28c`).
+  - The image scan was clean again (`{}`).
+  - AscrumDemo got to 35 of its 46 resources. The whole network was created, with its tags set at creation: the VPC, internet gateway, 4 subnets, 4 route tables, 3 security groups and their rules. So were the S3 bucket, both IAM roles, the log group, the ECS cluster, the DB subnet group, the target group and the CloudFront objects. That is #82's fix proven live.
+  - At 10:39:10 PM UTC the load balancer failed: the execution role "is not authorized to perform: ec2:GetSecurityGroupsForVpc (Service: ElasticLoadBalancingV2 …)". The database was cancelled, and the stack rolled back. Destroy printed "Remaining: 0", "OK: nothing from the demo remains."
+- **The cause.** While it creates a load balancer, Elastic Load Balancing itself calls EC2 with the caller's permissions. CloudFormation's resource schemas list only the calls their own handlers make, so the per-type table built after run 4 could not have predicted this. The worker said so in its own worklog (DEV-p5-infra-27). The one public source that names the call is AWS's managed policy `ElasticLoadBalancingFullAccess`.
+- **The fix (worker, `5b505a2`).** One new statement grants the two EC2 reads that the managed policy lists for ELB, `GetSecurityGroupsForVpc` and `ValidateSecurityGroupQuotasForInterface`. It applies only to the demo-tagged VPC and security groups, in the demo's region. The second read has not failed yet; it is granted now to save a run. The worker also checked the 11 resource types the run never reached against both sources, the schemas and the managed FullAccess policies, and added nothing else.
+- **Review.**
+  - The reviewer read the EC2 Service Authorization Reference. Both actions are reads, each on a single required resource type that supports the tag condition, so the condition fails closed.
+  - The managed policy (v10) lists both actions, so the second grant is backed by evidence rather than a guess.
+  - A synth comparison shows that only the network policy changes, by this one statement. The network policy is now 3,113 of 6,144 characters.
+  - 10 breakages, all red on the new test.
+  - The re-run schema probe found one omission in the look-ahead table: `rds:RebootDBInstance`. It is harmless because the template sets no parameter group (DEV-28).
+  - The security review found nothing; its 5 breakages were all red. It agreed that the KMS risk the worker noted for the database's managed password is real but unproven, and it set out a narrow fix in case a run shows it (DEV-29, accepted). It also suggested hardening `kms:CreateGrant`, which is logged for the follow-up (DEV-30).
+- **Gate results (reviewer, `5b505a2`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 158 passed (158)", synth OK. The `rg` gate check: only the 4 known import-alias false positives in `web/src/app/router.tsx`, and none in `infra/`.
+- **Counts.** 130 deviation rows, 14 blocking. Seven of the blocking rows were found by live runs after #69 merged; all seven failed closed, and every run left nothing behind.
+- **For the owner.** `cdk diff AscrumBootstrap` should show one change: in `ascrum-cdk-cfn-execution-network`, the statement `LoadBalancerEc2Reads` is added (the two EC2 reads on `vpc/*` and `security-group/*`, with the region and `aws:ResourceTag/project` conditions). Nothing else changes: no other policy, role, trust policy or boundary. Then run 6.
+- **Decision.** No blocking findings. Not merged; the owner merges.
+
+**Moment (article candidate)**
+- "Each live run gets further: the first runs failed at the image scan, run 4 at the first network resources, and run 5 at resource 36 of 46. Run 5's failure came from a permission no CloudFormation schema lists, because the load balancer service makes the call itself. The documentation we had built our coverage table from couldn't have predicted it, and the worker wrote that down before anyone asked. Every run so far has stopped cleanly and left nothing running."
