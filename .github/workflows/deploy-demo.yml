@@ -138,21 +138,10 @@ jobs:
           aws ecr get-login-password | docker login --username AWS --password-stdin "${REPOSITORY_URI%%/*}"
           docker push "$REPOSITORY_URI:$IMAGE_TAG"
 
+      # Waits for a scan on push, starts one if none appears (a registry's default is manual scanning),
+      # and passes only a completed scan with no HIGH or CRITICAL finding (infra/scripts/imageScan.ts).
       - name: image-scan (spec §6, Q-p5-7) no HIGH or CRITICAL finding in the API image
-        run: |
-          aws ecr wait image-scan-complete --repository-name ascrum-demo-api --image-id imageTag="$IMAGE_TAG"
-          aws ecr describe-image-scan-findings --repository-name ascrum-demo-api --image-id imageTag="$IMAGE_TAG" \
-            > "$RUNNER_TEMP/scan.json"
-          # Kept without registryId (the account id).
-          jq '{status: .imageScanStatus, completedAt: .imageScanFindings.imageScanCompletedAt,
-               counts: (.imageScanFindings.findingSeverityCounts // {}),
-               findings: [.imageScanFindings.findings[]? | {name, severity, uri}]}' \
-            "$RUNNER_TEMP/scan.json" | tee "$EVIDENCE/image-scan.json"
-          blocking=$(jq '[(.counts.HIGH // 0), (.counts.CRITICAL // 0)] | add' "$EVIDENCE/image-scan.json")
-          if [ "$blocking" -ne 0 ]; then
-            echo "::error::The API image has $blocking HIGH or CRITICAL findings (image-scan gate, spec §6)."
-            exit 1
-          fi
+        run: node infra/scripts/imageScan.ts ascrum-demo-api "$IMAGE_TAG" "$EVIDENCE/image-scan.json"
 
       - name: Deploy the demo stack (network, database, API, web bucket, CloudFront)
         working-directory: infra
@@ -276,9 +265,35 @@ jobs:
     permissions:
       actions: read # the run's own jobs and steps, for the timings
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: evidence
+      # Each artifact the deploy and destroy jobs uploaded, by name, with retries: in live run 1
+      # the download-artifact action listed destroy-evidence and then could not find it by its id, seconds
+      # after the destroy job uploaded it, and failed the whole job (worklog, 2026-11-24, live run 1).
+      # One that never arrives is named in MISSING.txt inside the evidence, and the last step fails the
+      # job: no transient error loses the evidence, and no missing part goes unnoticed.
+      - name: AC-AWS-07 collect the deploy and destroy evidence (retried)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DESTROY_RESULT: ${{ needs.destroy.result }}
+        run: |
+          mkdir -p evidence
+          expected=()
+          if [ "$DEPLOY_RESULT" != skipped ]; then expected+=(deploy-evidence); fi
+          if [ "$DESTROY_RESULT" != skipped ]; then expected+=(destroy-evidence); fi
+          for name in "${expected[@]}"; do
+            for attempt in 1 2 3 4 5; do
+              if gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "evidence/$name"; then
+                echo "$name: downloaded (attempt $attempt)"
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "$name" >> evidence/MISSING.txt
+                echo "::error::$name could not be downloaded after 5 attempts; named in MISSING.txt."
+                break
+              fi
+              sleep $((attempt * ${EVIDENCE_RETRY_SECONDS:-10}))
+            done
+          done
       - name: Step timings of this run
         env:
           GH_TOKEN: ${{ github.token }}
@@ -292,8 +307,15 @@ jobs:
           jq -r '.[] | .job as $job | .steps[] | [$job, .name, (.seconds // "" | tostring), (.conclusion // "")] | @tsv' \
             evidence/timings.json | tee evidence/timings.tsv
       - name: AC-AWS-07 one artifact for the run
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: demo-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence
           retention-days: 90
+      - name: AC-AWS-07 every part of the evidence is in it
+        run: |
+          if [ -s evidence/MISSING.txt ]; then
+            echo "::error::The evidence artifact lacks: $(tr '\n' ' ' < evidence/MISSING.txt)"
+            exit 1
+          fi

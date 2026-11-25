@@ -118,10 +118,39 @@ describe('spec §6 image-scan: the gate before the service exists', () => {
     expect(demoIndex).toBeGreaterThan(scanIndex)
     const scan = deploy.steps[scanIndex] as Step
     expect(scan.if).toBeUndefined()
-    expect(scan.run).toContain('aws ecr wait image-scan-complete')
-    expect(scan.run).toContain('[(.counts.HIGH // 0), (.counts.CRITICAL // 0)] | add')
-    expect(scan.run).toMatch(/if \[ "\$blocking" -ne 0 \]; then\n[^\n]*\n\s*exit 1\n\s*fi/)
-    expect(scan.run).not.toContain('||')
+    // The whole gate is the script (imageScan.test.ts, entrypoints.test.ts), nothing around it.
+    expect(scan.run?.trim()).toBe(
+      'node infra/scripts/imageScan.ts ascrum-demo-api "$IMAGE_TAG" "$EVIDENCE/image-scan.json"',
+    )
+    expect(scan.env).toBeUndefined()
+    // Only the entry-point tests shorten the poll.
+    expect(workflowText(DEPLOY)).not.toContain('IMAGE_SCAN_POLL_MS')
+  })
+})
+
+describe('AC-AWS-07: one evidence artifact, complete or visibly not', () => {
+  const evidence = () => job(DEPLOY, 'evidence')
+  const names = () => evidence().steps.map((s) => s.name ?? s.uses ?? '')
+
+  it('AC-AWS-07 (live run 1): the deploy and destroy evidence are fetched by name with retries, not by one download-artifact call', () => {
+    expect(workflowText(DEPLOY)).not.toContain('actions/download-artifact')
+    const collect = step(DEPLOY, 'evidence', 'AC-AWS-07 collect the deploy and destroy evidence (retried)')
+    expect(names()[0]).toBe(collect.name)
+    expect(collect.env).toEqual({
+      GH_TOKEN: '${{ github.token }}',
+      DEPLOY_RESULT: '${{ needs.deploy.result }}',
+      DESTROY_RESULT: '${{ needs.destroy.result }}',
+    })
+    expect(evidence().permissions).toEqual({ actions: 'read' })
+  })
+
+  it('AC-AWS-07: the artifact is uploaded whatever happened, and a missing part then fails the job', () => {
+    const upload = step(DEPLOY, 'evidence', 'AC-AWS-07 one artifact for the run')
+    expect(upload.if).toBe('always()')
+    const check = step(DEPLOY, 'evidence', 'AC-AWS-07 every part of the evidence is in it')
+    expect(check.if).toBeUndefined()
+    expect(names().indexOf(check.name ?? '')).toBe(names().length - 1)
+    expect(check.run).toMatch(/if \[ -s evidence\/MISSING\.txt \]; then\n[^\n]*\n\s*exit 1\n\s*fi/)
   })
 })
 

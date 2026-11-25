@@ -604,9 +604,11 @@ export class BootstrapStack extends Stack {
         resources: ['*'],
       }),
       new iam.PolicyStatement({
-        // Push the API image, then read the scan-on-push result (spec §6 image-scan, Q-p5-7).
+        // Push the API image, then read its scan (spec §6 image-scan, Q-p5-7), starting one when none ran on
+        // push (a registry's default is manual scanning: scripts/imageScan.ts). This repository only.
         sid: 'PushApiImageAndReadItsScan',
         actions: [
+          'ecr:StartImageScan',
           'ecr:BatchCheckLayerAvailability',
           'ecr:InitiateLayerUpload',
           'ecr:UploadLayerPart',

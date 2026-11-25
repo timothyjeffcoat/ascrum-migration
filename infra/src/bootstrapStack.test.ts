@@ -291,6 +291,7 @@ describe('bootstrap stack: OIDC and the deploy role', () => {
           'ecr:DescribeImages',
           'ecr:InitiateLayerUpload',
           'ecr:PutImage',
+          'ecr:StartImageScan',
           'ecr:UploadLayerPart',
         ],
         [repository],

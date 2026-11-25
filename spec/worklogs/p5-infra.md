@@ -588,3 +588,146 @@ Then compare `OidcSubjectPrefix` with `gh api "repos/$REPO/actions/oidc/customiz
 - web `pnpm verify` (`STUB_PORT=4101 PREVIEW_PORT=5273 PAGES_PORT=5274`, Postgres on 55461) exit 0:
   "Tests 443 passed (443)" (unit), "Tests 87 passed (87)" (integration), "41 passed" (e2e).
 - No AWS command run; nothing read `~/.aws`.
+
+## 2026-11-24, live run 1 (worker): the image-scan step and the evidence download
+Branch `convert/p5-infra-live-run-1` from `origin/migration` (`57ce901`, after #73; the owner updated the
+bootstrap and `OidcSubjectPrefix` matched GitHub's read-back). The worktree was clean this time.
+
+### What the first live **Deploy demo (AWS)** run proved (run 45552933643 on `57ce901`)
+- The gate passed.
+- The OIDC sign-in worked. So the immutable `…:environment:aws-demo:job_workflow_ref:…` subject of
+  Q-p5-infra-11 is right, including the name form for `job_workflow_ref`.
+- `AscrumDemoRegistry` deployed and the image was pushed.
+- Destroy ran, and the leftover check printed "Demo stacks still present: none … Remaining: 0 … OK:
+  nothing from the demo remains." (kept: the OIDC provider and the budget).
+
+So AC-AWS-01, -02 and -04 have now run live once.
+
+### Failure 1: the image-scan step
+`aws ecr wait image-scan-complete …` failed at once: `Waiter ImageScanComplete failed: An error occurred
+(ScanNotFoundException): Image scan does not exist for the image with '{imageDigest:'null',
+imageTag:'57ce901…'}' in the repository with name 'ascrum-demo-api'`.
+
+**Diagnosis** (AWS docs, read 2026-11-24):
+- https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning-basic-enabling.html: "By default,
+  Amazon ECR turns on basic scanning for all private registries" and "By default all of your repositories
+  are set for **Manual** scanning. You can optionally configure scan on push by specifying **Scan on push
+  filters**" (registry level).
+- https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning-basic.html: "Any repositories
+  that don't match a scan on push filter are set to the **manual** scan frequency which means you must
+  manually start the scan."
+- https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_PutImageScanningConfiguration.html: "The
+  `PutImageScanningConfiguration` API is being deprecated, in favor of specifying the image scanning
+  configuration at the registry level." That is the repository-level `scanOnPush` the registry stack sets.
+- https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_StartImageScan.html: "A basic image scan
+  can only be started once per 24 hours on an individual image. This limit includes if an image was
+  scanned on initial push."
+- https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_ImageScanStatus.html: status is one of
+  `IN_PROGRESS | COMPLETE | FAILED | UNSUPPORTED_IMAGE | ACTIVE | PENDING | SCAN_ELIGIBILITY_EXPIRED |
+  FINDINGS_UNAVAILABLE | LIMIT_EXCEEDED | IMAGE_ARCHIVED`.
+- The CLI waiter also stopped at once on that error, so a scan that has not appeared yet fails it
+  immediately (seen in the run, not from the docs).
+
+Most likely no scan was ever started: the new account's registry defaults to manual scanning, and the
+deprecated repository setting is not what decides. A race right after the push also fits a single failed
+run. One run cannot tell the two apart, so the fix covers both.
+
+**Fix:** `infra/scripts/imageScan.ts` is now the whole step.
+- It polls `describe-image-scan-findings` for up to 2 minutes for a scan to appear. ScanNotFoundException
+  means "not yet"; any other error stops the step.
+- If no scan appears, it calls `ecr start-image-scan`, then polls for up to 15 minutes for the result.
+- It passes **only** `COMPLETE` with zero HIGH and zero CRITICAL findings. Every other status, a timeout
+  or an error fails the step.
+- The summary goes into the evidence: `status`, `completedAt`, `startedByThisRun`, counts and findings,
+  with no registry id.
+- The deploy role gets `ecr:StartImageScan` on `ascrum-demo-api` only. The SAR
+  (list_amazonelasticcontainerregistry.html) lists `repository*` as its resource type.
+
+Rejected: setting the registry's scanning configuration in the bootstrap
+(`AWS::ECR::RegistryScanningConfiguration`). It is account-wide and replaces whatever rules the account
+already has, so it is unsafe in a shared account.
+
+Risk left: re-running the same commit within 24 h could hit the start limit (LIMIT_EXCEEDED). That fails
+closed, with the reason in the log.
+
+**The owner must update the bootstrap**, because the new permission is on the deploy role; command below.
+
+### Failure 2: the evidence job
+`actions/download-artifact@v8` listed `destroy-evidence` (ID 14994637907) and `deploy-evidence`,
+downloaded deploy-evidence, then failed with `Unable to download artifact(s): No artifacts found for ID:
+14994637907` and the hint "Are you trying to download from a different run? Try specifying a
+github-token with `actions:read` scope."
+
+**Diagnosis:**
+- The hint is the action's generic message for any not-found. This was the same run, and the listing
+  had just returned that id.
+- The destroy job had uploaded the artifact seconds before.
+- The action's README (https://github.com/actions/download-artifact) documents no retry.
+- I could not find a documented cause. The evidence points to a transient lookup failure right after
+  upload, not to permissions: the same token had just listed the artifact. This is a likely cause, not a
+  proven one.
+
+**Fix** (no `continue-on-error`, which stays banned in these workflows):
+- The evidence job fetches each expected artifact by name with `gh run download`. The job already has
+  `actions: read`.
+- v4 artifacts are available through the REST API immediately after upload:
+  https://github.blog/changelog/2023-12-14-github-actions-artifacts-v4-is-now-generally-available/
+- Up to 5 attempts, waiting 10/20/30/40 s between them.
+- An artifact is expected when its job ran (`needs.<job>.result != skipped`).
+- An artifact that never arrives is written to `MISSING.txt` in the evidence.
+- The single artifact is uploaded `if: always()`, and then the last step fails the job if `MISSING.txt`
+  is non-empty.
+
+So a transient error is retried, and a real loss shows up both in the artifact and as a red job.
+
+### Tests and breakages
+- `scripts/imageScan.test.ts` (7 tests):
+  - a clean scan on push passes;
+  - ScanNotFound is waited out;
+  - when no scan ever appears, one is started, once, after the wait;
+  - it never passes on NOT_FOUND, IN_PROGRESS, FAILED, UNSUPPORTED_IMAGE, FINDINGS_UNAVAILABLE,
+    LIMIT_EXCEEDED or ACTIVE;
+  - any HIGH or CRITICAL finding fails it;
+  - other errors stop it;
+  - no account id appears in the summary.
+- `scripts/entrypoints.test.ts`, the scan step as the workflow runs it, with the fake `aws`:
+  - a clean scan passes and writes the evidence;
+  - HIGH or CRITICAL fails;
+  - ScanNotFound throughout calls start-image-scan, and the step fails;
+  - a refused start fails.
+- `scripts/entrypoints.test.ts`, the evidence steps with a stand-in `gh`:
+  - 2 transient failures are retried, both parts arrive and the check passes;
+  - a part that never arrives goes into MISSING.txt, the rest is kept, and the check fails;
+  - a skipped job's artifact is not expected.
+- `scripts/workflows.test.ts`:
+  - the scan step is exactly the script call, with no env and no poll override;
+  - no `download-artifact`;
+  - the collect step's env and permissions;
+  - the upload runs on `always()`, and the check is the last step.
+- The deploy role allow-list (R27) now has `ecr:StartImageScan`.
+- Breakages, applied one at a time; all 17 went red:
+  - Scan gate: a missing scan passes; findings ignored; HIGH not blocking; a scan is never started; a
+    refused start is ignored; any error treated as "no scan yet"; no wait for a scan on push;
+    IN_PROGRESS counted as done; main exits 0 on a failed verdict; the step masked with `|| true`; no
+    StartImageScan permission.
+  - Evidence: no retry; a missing part not recorded; the check passes anyway; upload only on success;
+    destroy evidence not expected; back to download-artifact.
+
+### Owner: update the bootstrap (adds ecr:StartImageScan to the deploy role), then re-run the deploy
+```sh
+cd infra
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+OWNER_ID=$(gh api "repos/$REPO" -q .owner.id)
+REPO_ID=$(gh api "repos/$REPO" -q .id)
+pnpm exec cdk deploy AscrumBootstrap -c githubRepository="$REPO" -c githubOwnerId="$OWNER_ID" -c githubRepositoryId="$REPO_ID"
+```
+
+### Gates (this session, every AWS credential source at `/dev/null`, `AWS_PROFILE` unset)
+- infra `pnpm verify` exit 0: "All matched files use Prettier code style!", "Test Files 11 passed (11)",
+  "Tests 144 passed (144)", "Successfully synthesized to …/infra/cdk.out".
+- web `pnpm verify` (`STUB_PORT=4101 PREVIEW_PORT=5273 PAGES_PORT=5274`, Postgres on 55461) exit 0:
+  "Tests 443 passed (443)" (unit), "Tests 87 passed (87)" (integration), "41 passed" (e2e).
+- No AWS command run; nothing read `~/.aws`.
+- Not provable offline: whether `gh run download` fetches an artifact of the run that is still in
+  progress on the first try (documented for v4 artifacts; the retries and MISSING.txt cover a miss), and
+  which of the two scan cases the next live run hits (`startedByThisRun` in the evidence will say).

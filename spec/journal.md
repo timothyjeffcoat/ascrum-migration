@@ -934,3 +934,29 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "The question 'what exactly does GitHub put in the token?' had a documented answer for the old format and none for the new one. Arguing from the docs would have left a guess in the trust policy. Instead, a twenty-line workflow asked GitHub for a token and printed two claims. Two minutes later the question was closed. When the platform is the only authority, ask the platform."
+
+## 2026-11-24: Live run 1, two minutes on AWS (p5-infra, PR #74)
+- **Setup.** With #73 merged, the owner updated the bootstrap stack in 27 s, and its `OidcSubjectPrefix` output matched GitHub's read-back. The owner then started the first **Deploy demo (AWS)** run (45552933643).
+- **Proven live.** The run lasted two minutes. Its jobs ran 8 s, 57 s, 38 s and 4 s, and five things worked:
+  - The deploy gate passed.
+  - The OIDC sign-in worked. That includes the subject's `environment:aws-demo` part, the one piece the reviewer's token probe could not show.
+  - The registry stack was created and the API image was pushed.
+  - The deploy then failed, and destroy ran anyway: "deleted: AscrumDemoRegistry; already absent: AscrumDemo".
+  - The leftover check reported "Remaining: 0 … OK: nothing from the demo remains." Kept were the OIDC provider and the budget.
+
+  This is the first live proof of the owner's breakage O4, item 1 ("a failed deploy ends with destroy green and nothing left"). It is partial: the deploy failed before the expensive stack (RDS, load balancer, Fargate, CloudFront) existed, so destroying those is still unproven live.
+- **What failed.**
+  - **The image scan (DEV-p5-infra-15).** `ScanNotFoundException`: ECR never scanned the pushed image. A registry's default is manual scanning, and the repository-level scan-on-push setting comes from an API ECR is deprecating. The live run shows it had no effect. The gate failed closed, so nothing was deployed.
+  - **The evidence job (-16).** GitHub's `download-artifact` listed the destroy job's artifact, finalized seconds earlier, then could not find it by its id. The combined evidence artifact was never written; the two job artifacts stayed in the run.
+- **Cost.** Effectively zero. One small image sat in ECR for under two minutes, and the expensive stack never existed.
+- **The fixes (worker, `99a05fa`).**
+  - The scan step is now a script. It waits for a scan on push, starts one if none appears (the deploy role gains `ecr:StartImageScan` on the demo repository only), and passes only a completed scan with no HIGH or CRITICAL finding.
+  - The registry-wide scanning setting is deliberately left alone, because it is not safe in a shared account.
+  - The evidence job fetches each artifact by name with retries. It names any part that never arrives in `MISSING.txt`, uploads what it has, and then fails.
+- **Review.** The reviewer checked the three AWS claims against AWS's pages: the manual default, the deprecation, and the once-per-24-hours start limit. All three hold. The reviewer then ran 22 breakages aimed at fail-open paths: 21 red, 1 survived (DEV-p5-infra-17, low). The survivor: if the destroy job *failed*, its evidence would be left out of the combined artifact without being named as missing. The run is red in that case anyway.
+- **Gate results (reviewer, `99a05fa`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 144 passed (144)", synth OK. web `pnpm verify` exit 0, 443 / 87 / 41 passed.
+- **Counts.** DEV-p5-infra-15 (blocking, fixed), -16 (fixed), -17 (open, low). 110 rows, 9 blocking. Three of the nine were found live after the merge: a quota, a token format and a registry default. Each lives outside the code, and each failed closed.
+- **Decision.** No blocking findings. Not merged. The owner merges #74, updates the bootstrap stack, and runs the deploy again.
+
+**Moment (article candidate)**
+- "Live run 1 failed, and it was the most useful two minutes of the project so far. It proved the sign-in, the push, the teardown and the 'nothing left' check for real, at a cost of effectively zero, and it found two things no test could. The design decision that paid off was ordering: the cheap, failure-prone steps run before anything expensive exists, and teardown runs whatever happens."
