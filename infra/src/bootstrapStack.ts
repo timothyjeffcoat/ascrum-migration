@@ -23,6 +23,7 @@ import {
   DEPLOY_BRANCH,
   DEPLOY_WORKFLOWS,
   GITHUB_ENVIRONMENT,
+  GITHUB_ID_PATTERN,
   GITHUB_REPOSITORY_PATTERN,
   NAMES,
   STACK,
@@ -35,21 +36,38 @@ export const GITHUB_OIDC_HOST = 'token.actions.githubusercontent.com'
 export type BootstrapStackProps = StackProps & {
   /** `owner/repo` of the GitHub repository whose workflows may deploy. */
   githubRepository: string
+  /** GitHub's numeric id of the repository's owner (`gh api repos/<owner>/<repo> -q .owner.id`). */
+  githubOwnerId: string
+  /** GitHub's numeric id of the repository (`gh api repos/<owner>/<repo> -q .id`). */
+  githubRepositoryId: string
   /** ARN of the account's existing GitHub OIDC provider; omitted, the stack creates one. */
   existingOidcProviderArn?: string
+}
+
+export type GitHubIdentity = Pick<BootstrapStackProps, 'githubRepository' | 'githubOwnerId' | 'githubRepositoryId'>
+
+/**
+ * The `repo` segment of an immutable OIDC subject, `repo:<owner>@<owner id>/<repo>@<repo id>`: what
+ * GitHub's `GET repos/<owner>/<repo>/actions/oidc/customization/sub` returns as `sub_claim_prefix`.
+ */
+export function subjectPrefix({ githubRepository, githubOwnerId, githubRepositoryId }: GitHubIdentity): string {
+  const [owner, repo] = githubRepository.split('/')
+  return `repo:${owner}@${githubOwnerId}/${repo}@${githubRepositoryId}`
 }
 
 /**
  * The OIDC `sub` values the deploy role trusts: one per workflow file, on `migration`, in the
  * `aws-demo` environment. This is GitHub's customised subject (repo, context, job_workflow_ref), which
- * the owner turns on once for the repository (infra/README.md, Q-p5-infra-1). With the default subject
- * (`repo:<owner>/<repo>:environment:aws-demo`) the role cannot be assumed at all: it fails closed.
+ * the owner turns on once for the repository (infra/README.md, Q-p5-infra-1), in GitHub's immutable form:
+ * the `repo` segment carries the owner and repository ids, which GitHub puts there and does not let a
+ * repository remove (Q-p5-infra-11; the live read-back showed it forced). `job_workflow_ref` is the
+ * workflow's path by name, as GitHub documents that claim. Exact strings only: anything else fails closed.
  */
-export function trustedSubjects(githubRepository: string): string[] {
+export function trustedSubjects(identity: GitHubIdentity): string[] {
   return DEPLOY_WORKFLOWS.map(
     (workflow) =>
-      `repo:${githubRepository}:environment:${GITHUB_ENVIRONMENT}` +
-      `:job_workflow_ref:${githubRepository}/${workflow}@refs/heads/${DEPLOY_BRANCH}`,
+      `${subjectPrefix(identity)}:environment:${GITHUB_ENVIRONMENT}` +
+      `:job_workflow_ref:${identity.githubRepository}/${workflow}@refs/heads/${DEPLOY_BRANCH}`,
   )
 }
 
@@ -70,6 +88,11 @@ export class BootstrapStack extends Stack {
     const { githubRepository, existingOidcProviderArn } = props
     if (!GITHUB_REPOSITORY_PATTERN.test(githubRepository)) {
       throw new Error(`githubRepository must be "owner/repo", got "${githubRepository}"`)
+    }
+    for (const key of ['githubOwnerId', 'githubRepositoryId'] as const) {
+      if (!GITHUB_ID_PATTERN.test(props[key])) {
+        throw new Error(`${key} must be GitHub's numeric id (digits only), got "${props[key]}"`)
+      }
     }
     if (
       existingOidcProviderArn !== undefined &&
@@ -500,7 +523,7 @@ export class BootstrapStack extends Stack {
         {
           StringEquals: {
             [`${GITHUB_OIDC_HOST}:aud`]: 'sts.amazonaws.com',
-            [`${GITHUB_OIDC_HOST}:sub`]: trustedSubjects(githubRepository),
+            [`${GITHUB_OIDC_HOST}:sub`]: trustedSubjects(props),
           },
         },
         'sts:AssumeRoleWithWebIdentity',
@@ -688,5 +711,9 @@ export class BootstrapStack extends Stack {
       description: 'The role CloudFormation uses for the AscrumDemo* stacks (named in their manifest)',
     })
     new CfnOutput(this, 'RoleBoundaryArn', { value: boundary.managedPolicyArn })
+    new CfnOutput(this, 'OidcSubjectPrefix', {
+      value: subjectPrefix(props),
+      description: 'Must equal sub_claim_prefix in GitHub: gh api repos/<owner>/<repo>/actions/oidc/customization/sub',
+    })
   }
 }

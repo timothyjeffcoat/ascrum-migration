@@ -508,3 +508,83 @@ enforces at deploy time needs an offline test, or the first live run is the test
   "Tests 443 passed (443)" (unit), "Tests 87 passed (87)" (integration), "41 passed" (e2e).
 - No AWS command run; nothing read `~/.aws`. The owner re-runs the bootstrap deploy after the failed
   stack is deleted (infra/README.md step order unchanged).
+
+## 2026-11-24, OIDC subject (worker): GitHub forces the immutable subject; the deploy role trusted the name form
+Branch `convert/p5-infra-oidc-subject` from `origin/migration` (after #72 merged as `ac6f307`; the
+owner then deployed `AscrumBootstrap` successfully). The worktree again held `MIGRATION.md`,
+`spec/deviations.md` and `spec/journal.md` staged in reverse; restored to HEAD, not committed.
+
+### The live finding (owner's setup, README step 3)
+GitHub's read-back of the repository's subject customisation:
+`{"use_default":false,"use_immutable_subject":true,"include_claim_keys":["repo","context","job_workflow_ref"],"sub_claim_prefix":"repo:<owner>@<owner id>/<repo>@<repo id>"}`
+(the real values are public, but this file does not repeat names or ids). A re-PUT with
+`use_immutable_subject=false` was ignored. Tokens therefore start with the id form, while the deploy role
+trusted `repo:<owner>/<repo>:environment:aws-demo:job_workflow_ref:…`: the role cannot be assumed (fails
+closed, nothing exposed).
+
+### Why offline review could not see it
+The subject format is decided by GitHub per repository at token time. Round 1 used the then-documented
+name form, and GitHub introduced immutable subjects in 2026 (opt-in for existing repositories, forced
+for repositories created, renamed or transferred after mid-July 2026). Nothing in the repo or the
+synthesised template can show which form a given repository gets; only the read-back (or a token) does.
+What I could have done: read GitHub's current OIDC reference in round 1 instead of relying on the
+format I knew; the immutable section was already there.
+
+### Sources (read 2026-11-24)
+- GitHub, OIDC reference, https://docs.github.com/en/actions/reference/security/oidc: immutable syntax
+  `repo:OWNER@OWNER-ID/REPO@REPO-ID:ref:refs/heads/BRANCH`; "`owner_id` and `repo_id` are always included
+  in the `repo` segment of the `sub` claim", also "when you customize claims with `include_claim_keys`";
+  "You can't remove these IDs from the immutable format"; the combined example
+  `repo:octo-org/octo-repo:environment:prod:job_workflow_ref:octo-org/octo-automation/.github/workflows/oidc.yml@refs/heads/main`
+  (name form only); claims table: `job_workflow_ref` "the ref path to the reusable workflow".
+- GitHub REST, https://docs.github.com/en/rest/actions/oidc: `use_immutable_subject` (PUT, "Whether to opt
+  in to the immutable OIDC subject claim format") and `sub_claim_prefix` (GET only, no description).
+- GitHub changelog, https://github.blog/changelog/2026-04-23-immutable-subject-claims-for-github-actions-oidc-tokens:
+  `@` separator; forced for repositories created, renamed or transferred after July 15, 2026; no
+  statement on opting out.
+- Microsoft Entra, https://learn.microsoft.com/en-us/entra/workload-id/workload-identities-github-immutable-subjects:
+  same `repo:<owner>@<owner_id>/<repo>@<repo_id>:…` form; no `job_workflow_ref` example.
+
+**Certain:** the subject starts with `sub_claim_prefix` (the documented `repo` segment with ids) followed
+by `:environment:aws-demo` (the `context` claim key for a job in an environment, as before).
+**Not documented:** whether `job_workflow_ref` inside the immutable subject stays the name path. No page
+gives an immutable example with it; the claim itself is documented as the name path. I trust that form
+(Q-p5-infra-11), no wildcard; if the first run's assume fails while the prefix matches, that part is wrong.
+
+### Fix
+- `infra/src/bootstrapStack.ts`: `subjectPrefix()` builds `repo:<owner>@<owner id>/<repo>@<repo id>`;
+  `trustedSubjects()` returns exactly two `StringEquals` strings, `<prefix>:environment:aws-demo:job_workflow_ref:<owner>/<repo>/.github/workflows/{deploy,destroy}-demo.yml@refs/heads/migration`.
+  No name-form fallback (reasoning in Q-p5-infra-11: it would reopen the subject-recycling gap the ids
+  close). New output `OidcSubjectPrefix` to compare with GitHub's read-back.
+- New required context `githubOwnerId`, `githubRepositoryId` (digits, no leading zero), falling back to
+  GitHub's `GITHUB_REPOSITORY_OWNER_ID` / `GITHUB_REPOSITORY_ID` in a workflow (the deploy and destroy
+  runs synthesise the app); `package.json`'s `synth` passes example ids locally, as it does the repo.
+- Tests: the exact subjects; no name-form subject and no `*`/`?`; the prefix and the output; the ids
+  required and digits only (8 bad values each), the env fallback; the size test now synthesises with the
+  longest ids (19 digits) and checks it did. README step 1 (how to get the ids, the deploy command) and
+  step 3 (`use_immutable_subject` may be forced; what the read-back must show; compare with the output).
+
+### Breakages (one at a time, exact match, never committed), 11/11 red
+Name-form subject; ids swapped; `job_workflow_ref` in an id form; a name-form fallback added; id
+validation removed; id pattern allowing `*`; env fallback dropped; `sub` under `StringLike`; the prefix
+output dropped; wildcard environment; the size test fed short ids. The last one first **survived** (the
+trust is far under 2,048 either way); I added a test that the size test's stacks were built from the
+worst-case values, and it is red now.
+
+### Owner's re-deploy (updates the existing stack)
+```sh
+cd infra
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+OWNER_ID=$(gh api "repos/$REPO" -q .owner.id)
+REPO_ID=$(gh api "repos/$REPO" -q .id)
+pnpm exec cdk deploy AscrumBootstrap -c githubRepository="$REPO" -c githubOwnerId="$OWNER_ID" -c githubRepositoryId="$REPO_ID"
+```
+Then compare `OidcSubjectPrefix` with `gh api "repos/$REPO/actions/oidc/customization/sub" -q .sub_claim_prefix`.
+
+### Gates (this session, every AWS credential source at `/dev/null`, `AWS_PROFILE` unset)
+- infra `pnpm verify` exit 0: "All matched files use Prettier code style!", "Test Files 10 passed (10)",
+  "Tests 128 passed (128)", "Successfully synthesized to …/infra/cdk.out". Deploy role trust policy:
+  1,150 characters in the template, 1,365 worst case (limit 2,048).
+- web `pnpm verify` (`STUB_PORT=4101 PREVIEW_PORT=5273 PAGES_PORT=5274`, Postgres on 55461) exit 0:
+  "Tests 443 passed (443)" (unit), "Tests 87 passed (87)" (integration), "41 passed" (e2e).
+- No AWS command run; nothing read `~/.aws`.

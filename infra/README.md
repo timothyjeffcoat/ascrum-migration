@@ -66,10 +66,21 @@ CloudFormation inline, with your own credentials.
 cd infra
 export AWS_REGION=<region>
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+OWNER_ID=$(gh api "repos/$REPO" -q .owner.id)
+REPO_ID=$(gh api "repos/$REPO" -q .id)
 pnpm exec cdk deploy AscrumBootstrap -c githubRepository="$REPO" \
+  -c githubOwnerId="$OWNER_ID" -c githubRepositoryId="$REPO_ID" \
   --parameters BudgetLimitUsd=<monthly limit in USD> \
   --parameters BudgetEmail=<e-mail for the alarm>
 ```
+
+The two ids are GitHub's public numeric ids of the owner and the repository. The deploy role trusts
+GitHub's immutable OIDC subject, which carries them (step 3, Q-p5-infra-11), so a renamed, transferred
+or re-created repository with the same name cannot assume the role. All three values are required
+(digits only for the ids); in a workflow, GitHub's own `GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_OWNER_ID`
+and `GITHUB_REPOSITORY_ID` supply them. The same command updates an existing bootstrap stack; the two
+`--parameters` may then be left out, since `cdk deploy` keeps a parameter's previous value unless told
+otherwise (`--previous-parameters`, on by default).
 
 If the account already has a GitHub OIDC provider (an account can have only one per URL), add
 `-c existingOidcProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com`.
@@ -93,9 +104,29 @@ repository asks for it:
 
 ```sh
 gh api -X PUT "repos/$REPO/actions/oidc/customization/sub" --input - <<'EOF'
-{ "use_default": false, "include_claim_keys": ["repo", "context", "job_workflow_ref"] }
+{ "use_default": false, "include_claim_keys": ["repo", "context", "job_workflow_ref"], "use_immutable_subject": true }
 EOF
+gh api "repos/$REPO/actions/oidc/customization/sub"
 ```
+
+The subject is GitHub's immutable form, `repo:<owner>@<owner id>/<repo>@<repo id>:environment:aws-demo:
+job_workflow_ref:<owner>/<repo>/.github/workflows/<file>@refs/heads/migration`. GitHub may force
+`use_immutable_subject` on (repositories created, renamed or transferred after mid-July 2026 always use
+it; in the first live setup a PUT with `false` was ignored), so the role trusts only that form. The
+read-back must show `"use_default": false`, the three claim keys in that order,
+`"use_immutable_subject": true`, and a `sub_claim_prefix` equal to the bootstrap stack's
+`OidcSubjectPrefix` output:
+
+```sh
+gh api "repos/$REPO/actions/oidc/customization/sub" -q .sub_claim_prefix
+aws cloudformation describe-stacks --stack-name AscrumBootstrap \
+  --query "Stacks[0].Outputs[?OutputKey=='OidcSubjectPrefix'].OutputValue" --output text
+```
+
+If they differ, redeploy the bootstrap stack with the ids from step 1. The `job_workflow_ref` part is
+the one GitHub's docs do not spell out for the immutable form (Q-p5-infra-11): if the first deploy run
+fails at "AC-AWS-02 AWS credentials through OIDC (no stored keys)" with `Not authorized to perform sts:AssumeRoleWithWebIdentity`,
+that part is the suspect.
 
 The environment, limited to `migration`. **Do not add required reviewers or a wait timer to it**: the
 `destroy` job runs in the same environment (the deploy role trusts only that environment), so it would

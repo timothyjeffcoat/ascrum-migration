@@ -8,6 +8,9 @@
 /** The GitHub repository whose workflows may deploy. Passed at bootstrap time, never hard-coded. */
 export const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 
+/** GitHub's numeric owner and repository ids (public; in the immutable OIDC subject). Digits only. */
+export const GITHUB_ID_PATTERN = /^[1-9][0-9]*$/
+
 /** The GitHub environment the deploy and destroy jobs run in (its OIDC `sub` names it). */
 export const GITHUB_ENVIRONMENT = 'aws-demo'
 

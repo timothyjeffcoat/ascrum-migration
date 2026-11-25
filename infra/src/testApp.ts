@@ -7,6 +7,8 @@ import type { CloudAssembly } from 'aws-cdk-lib/cx-api'
 import { buildStacks, type AscrumStacks } from './app.ts'
 
 export const TEST_REPOSITORY = 'example-owner/ascrum-migration'
+export const TEST_OWNER_ID = '123456'
+export const TEST_REPOSITORY_ID = '456789'
 
 const cdkJson = JSON.parse(readFileSync(new URL('../cdk.json', import.meta.url), 'utf8')) as {
   context: Record<string, unknown>
@@ -17,7 +19,15 @@ export function synth(context: Record<string, unknown> = {}): {
   templates: Record<keyof AscrumStacks, Template>
   assembly: CloudAssembly
 } {
-  const app = new App({ context: { ...cdkJson.context, githubRepository: TEST_REPOSITORY, ...context } })
+  const app = new App({
+    context: {
+      ...cdkJson.context,
+      githubRepository: TEST_REPOSITORY,
+      githubOwnerId: TEST_OWNER_ID,
+      githubRepositoryId: TEST_REPOSITORY_ID,
+      ...context,
+    },
+  })
   const stacks = buildStacks(app, {})
   return {
     stacks,

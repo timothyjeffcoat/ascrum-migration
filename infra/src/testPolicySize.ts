@@ -16,6 +16,8 @@ export const WORST = {
 export const UNKNOWN = 'x'.repeat(256)
 // The longest `owner/repo` GitHub allows (39 and 100 characters); the trust policy names it.
 export const LONGEST_REPOSITORY = `${'o'.repeat(39)}/${'r'.repeat(100)}`
+// The longest owner and repository ids: GitHub's ids are 64-bit integers (19 digits at most).
+export const LONGEST_GITHUB_ID = '9223372036854775807'
 
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
 

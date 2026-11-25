@@ -8,7 +8,7 @@
   },
   "scripts": {
     "cdk": "cdk",
-    "synth": "cdk synth --quiet --no-notices -c githubRepository=${GITHUB_REPOSITORY:-example-owner/ascrum-migration}",
+    "synth": "cdk synth --quiet --no-notices -c githubRepository=${GITHUB_REPOSITORY:-example-owner/ascrum-migration} -c githubOwnerId=${GITHUB_REPOSITORY_OWNER_ID:-123456} -c githubRepositoryId=${GITHUB_REPOSITORY_ID:-456789}",
     "lint": "node node_modules/eslint/bin/eslint.js --max-warnings 0 . && node node_modules/prettier/bin/prettier.cjs --check .",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
     "test": "node node_modules/vitest/vitest.mjs run",
