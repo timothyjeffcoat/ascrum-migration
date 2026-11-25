@@ -57,3 +57,14 @@ Options: (a) the same `apk upgrade` step and minimum-version list in web.Dockerf
 check-images.sh checking both images; (b) wait for the next `nginx-unprivileged` release on Alpine 3.24
 (Dependabot bumps it); (c) decide together with Q-p5-image-cves-2, whose scanner would flag it.
 *Recommended: (a)* as a small follow-up (a few lines, the same pattern as the API), whatever Q-2 decides.
+
+## Owner answers (2026-11-25)
+The owner: "wouldn't it be best just to follow your recommendations?", then "yes, record the answers" after the orchestrator's conditions below.
+
+- **Q-p5-image-cves-2: (a), Trivy in the e2e-compose job**, on both images, failing on HIGH/CRITICAL. Conditions:
+  - **The binary.** A Trivy release binary pinned by version and SHA-256, installed the way `.github/actions/setup-gitleaks` installs Gitleaks. No `trivy-action` or other floating action tag, and never `latest`. Trivy had a supply-chain compromise earlier in 2026 (re-pointed tags and a malicious release). The worker verifies the details from primary sources and picks a version known to be clean.
+  - **The vulnerability DB.** It is downloaded on every run and cannot be pinned. A failed download or a failed scan must fail the job, never pass it.
+  - **Authority.** ECR's gate stays the final check on the deployed image. When Trivy and ECR disagree, the disagreement is logged in `spec/deviations.md`, not ignored, and no ignore list is added without a new owner answer.
+  - **D03.** The scan is expected to close DEV-p5-image-cves-02, the survivor where zlib is dropped from both the upgrade and the floor list. The follow-up proves this by breaking it once.
+- **Q-p5-image-cves-3: (a).** The same `apk upgrade` step and minimum-version list in `docker/web.Dockerfile`'s runtime stage, covering libcrypto3, libssl3 and zlib at or above the secdb fixed versions. `check-images.sh` checks both images.
+- **Who does it.** One follow-up cluster after #78 merges, since it touches `web.Dockerfile`, `check-images.sh` and `ci.yml`. It gets a regular review and a `security-reviewer` review. Live run 4 does not wait for it.
