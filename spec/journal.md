@@ -1251,3 +1251,16 @@ These come from how the first post's comments went: every question was about tru
   - **What is left.** An account id split by a removed invisible character prints unscrubbed. That was already true before the PR, and only text written by an insider could carry one. It is logged for the follow-up (DEV-44, sec-09).
 - **Gate results (reviewer, no AWS credentials).** On `13a0c57`: infra `pnpm verify` exit 0, "Tests 191 passed (191)", synth OK. On `f40535c`: exit 0, "Tests 195 passed (195)", synth OK. On `3621af5`: exit 0, "Tests 216 passed (216)", synth OK. On `e6115d6`: exit 0, "Tests 227 passed (227)", synth OK; the gate `rg` check is clean. The workflow entry-point tests that pin the summary lines pass. The `rg` check found only the 4 known false positives. No IAM change, so no bootstrap update.
 - **Decision.** No blocking findings. Not merged; the owner merges.
+
+## 2026-11-26: The logging follow-up (p5-infra, PR #87, review)
+- **What.** The worker closed the two follow-ups #86 had logged.
+  - **DEV-p5-infra-37.** A cluster, task definition or secret whose describe call failed now prints `describe refused: …` or `describe failed: …` instead of a line that reads like AWS's answer. It is still a LEFTOVER.
+  - **DEV-44.** An account id split by an invisible character (`123456<U+00AD>789012`) is joined and scrubbed. The scrub also runs once before the clean-up, so the join can't hide an id that was already whole. The image scan's own log goes through the same clean-up.
+- **The changed test.** One #86 assertion pinned the old, unscrubbed output for the split id. DEV-44 asks for the opposite, so the assertion was inverted and the test renamed. That also fixes a test name #86's review had flagged as claiming more than it showed. No other assertion was lost.
+- **Review.**
+  - The reviewer planted 18 breakages; 16 were red.
+  - One survivor is equivalent: a reason recorded for an item that is gone, which is never printed.
+  - The other is a pre-existing gap. Widening the task-definition "gone" pattern to match AccessDenied would count a refused call as gone, and no test pins that case (DEV-46, open, test-only; the code is correct and still fails closed).
+  - The security review closed sec-09; its 13 breakages were all red. By reading the regex, it found one join that still escapes the scrub: `1<U+00AD>123456<U+00AD>789012` becomes 13 digits. That is not a regression, because the previous version printed it unscrubbed too (DEV-45, logged).
+- **Gate results (reviewer, `1cb62b5`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 236 passed (236)", synth OK. The `rg` check found only the 4 known false positives. Only `infra/scripts` and the worklog changed. No IAM change, so no bootstrap update.
+- **Decision.** No blocking findings. Not merged; the owner merges.
