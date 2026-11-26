@@ -12,11 +12,29 @@
 // Those are asked about directly, and none of them costs anything. Anything else still listed is retried a
 // few times before the check fails.
 import { DEMO_STACKS_DESTROY_ORDER, TAG } from '../src/names.ts'
-import { awsCli, realSleep, redact, stackStatus, type Aws, type Sleep } from './aws.ts'
+import {
+  awsCli,
+  awsErrorLine,
+  printable,
+  realSleep,
+  redact,
+  runMain,
+  stackStatus,
+  type Aws,
+  type Sleep,
+} from './aws.ts'
 
 type Mapping = { ResourceARN: string; Tags?: { Key: string; Value: string }[] }
 
-export type LeftoverReport = { ok: boolean; kept: string[]; gone: string[]; remaining: string[]; stacks: string[] }
+export type LeftoverReport = {
+  ok: boolean
+  kept: string[]
+  gone: string[]
+  remaining: string[]
+  stacks: string[]
+  /** Why a remaining resource was kept as a leftover, printed on its line (no decision depends on it). */
+  reasons?: Record<string, string>
+}
 
 async function tagged(aws: Aws, region: string): Promise<Mapping[]> {
   const result = await aws([
@@ -27,7 +45,7 @@ async function tagged(aws: Aws, region: string): Promise<Mapping[]> {
     '--tag-filters',
     `Key=${TAG.project.key},Values=${TAG.project.value}`,
   ])
-  if (result.code !== 0) throw new Error(`get-resources in ${region} failed: ${result.stderr.trim()}`)
+  if (result.code !== 0) throw new Error(`get-resources in ${region} failed: ${awsErrorLine(result)}`)
   return (JSON.parse(result.stdout) as { ResourceTagMappingList?: Mapping[] }).ResourceTagMappingList ?? []
 }
 
@@ -57,6 +75,28 @@ export async function isGhost(aws: Aws, arn: string): Promise<boolean> {
     return Boolean((JSON.parse(result.stdout) as { DeletedDate?: unknown }).DeletedDate)
   }
   return false
+}
+
+// The types isGhost asks about; every other leftover is a billable type that is never asked (S14). Used only
+// for the printed reason.
+function asksAbout(arn: string): boolean {
+  const [, , service, , , resource = ''] = arn.split(':')
+  if (service === 'ecs') return resource.startsWith('task-definition/') || resource.startsWith('cluster/')
+  return service === 'secretsmanager'
+}
+
+/**
+ * A failed describe call in one short line, for the leftover's reason: the AWS error code when the CLI
+ * printed one ("An error occurred (AccessDeniedException) when calling …"), else stderr's first line,
+ * trimmed. Twelve-digit numbers (account ids) are removed either way (live run 7: a refused DescribeTasks
+ * printed only "LEFTOVER …", and telling it from a task still stopping took the owner two AWS commands).
+ */
+export function describeFailure(result: { code: number; stderr: string }): string {
+  const code = /\(([A-Za-z][A-Za-z0-9.]*)\)/.exec(result.stderr)?.[1]
+  const text = code ?? awsErrorLine(result)
+  return /AccessDenied|UnauthorizedOperation|NotAuthorized/i.test(text)
+    ? `describe refused: ${text}`
+    : `describe failed: ${text}`
 }
 
 // ECS services and tasks (live run 6: both were still in the tagging index after the destroy, as INACTIVE
@@ -91,8 +131,11 @@ type EcsAnswer = {
   failures?: { arn?: string; reason?: string }[]
 }
 
-/** The ECS services and tasks among `arns` that ECS says are deleted (INACTIVE) or stopped. */
-export async function ecsGhosts(aws: Aws, arns: string[]): Promise<Set<string>> {
+/**
+ * The ECS services and tasks among `arns` that ECS says are deleted (INACTIVE) or stopped. When `reasons` is
+ * given, it receives why each asked ARN that is not gone stays a leftover; nothing is decided from it.
+ */
+export async function ecsGhosts(aws: Aws, arns: string[], reasons?: Map<string, string>): Promise<Set<string>> {
   const groups = new Map<string, { kind: EcsKind; region: string; cluster: string; arns: string[] }>()
   for (const arn of arns) {
     const parsed = ecsResource(arn)
@@ -116,11 +159,18 @@ export async function ecsGhosts(aws: Aws, arns: string[]): Promise<Set<string>> 
         '--region',
         region || 'us-east-1',
       ])
-      if (result.code !== 0) continue // refused, throttled or failed: every ARN in the batch stays a leftover
+      const explain = (why: (arn: string) => string) => {
+        for (const arn of batch) if (!gone.has(arn)) reasons?.set(arn, why(arn))
+      }
+      if (result.code !== 0) {
+        explain(() => describeFailure(result))
+        continue // refused, throttled or failed: every ARN in the batch stays a leftover
+      }
       let answer: EcsAnswer
       try {
         answer = JSON.parse(result.stdout) as EcsAnswer
       } catch {
+        explain(() => 'answer not JSON')
         continue
       }
       const asked = new Set(batch)
@@ -137,6 +187,17 @@ export async function ecsGhosts(aws: Aws, arns: string[]): Promise<Set<string>> 
       for (const [arn, saysGone] of entries) {
         if (saysGone && arn !== undefined && asked.has(arn) && mentions.get(arn) === 1) gone.add(arn)
       }
+      // The printed reason only: what the answer said about each asked ARN that is not gone.
+      const said = new Map<string, string>()
+      if (kind === 'service') for (const s of answer.services ?? []) said.set(s.serviceArn ?? '', `status ${s.status}`)
+      else for (const t of answer.tasks ?? []) said.set(t.taskArn ?? '', `lastStatus ${t.lastStatus}`)
+      for (const f of answer.failures ?? []) said.set(f.arn ?? '', `failure reason ${f.reason}`)
+      explain((arn) => {
+        const count = mentions.get(arn) ?? 0
+        if (count === 0) return 'not in the answer'
+        if (count > 1) return 'named more than once'
+        return redact(said.get(arn) ?? 'not in the answer')
+      })
     }
   }
   return gone
@@ -161,6 +222,7 @@ export async function findLeftovers(options: {
     const kept: string[] = []
     const gone: string[] = []
     const remaining: string[] = []
+    const reasons = new Map<string, string>()
     const seen = new Set<string>()
     const candidates: string[] = []
     for (const where of [...new Set([region, 'us-east-1'])]) {
@@ -172,12 +234,23 @@ export async function findLeftovers(options: {
         else candidates.push(mapping.ResourceARN)
       }
     }
-    const ecsGone = await ecsGhosts(aws, candidates)
+    const ecsGone = await ecsGhosts(aws, candidates, reasons)
     for (const arn of candidates) {
       if (ecsGone.has(arn) || (ecsResource(arn) === null && (await isGhost(aws, arn)))) gone.push(arn)
       else remaining.push(arn)
     }
-    report = { ok: stacks.length === 0 && remaining.length === 0, kept, gone, remaining, stacks }
+    for (const arn of remaining) {
+      if (ecsResource(arn) !== null) continue // the ECS batches above gave the reason
+      reasons.set(arn, asksAbout(arn) ? 'asked: not reported deleted' : 'not checked: billable type')
+    }
+    report = {
+      ok: stacks.length === 0 && remaining.length === 0,
+      kept,
+      gone,
+      remaining,
+      stacks,
+      reasons: Object.fromEntries(reasons),
+    }
     if (report.ok || stacks.length > 0 || attempt === attempts) break
     await sleep(pollMs) // the tagging index may still list something just deleted
   }
@@ -186,25 +259,30 @@ export async function findLeftovers(options: {
 
 export function formatReport(report: LeftoverReport): string[] {
   const lines = [
-    `Demo stacks still present: ${report.stacks.length === 0 ? 'none' : report.stacks.join(', ')}`,
+    `Demo stacks still present: ${report.stacks.length === 0 ? 'none' : printable(report.stacks.join(', '))}`,
     `Kept (one-time bootstrap, ascrum-env=${TAG.bootstrap}): ${report.kept.length}`,
-    ...report.kept.map((arn) => `  kept     ${redact(arn)}`),
+    ...report.kept.map((arn) => `  kept     ${printable(arn)}`),
     `Deleted, still in the tagging index (inactive or pending deletion): ${report.gone.length}`,
-    ...report.gone.map((arn) => `  gone     ${redact(arn)}`),
+    ...report.gone.map((arn) => `  gone     ${printable(arn)}`),
     `Remaining: ${report.remaining.length}`,
-    ...report.remaining.map((arn) => `  LEFTOVER ${redact(arn)} (${regionOf(arn)})`),
+    ...report.remaining.map((arn) => {
+      const reason = report.reasons?.[arn]
+      return `  LEFTOVER ${printable(arn)} (${printable(regionOf(arn))})${reason ? ` (${printable(reason)})` : ''}`
+    }),
     report.ok ? 'OK: nothing from the demo remains.' : 'FAILED: demo resources remain (AC-AWS-04).',
   ]
   return lines
 }
 
 if (import.meta.main) {
-  const region = process.env.AWS_REGION
-  if (!region) {
-    console.error('AWS_REGION is required')
-    process.exit(2)
-  }
-  const report = await findLeftovers({ aws: awsCli, region })
-  for (const line of formatReport(report)) console.log(line)
-  process.exit(report.ok ? 0 : 1)
+  await runMain(async () => {
+    const region = process.env.AWS_REGION
+    if (!region) {
+      console.error('AWS_REGION is required')
+      process.exit(2)
+    }
+    const report = await findLeftovers({ aws: awsCli, region })
+    for (const line of formatReport(report)) console.log(line)
+    process.exit(report.ok ? 0 : 1)
+  })
 }

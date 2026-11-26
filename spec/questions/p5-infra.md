@@ -235,3 +235,41 @@ Recommendation: (b).
 - A MISSING service therefore cannot hide running cost.
 
 Owner answer (2026-11-26): count a MISSING service as gone
+
+**Q-p5-infra-14. An ASCII-only `printable()` would blank the "§" in the image-scan verdict.** *(answered 2026-11-26)*
+
+Context: the brief for #86's final round says to make `printable()` keep only U+0020–U+007E (DEV-38
+residual), and to stop and ask if anything we print legitimately needs non-ASCII.
+
+One thing does:
+- The image-scan verdict reads "The API image has N HIGH or CRITICAL findings (image-scan gate,
+  spec §6)." It is our own text, not AWS text (`imageScan.ts`, `verdict()`).
+- Item 1 of the same brief sends that verdict through `commandData()`, which is `printable()` plus the
+  `%` escape, because the verdict's other form quotes the AWS scan status.
+- Under an ASCII-only rule the `§` (U+00A7) would print as a space: "spec  6".
+
+A search of every string `printable()` can receive found nothing else that is non-ASCII:
+- ARNs, regions, stack states, ECS and CLI error text (AWS-supplied);
+- the `destroy.ts` log lines;
+- the messages `runMain` prints.
+
+The only other non-ASCII character in these scripts is the "…" in `imageScan.ts`'s usage line, and that
+line doesn't go through `printable()`.
+
+Options:
+- (a) ASCII-only `printable()`, and the verdict's "spec §6" becomes "spec section 6". This changes one
+  message of ours. No test pins the `§`; the tests match "HIGH or CRITICAL findings".
+- (b) ASCII-only `printable()`, but the verdict is built from a cleaned status, and only the status goes
+  through `commandData()`. Our own text then keeps the `§`. More code, and two cleaning paths to keep
+  in step.
+- (c) ASCII-only `printable()`, and accept "spec  6" in the verdict.
+- (d) Keep the current rule: C0, DEL and C1 plus the listed invisible characters. U+061C, U+180E, U+2060,
+  U+00AD, U+FE0F and tag characters such as U+E0041 stay unhandled.
+
+Recommendation: (a). It is the smallest change; one rule covers everything printed, and the verdict
+stays readable.
+
+Not done in this round: item 2 (the ASCII rule and its test). Items 1 and 3 are done and don't depend
+on the answer.
+
+Owner answer (2026-11-26): (a) — printable() keeps only ASCII U+0020–U+007E; the image-scan verdict says 'spec section 6'.

@@ -207,6 +207,14 @@ describe('spec §6 image-scan: the scan gate', () => {
     expect(verdict(summary)).toMatch(/2 HIGH or CRITICAL findings/)
   })
 
+  // Q-p5-infra-14 (a): the verdict goes through printable(), which keeps only ASCII, so it says "section".
+  it('Q-p5-infra-14: the blocking verdict is plain ASCII and cites "spec section 6"', async () => {
+    const summary = await run(scripted([findings('COMPLETE', { HIGH: 1 })]).aws)
+    const text = verdict(summary) ?? ''
+    expect(text).toBe('The API image has 1 HIGH or CRITICAL findings (image-scan gate, spec section 6).')
+    expect([...text].every((char) => char >= ' ' && char <= '~')).toBe(true)
+  })
+
   it('image-scan (live run 3): a finding without package attributes keeps null package fields', async () => {
     const summary = await run(scripted([findings('COMPLETE', { MEDIUM: 1 })]).aws)
     expect(summary.findings).toEqual([
@@ -246,6 +254,23 @@ describe('spec §6 image-scan: the scan gate', () => {
     const missing: AwsResult = { code: 254, stdout: '', stderr: 'An error occurred (ImageNotFoundException)' }
     await expect(run(scripted([findings('COMPLETE')], undefined, missing).aws)).rejects.toThrow(
       /describe-images failed/,
+    )
+  })
+
+  // DEV-p5-infra-43 Q08 (sec-05): the describe-images error message is one cleaned line.
+  it('Q08: a refused describe-images throws one cleaned line: no account id, no control character, no second line', async () => {
+    const refused: AwsResult = {
+      code: 254,
+      stdout: '',
+      stderr:
+        'An error occurred (AccessDeniedException): arn:aws:sts::123456789012:x\r\u001b[2K::warning::y\nsecond line',
+    }
+    const error = await run(scripted([findings('COMPLETE')], undefined, refused).aws).then(
+      () => new Error('resolved'),
+      (thrown: unknown) => (thrown instanceof Error ? thrown : new Error(String(thrown))),
+    )
+    expect(error.message).toBe(
+      'describe-images failed: An error occurred (AccessDeniedException): arn:aws:sts::***:x  [2K::warning::y',
     )
   })
 

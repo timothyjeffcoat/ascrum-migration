@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { redact, type Aws } from './aws.ts'
 import { fakeAws, type FakeWorld } from './fakeAws.ts'
 import { findLeftovers, formatReport, isGhost } from './leftovers.ts'
 
@@ -352,6 +353,244 @@ describe('AC-AWS-04: the final leftover check', () => {
         'describe-task-definition',
         'describe-clusters',
       ])
+    })
+  })
+
+  // Live run 7: a refused DescribeTasks printed only "LEFTOVER …"; the line now says why it was kept.
+  describe('live run 7: each leftover line says why it was kept', () => {
+    const tagged = (...arns: string[]) => ({ [REGION]: Object.fromEntries(arns.map((a) => [a, demo])) })
+    const lineFor = (report: Awaited<ReturnType<typeof findLeftovers>>, arn: string) =>
+      formatReport(report).find((line) => line.startsWith('  LEFTOVER') && line.includes(redact(arn))) ?? ''
+    const answering = (world: FakeWorld, stdout: string) => {
+      const fake = fakeAws(world)
+      const aws: Aws = async (args) => (args[1] === 'describe-tasks' ? { code: 0, stderr: '', stdout } : fake.aws(args))
+      return findLeftovers({ aws, region: REGION, attempts: 1 })
+    }
+    const REFUSED = `An error occurred (AccessDeniedException) when calling the DescribeTasks operation: User: arn:aws:sts::${ACCOUNT}:assumed-role/ascrum-github-deploy/GitHubActions is not authorized to perform: ecs:DescribeTasks`
+
+    it('AC-AWS-04 / live run 7: a refused describe says "describe refused" with the error code, and no account id', async () => {
+      const { report } = await check({ stacks: {}, tagged: tagged(TASK), ecsError: { 'describe-tasks': REFUSED } })
+      const line = lineFor(report, TASK)
+      expect(line).toContain('(describe refused: AccessDeniedException)')
+      expect(line).not.toContain(ACCOUNT)
+    })
+
+    it('AC-AWS-04 / live run 7: a failed describe says "describe failed" with the error code', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK),
+        ecsError: {
+          'describe-tasks':
+            'An error occurred (ClusterNotFoundException) when calling the DescribeTasks operation: Cluster not found.',
+        },
+      })
+      expect(lineFor(report, TASK)).toContain('(describe failed: ClusterNotFoundException)')
+    })
+
+    it('AC-AWS-04 / live run 7: error text without a code is cut to its first line and 12-digit numbers are scrubbed', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        ecsError: {
+          'describe-services': `Could not connect to the endpoint for account ${ACCOUNT} in ${REGION}\nsecond line`,
+        },
+      })
+      const line = lineFor(report, SERVICE)
+      expect(line).toContain(`(describe failed: Could not connect to the endpoint for account *** in ${REGION})`)
+      expect(line).not.toContain(ACCOUNT)
+      expect(line).not.toContain('second line')
+    })
+
+    for (const status of ['ACTIVE', 'DRAINING']) {
+      it(`AC-AWS-04 / live run 7: a ${status} service says "(status ${status})"`, async () => {
+        const { report } = await check({ stacks: {}, tagged: tagged(SERVICE), serviceStatus: { [SERVICE]: status } })
+        expect(lineFor(report, SERVICE)).toContain(`(status ${status})`)
+      })
+    }
+
+    it('AC-AWS-04 / live run 7: a task still running says "(lastStatus RUNNING)"', async () => {
+      const { report } = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: 'RUNNING' } })
+      expect(lineFor(report, TASK)).toContain('(lastStatus RUNNING)')
+    })
+
+    it('AC-AWS-04 / live run 7: a failure that is not MISSING says "(failure reason …)"', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK),
+        taskStatus: { [TASK]: 'failure:ACCESS_DENIED' },
+      })
+      expect(lineFor(report, TASK)).toContain('(failure reason ACCESS_DENIED)')
+    })
+
+    it('AC-AWS-04 / live run 7: an ARN the answer leaves out says "(not in the answer)"', async () => {
+      const report = await answering({ stacks: {}, tagged: tagged(TASK) }, JSON.stringify({ tasks: [], failures: [] }))
+      expect(report.remaining).toEqual([TASK])
+      expect(lineFor(report, TASK)).toContain('(not in the answer)')
+    })
+
+    it('AC-AWS-04 / live run 7: an answer that is not JSON says "(answer not JSON)"', async () => {
+      const report = await answering({ stacks: {}, tagged: tagged(TASK) }, '<html>not json')
+      expect(lineFor(report, TASK)).toContain('(answer not JSON)')
+    })
+
+    it('AC-AWS-04 / live run 7: an ARN named twice says "(named more than once)"', async () => {
+      const stopped = { taskArn: TASK, lastStatus: 'STOPPED' }
+      const report = await answering(
+        { stacks: {}, tagged: tagged(TASK) },
+        JSON.stringify({ tasks: [stopped, stopped] }),
+      )
+      expect(lineFor(report, TASK)).toContain('(named more than once)')
+    })
+
+    it('AC-AWS-04 / live run 7: a billable type says "(not checked: billable type)"; an asked type that is still there says so', async () => {
+      const { report } = await check({ stacks: {}, tagged: tagged(ALB, TASK_DEF) })
+      expect(lineFor(report, ALB)).toContain('(not checked: billable type)')
+      expect(lineFor(report, TASK_DEF)).toContain('(asked: not reported deleted)')
+    })
+
+    // sec-04: AWS-supplied text must not forge lines, hide text or inject workflow commands.
+    const physicalLines = (lines: string[]) => lines.join('\n').split(/\r\n|\r|\n/)
+    const hasControl = (line: string) =>
+      [...line].some((char) => {
+        const code = char.codePointAt(0) ?? 0
+        return code < 0x20 || (code >= 0x7f && code <= 0x9f)
+      })
+
+    it('AC-AWS-04 / sec-04: a status with a newline stays on its LEFTOVER line and cannot forge "OK:"', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        serviceStatus: { [SERVICE]: 'ACTIVE\nOK: nothing from the demo remains.\nRemaining: 0' },
+      })
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('OK:'))).toEqual([])
+      expect(lines.filter((line) => line.startsWith('Remaining:'))).toEqual(['Remaining: 1'])
+      expect(lines.filter((line) => line.startsWith('  LEFTOVER'))).toHaveLength(1)
+      expect(lineFor(report, SERVICE)).toContain('(status ACTIVE OK: nothing from the demo remains. Remaining: 0)')
+    })
+
+    it('AC-AWS-04 / sec-04: a failure reason with a carriage return and an ESC sequence prints without control characters', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK),
+        taskStatus: { [TASK]: 'failure:ACCESS\r\u001b[2K\u009b2KDENIED' },
+      })
+      const text = formatReport(report).join('\n')
+      expect(text.split('\n').some((line) => hasControl(line))).toBe(false)
+      expect(lineFor(report, TASK)).toContain('(failure reason ACCESS  [2K 2KDENIED)')
+    })
+
+    it('AC-AWS-04 / sec-04: error text with "\\r::add-mask::" cannot start an output line with "::"', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK),
+        ecsError: { 'describe-tasks': 'connection reset\r::add-mask::x\nsecond line' },
+      })
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('::'))).toEqual([])
+      expect(lineFor(report, TASK)).toContain('(describe failed: connection reset ::add-mask::x)')
+    })
+
+    it('AC-AWS-04 / sec-04: an ARN from the tagging index is printed without control characters too', async () => {
+      const forged = `${ALB}\n::warning::forged\rOK: nothing from the demo remains.`
+      const { report } = await check({ stacks: {}, tagged: tagged(forged) })
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('::') || line.startsWith('OK:'))).toEqual([])
+      expect(report.remaining).toEqual([forged])
+    })
+
+    // sec-06 / DEV-p5-infra-40: the scrub and the strip on every printed path, not only the reasons.
+    it('AC-AWS-04 / sec-06: a gone ARN line is printed without control characters or account id', async () => {
+      const forged = `${TASK_DEF}\u001b[2J\n::warning::forged`
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(forged),
+        taskDefinitionStatus: { [forged]: 'INACTIVE' },
+      })
+      expect(report.gone).toEqual([forged])
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('::'))).toEqual([])
+      const gone = lines.filter((line) => line.startsWith('  gone'))
+      expect(gone).toHaveLength(1)
+      expect(gone.some(hasControl)).toBe(false)
+      expect(gone.join('')).not.toContain(ACCOUNT)
+    })
+
+    it('AC-AWS-04 / sec-06: a kept ARN line is printed without control characters or account id', async () => {
+      const forged = `${ROLE_POLICY}\rOK: nothing from the demo remains.`
+      const { report } = await check({ stacks: {}, tagged: { [REGION]: { [forged]: bootstrap } } })
+      expect(report.ok).toBe(true)
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('OK:'))).toEqual(['OK: nothing from the demo remains.'])
+      const kept = lines.filter((line) => line.startsWith('  kept'))
+      expect(kept).toHaveLength(1)
+      expect(kept.some(hasControl)).toBe(false)
+      expect(kept.join('')).not.toContain(ACCOUNT)
+    })
+
+    it('AC-AWS-04 / sec-06: the region printed beside a leftover is printed without control characters', async () => {
+      const forged = `arn:aws:elasticloadbalancing:eu-west-1\r\u001b[2KRemaining 0:${ACCOUNT}:loadbalancer/app/x/1`
+      const { report } = await check({ stacks: {}, tagged: tagged(forged) })
+      const lines = physicalLines(formatReport(report))
+      const leftover = lines.filter((line) => line.startsWith('  LEFTOVER'))
+      expect(leftover).toHaveLength(1)
+      expect(lines.some(hasControl)).toBe(false)
+      expect(leftover[0]).toContain('(eu-west-1  [2KRemaining 0)')
+    })
+
+    it('AC-AWS-04 / sec-06: the "Demo stacks still present" line is printed without control characters or account id', async () => {
+      const { report } = await check({
+        stacks: { AscrumDemo: { states: [`DELETE_FAILED\nOK: nothing from the demo remains.\u007f${ACCOUNT}`] } },
+        tagged: {},
+      })
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('OK:'))).toEqual([])
+      const stacksLine = lines.filter((line) => line.startsWith('Demo stacks still present:'))
+      expect(stacksLine).toHaveLength(1)
+      expect(stacksLine.some(hasControl)).toBe(false)
+      expect(stacksLine.join('')).not.toContain(ACCOUNT)
+    })
+
+    it('AC-AWS-04 / sec-06: DEL (U+007F) in a reason becomes a space', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        serviceStatus: { [SERVICE]: 'ACTIVE\u007fX' },
+      })
+      expect(lineFor(report, SERVICE)).toContain('(status ACTIVE X)')
+    })
+
+    it('AC-AWS-04 / DEV-p5-infra-38: line separators, bidi controls and zero-width characters become spaces', async () => {
+      const invisible = '  ‎‏‪‫‬‭‮⁦⁧⁨⁩​‌‍﻿'
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        serviceStatus: { [SERVICE]: `ACTIVE${invisible}X` },
+      })
+      const line = lineFor(report, SERVICE)
+      expect([...invisible].filter((char) => line.includes(char))).toEqual([])
+      expect(line).toContain(`(status ACTIVE${' '.repeat(invisible.length)}X)`)
+    })
+
+    it('AC-AWS-04 / R06: at most 160 characters of error text are echoed', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        ecsError: { 'describe-services': 'x'.repeat(300) },
+      })
+      const line = lineFor(report, SERVICE)
+      expect(line).toContain(`(describe failed: ${'x'.repeat(160)})`)
+      expect(line).not.toContain('x'.repeat(161))
+    })
+
+    it('AC-AWS-04 / live run 7: the summary lines are unchanged', async () => {
+      const failed = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: 'RUNNING' } })
+      const text = formatReport(failed.report)
+      expect(text).toContain('Remaining: 1')
+      expect(text.at(-1)).toBe('FAILED: demo resources remain (AC-AWS-04).')
+      const passed = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: 'STOPPED' } })
+      expect(formatReport(passed.report)).toContain('Remaining: 0')
+      expect(formatReport(passed.report).at(-1)).toBe('OK: nothing from the demo remains.')
     })
   })
 })

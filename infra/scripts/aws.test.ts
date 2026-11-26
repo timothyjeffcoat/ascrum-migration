@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { redact, stackStatus, type Aws } from './aws.ts'
+import {
+  awsErrorLine,
+  awsJson,
+  commandData,
+  ERROR_TEXT_LIMIT,
+  printable,
+  redact,
+  stackStatus,
+  type Aws,
+} from './aws.ts'
 
 const failing =
   (stderr: string): Aws =>
@@ -38,5 +47,85 @@ describe('AC-AWS-04: stackStatus() reads absence only from CloudFormation’s ow
 
   it('spec §11: redact() hides 12-digit account ids', () => {
     expect(redact('arn:aws:iam::123456789012:role/x')).toBe('arn:aws:iam::***:role/x')
+  })
+})
+
+describe('sec-05: awsErrorLine() turns stderr into one short printable line', () => {
+  it('sec-05: only the first non-empty line, account ids scrubbed, control characters gone', () => {
+    const line = awsErrorLine({
+      code: 254,
+      stderr: '\n  An error occurred (AccessDenied): arn:aws:sts::123456789012:x\r::add-mask::y\nsecond line\n',
+    })
+    expect(line).toBe('An error occurred (AccessDenied): arn:aws:sts::***:x ::add-mask::y')
+  })
+
+  it(`sec-05 / R06: at most ${ERROR_TEXT_LIMIT} characters are echoed`, () => {
+    expect(ERROR_TEXT_LIMIT).toBe(160)
+    expect(awsErrorLine({ code: 1, stderr: 'x'.repeat(500) })).toBe('x'.repeat(160))
+  })
+
+  it('sec-05: no stderr at all gives the exit code', () => {
+    expect(awsErrorLine({ code: 255, stderr: '\n\n' })).toBe('exit 255')
+  })
+
+  it('DEV-p5-infra-38: printable() turns line separators, bidi controls and zero-width characters into spaces', () => {
+    const invisible = [
+      0x2028, 0x2029, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b,
+      0x200c, 0x200d, 0xfeff,
+    ]
+    const text = invisible.map((code) => `a${String.fromCodePoint(code)}`).join('')
+    expect(printable(text)).toBe('a '.repeat(invisible.length))
+  })
+
+  // DEV-p5-infra-43 Q07: awsJson's message carries its arguments and stderr; both are cleaned.
+  it('Q07: awsJson() throws one cleaned line: no account id, no control character, no second line', async () => {
+    const aws: Aws = async () => ({
+      code: 254,
+      stdout: '',
+      stderr: 'An error occurred (AccessDenied): arn:aws:sts::123456789012:x\r::add-mask::y\nsecond line',
+    })
+    const error = await awsJson(aws, ['s3', 'rm', 's3://bucket-123456789012\u001b[2J']).then(
+      () => new Error('resolved'),
+      (thrown: unknown) => (thrown instanceof Error ? thrown : new Error(String(thrown))),
+    )
+    expect(error.message).toBe(
+      'aws s3 rm s3://bucket-*** [2J failed (254): An error occurred (AccessDenied): arn:aws:sts::***:x ::add-mask::y',
+    )
+  })
+
+  it('sec-07: commandData() escapes % as %25 after printable()', () => {
+    expect(commandData('a%0Ab\r%25c')).toBe('a%250Ab %2525c')
+  })
+
+  it('sec-04 / DEV-p5-infra-40: printable() turns DEL (U+007F) into a space', () => {
+    expect(printable('OK\u007fDEL')).toBe('OK DEL')
+  })
+})
+
+describe('Q-p5-infra-14 (a): printable() keeps only printable ASCII, U+0020-U+007E', () => {
+  const ch = (code: number) => String.fromCodePoint(code)
+
+  it('Q-p5-infra-14: each previously missed character, and a non-ASCII letter, becomes one space', () => {
+    // U+061C Arabic letter mark, U+180E Mongolian vowel separator, U+2060 word joiner, U+00AD soft hyphen,
+    // U+FE0F variation selector-16, U+E0041 tag letter A (a surrogate pair: one code point), U+00E9 e-acute.
+    for (const code of [0x061c, 0x180e, 0x2060, 0x00ad, 0xfe0f, 0xe0041, 0x00e9]) {
+      expect(printable(`a${ch(code)}b`), `U+${code.toString(16).toUpperCase()}`).toBe('a b')
+    }
+    expect(printable(`caf${ch(0xe9)} ${ch(0xe0041)}${ch(0xe0042)}!`)).toBe('caf    !')
+  })
+
+  it('Q-p5-infra-14: every printable ASCII character is kept as it is', () => {
+    const ascii = Array.from({ length: 0x7f - 0x20 }, (_, i) => String.fromCharCode(0x20 + i)).join('')
+    expect(printable(ascii)).toBe(ascii)
+  })
+
+  it('Q-p5-infra-14: the 12-digit scrub runs after the replacement', () => {
+    // A plain account id is still scrubbed, and one next to a removed character too.
+    expect(printable('id 123456789012 x')).toBe('id *** x')
+    expect(printable(`arn:aws:sts::123456789012${ch(0x200b)}:x`)).toBe('arn:aws:sts::*** :x')
+    // A removed character between digits becomes a space, and a space separates numbers for redact(), as an
+    // ASCII space always has: these digits do not join up into 12, so neither half is scrubbed.
+    expect(printable(`id 123456${ch(0x00ad)}789012 x`)).toBe('id 123456 789012 x')
+    expect(printable('id 123456 789012 x')).toBe('id 123456 789012 x')
   })
 })

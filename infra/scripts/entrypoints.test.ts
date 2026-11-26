@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT, step, WORKFLOW_FILES } from './workflowFiles.ts'
 
-type Rule = { match: string; code?: number; stdout?: unknown; stderr?: string }
+type Rule = { match: string; code?: number; stdout?: unknown; stdoutRaw?: string; stderr?: string }
 
 const DESTROY_STEP = 'AC-AWS-04 destroy everything this run created'
 const DESTROY_STEP_MANUAL = 'AC-AWS-04 destroy the demo stacks (nothing to do if they do not exist)'
@@ -137,6 +137,135 @@ describe('AC-AWS-04 / O4: the leftover step, as the workflows run it', () => {
   }
 })
 
+// sec-05 / DEV-p5-infra-41: an error must not put raw AWS stderr (an account id in a role ARN, more lines, a
+// stack trace) into the log or the tee'd evidence artifact. Each script's main block prints one cleaned
+// line and exits non-zero.
+const ACCOUNT_ID = '123456789012'
+const refusedStderr = (operation: string) =>
+  `An error occurred (AccessDeniedException) when calling the ${operation} operation: User: arn:aws:sts::${ACCOUNT_ID}:assumed-role/ascrum-github-deploy/GitHubActions is not authorized\nsecond line 210987654321\n`
+function expectClean(status: number | null, output: string, mustContain: string) {
+  expect(status, output).not.toBe(0)
+  expect(output).toContain(mustContain)
+  expect(output).not.toMatch(/\b\d{12}\b/)
+  expect(output).not.toContain('second line')
+  expect(output).not.toMatch(/^\s+at /m) // no stack trace
+}
+
+describe('sec-07 / DEV-p5-infra-43: workflow-command data and the remaining guards, as the workflows run the scripts', () => {
+  it('sec-07: a "%0A" in AWS text reaches the ::error:: line escaped as "%250A" (runMain)', () => {
+    const denied: Rule = {
+      match: 'resourcegroupstaggingapi get-resources',
+      code: 254,
+      stderr: 'An error occurred (AccessDeniedException) %0AOK: x',
+    }
+    const { status, output } = runStep(STEPS['deploy-demo.yml leftovers'].run, [absent, denied])
+    expect(status, output).toBe(1)
+    expect(output).toContain(
+      '::error::get-resources in eu-west-1 failed: An error occurred (AccessDeniedException) %250AOK: x',
+    )
+    expect(output).not.toMatch(/%0A/)
+  })
+
+  it('Q4/Q10: a stack event reason with an account id and a newline reaches neither the output nor destroy.txt', () => {
+    const rules: Rule[] = [
+      ...cannotDelete.filter((rule) => rule.match !== 'cloudformation describe-stack-events'),
+      {
+        match: 'cloudformation describe-stack-events',
+        stdout: {
+          StackEvents: [
+            {
+              LogicalResourceId: 'WebBucket',
+              ResourceStatus: 'DELETE_FAILED',
+              ResourceStatusReason: `User: arn:aws:sts::${ACCOUNT_ID}:assumed-role/ascrum-cfn-exec/AWSCloudFormation is not authorized\nsecond line`,
+            },
+          ],
+        },
+      },
+    ]
+    for (const name of ['deploy-demo.yml destroy', 'destroy-demo.yml destroy'] as const) {
+      const { status, output } = runStep(STEPS[name].run, rules)
+      expect(status, output).toBe(1)
+      expect(output).toContain('WebBucket: DELETE_FAILED User: arn:aws:sts::***:assumed-role')
+      const evidence = readFileSync(join(REPO_ROOT, 'infra', 'evidence', 'destroy.txt'), 'utf8')
+      for (const text of [output, evidence]) {
+        expect(text).not.toMatch(/\b\d{12}\b/)
+        expect(text).not.toMatch(/^second line/m)
+      }
+    }
+  })
+
+  it('Q1/Q02: an answer that is not JSON, quoted by the parse error, is cleaned by runMain; the step exits 1', () => {
+    const garbled: Rule = {
+      match: 'cloudformation describe-stacks',
+      // Short enough that V8 quotes all of it in the SyntaxError (a longer answer is cut after 10 characters).
+      stdoutRaw: `<${ACCOUNT_ID}\u001b[2J`,
+    }
+    for (const name of ['deploy-demo.yml leftovers', 'deploy-demo.yml destroy'] as const) {
+      const { status, output } = runStep(STEPS[name].run, [garbled])
+      expect(status, output).toBe(1)
+      // The cleaned quote proves the account id and the ESC reached runMain and were removed there.
+      expect(output).toContain(`::error::Unexpected token '<', "<*** [2J" is not valid JSON`)
+      expect(output).not.toMatch(/\b\d{12}\b/)
+      expect(output).not.toContain('\u001b')
+    }
+  })
+})
+
+describe('sec-05: a failing AWS call prints one cleaned line, as the workflows run the scripts', () => {
+  const deniedStacks: Rule = {
+    match: 'cloudformation describe-stacks',
+    code: 254,
+    stderr: refusedStderr('DescribeStacks'),
+  }
+  for (const name of ['deploy-demo.yml leftovers', 'destroy-demo.yml leftovers'] as const) {
+    it(`sec-05: ${name}: a refused get-resources prints no account id, no second line and no stack, and fails`, () => {
+      const denied: Rule = {
+        match: 'resourcegroupstaggingapi get-resources',
+        code: 254,
+        stderr: refusedStderr('GetResources'),
+      }
+      const { status, output } = runStep(STEPS[name].run, [absent, denied])
+      expectClean(status, output, 'get-resources in eu-west-1 failed: An error occurred (AccessDeniedException)')
+      const evidence = readFileSync(join(REPO_ROOT, 'infra', 'evidence', 'leftovers.txt'), 'utf8')
+      expect(evidence).not.toMatch(/\b\d{12}\b/)
+      expect(evidence).not.toContain('second line')
+    })
+
+    it(`sec-05: ${name}: a refused describe-stacks (through aws.ts) prints one cleaned line, and fails`, () => {
+      const { status, output } = runStep(STEPS[name].run, [deniedStacks])
+      expectClean(status, output, 'describe-stacks AscrumDemo failed: An error occurred (AccessDeniedException)')
+    })
+  }
+
+  for (const name of ['deploy-demo.yml destroy', 'destroy-demo.yml destroy'] as const) {
+    it(`sec-05: ${name}: a refused describe-stacks prints one cleaned line, and fails`, () => {
+      const { status, output } = runStep(STEPS[name].run, [deniedStacks])
+      expectClean(status, output, 'describe-stacks AscrumDemo failed: An error occurred (AccessDeniedException)')
+    })
+
+    it(`sec-05: ${name}: a refused s3 rm prints one cleaned line, and fails`, () => {
+      const rules: Rule[] = [
+        {
+          match: 'cloudformation describe-stacks --stack-name AscrumDemo ',
+          stdout: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+        },
+        {
+          match: 'cloudformation list-stack-resources',
+          stdout: {
+            StackResourceSummaries: [
+              { ResourceType: 'AWS::S3::Bucket', PhysicalResourceId: 'web-bucket', ResourceStatus: 'CREATE_COMPLETE' },
+            ],
+          },
+        },
+        { match: 's3 rm', code: 1, stderr: refusedStderr('ListObjectsV2') },
+      ]
+      const { status, output, calls } = runStep(STEPS[name].run, rules)
+      expectClean(status, output, 'emptying s3://web-bucket failed: An error occurred (AccessDeniedException)')
+      expect(calls).not.toContain('delete-stack')
+    })
+  }
+})
+
 // spec §6 image-scan, as the deploy job runs it (live run 1: ScanNotFoundException right after the push).
 describe('spec §6 image-scan: the scan step, as the workflow runs it', () => {
   const scanStep = step(
@@ -188,6 +317,20 @@ describe('spec §6 image-scan: the scan step, as the workflow runs it', () => {
     expect(status, output).toBe(1)
     expect(calls).toContain(`ecr start-image-scan --repository-name ascrum-demo-api --image-id imageDigest=${DIGEST} `)
     expect(output).toContain('did not complete (NOT_FOUND)')
+  })
+
+  it('sec-05: image-scan: a refused start-image-scan prints one cleaned line, and fails', () => {
+    const refused: Rule = { match: 'ecr start-image-scan', code: 254, stderr: refusedStderr('StartImageScan') }
+    const { status, output } = runStep(scanStep.run, [single, notFound, refused], { env })
+    expectClean(status, output, 'start-image-scan failed: An error occurred (AccessDeniedException)')
+  })
+
+  it('sec-07: image-scan: a "%0A" in the scan status reaches the ::error:: verdict escaped as "%250A"', () => {
+    const { status, output } = runStep(scanStep.run, [single, scan('FAILED%0AOK: x')], { env })
+    expect(status, output).toBe(1)
+    expect(output).toContain('::error::The image scan did not complete (FAILED%250AOK: x)')
+    // Only workflow-command lines are decoded by the runner; the plain "scan …" log line is not one.
+    expect(output.split('\n').filter((line) => line.startsWith('::') && line.includes('%0A'))).toEqual([])
   })
 
   it('image-scan: a refused start-image-scan fails the step', () => {

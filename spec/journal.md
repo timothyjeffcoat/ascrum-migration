@@ -1222,3 +1222,32 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Run 7 failed on a fix that was correct. The new permission was merged but not yet deployed, so the check could not ask AWS about one task, and it refused to call the task gone. That is exactly what it should do. Run 8, with the permission deployed, was the first all-green run: up, tested over HTTPS and torn down in fifteen minutes, with the last check reporting 'nothing from the demo remains'."
+
+## 2026-11-26: Leftover lines that say why (p5-infra, PR #86, review)
+- **Why.** In live run 7, the leftover check printed a bare LEFTOVER for a task whose DescribeTasks call had been refused, because the bootstrap update wasn't deployed yet. The owner needed two AWS commands to find the cause. #86 prints a reason on every kept line, such as `describe refused: AccessDeniedException`, `lastStatus RUNNING`, `not in the answer` or `not checked: billable type`.
+- **Review.** The change is output-only.
+  - The 33 earlier leftover tests are untouched (the test diff is 104 additions, 0 deletions).
+  - All 7 of the reviewer's decision-changing breakages were red, and so were all 5 of the security reviewer's.
+  - On the reasons themselves, 9 of the reviewer's 11 breakages were red. One survivor is by design: account ids are scrubbed twice, so removing one scrub changes nothing. The other is an untested 160-character cap.
+  - Two low findings are open:
+    - `asked: not reported deleted` also covers a cluster, task definition or secret whose describe call failed (DEV-p5-infra-37);
+    - AWS-supplied text is printed without its control characters stripped, so a line break could forge an "OK" line in the log, though not the exit code (sec-04, DEV-38). The owner approved fixing sec-04 in #86.
+- **Round 2 (`f40535c`).**
+  - **The fix.** `printable()` turns every C0, DEL and C1 control character into a space before the account-id scrub, and it applies to every printed reason, ARN, region and stack name. There are 4 new tests, and only `formatReport` changed, so no decision changed.
+  - **Breakages.** 6 of the reviewer's 11 breakages on the new code were red. The 5 survivors are correct code with no test: the `gone`, `kept`, region and stack lines, and DEL. The security re-check found the same (sec-06, DEV-40).
+  - **Security re-check.** It closed sec-04. It also found a pre-existing path outside the diff: an uncaught error can print raw AWS stderr, including the account id, into the evidence artifact (sec-05, DEV-41). The gate still fails closed.
+  - **Retention.** The leftover report is kept for 90 days, not 7, in two of its three artifacts. That is the owner's call (DEV-39).
+  - **Open after round 2.** -40 and -41 were low and open; the owner approved a third round.
+- **Round 3 (`3621af5`).**
+  - **The fix.** One helper turns any failed AWS call into its first stderr line, cleaned and capped at 160 characters. One top-level catch prints a single `::error::` line with no stack and exits 1. Both are used in the leftover check, the destroy and the image scan. The tests run the real workflow steps with a fake `aws` and read the tee'd evidence.
+  - **Reviewer check.** No decision or exit code changed: making either script exit 0 on failure, or the image-scan verdict pass, was red. 9 of the reviewer's 14 breakages were red. The survivors are guards without a test: the outer clean-up in the top-level catch, destroy's cleaned log, and two throw sites.
+  - **Security re-check.** It closed sec-05 and sec-06, and found two low items (DEV-42, -43): `%` is not escaped in the `::error::` data, so `%0A` from AWS shows as a line break inside the annotation (never a new command), and the untested guards above.
+  - **Owner decisions.** The 90-day retention stays (DEV-39, accepted), and DEV-37 goes to the follow-up.
+- **Final round (`e26cf17`, then `e6115d6` after Q-p5-infra-14).**
+  - **`%` escaped.** Both `::error::` lines escape `%`, so `%0A` from AWS stays literal (DEV-42 fixed).
+  - **Guards pinned.** The four untested guards now have tests (DEV-43 fixed).
+  - **ASCII only.** The worker stopped to ask before making `printable()` keep only printable ASCII, because one message of ours used "§". The owner chose (a): ASCII only, and the verdict now says "spec section 6".
+  - **Reviewer check.** 14 of the reviewer's 15 breakages were red. The one survivor is an equivalent mutant, which exposed a test name that claims more than it can show. Security's two suggested breakages (DEL kept, the escape dropped) were both among the red.
+  - **What is left.** An account id split by a removed invisible character prints unscrubbed. That was already true before the PR, and only text written by an insider could carry one. It is logged for the follow-up (DEV-44, sec-09).
+- **Gate results (reviewer, no AWS credentials).** On `13a0c57`: infra `pnpm verify` exit 0, "Tests 191 passed (191)", synth OK. On `f40535c`: exit 0, "Tests 195 passed (195)", synth OK. On `3621af5`: exit 0, "Tests 216 passed (216)", synth OK. On `e6115d6`: exit 0, "Tests 227 passed (227)", synth OK; the gate `rg` check is clean. The workflow entry-point tests that pin the summary lines pass. The `rg` check found only the 4 known false positives. No IAM change, so no bootstrap update.
+- **Decision.** No blocking findings. Not merged; the owner merges.

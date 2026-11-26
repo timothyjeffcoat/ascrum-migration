@@ -1461,3 +1461,340 @@ New:
   - typecheck clean;
   - "Test Files 12 passed (12)", "Tests 179 passed (179)";
   - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-26, leftover reasons (worker): each LEFTOVER line says why it was kept
+
+### Why
+In live run 7 (45744570258) the check printed only `LEFTOVER …:task/ascrum-demo/c4e035ee… (us-west-2)`.
+The cause was a refused `ecs:DescribeTasks`: #84's bootstrap update landed after the run. Telling that
+apart from "the task is still stopping" took the owner two AWS commands. Runs 8 and 9, and the
+standalone destroy 45753370925, were green.
+
+### Change (`infra/scripts/leftovers.ts`; output only, decisions unchanged)
+- `ecsGhosts` takes an optional `reasons` map and fills it for every asked ARN that isn't gone:
+  - `describe refused: <code>` for an access-denied code;
+  - `describe failed: <code>`, or stderr's first line (trimmed, at most 160 characters) when the CLI
+    printed no code;
+  - `answer not JSON`;
+  - `not in the answer`;
+  - `named more than once`;
+  - `status <X>` (service) or `lastStatus <X>` (task);
+  - `failure reason <X>`.
+- The gone/leftover expressions are untouched. The reasons are worked out next to them, from the same
+  answer.
+- Every other leftover gets one of two reasons:
+  - `not checked: billable type`, for the S14 types `isGhost` never asks about;
+  - `asked: not reported deleted`, for task definitions, clusters and secrets `isGhost` asked about
+    that are still there. `isGhost` still returns only a boolean; I didn't change its logic.
+- **Account ids:** echoed error text goes through `redact` (12-digit numbers become `***`) in
+  `describeFailure`, and again when the line is formatted. The error code is preferred, so the usual
+  refused-call text, which names the role ARN, is never echoed at all.
+- `LeftoverReport` gains an optional `reasons` field. Exit codes and the summary lines ("Remaining: N",
+  "OK: …", "FAILED: …") are unchanged.
+
+Sample, from the fake (scratch script):
+```
+Remaining: 5
+  LEFTOVER arn:aws:ecs:us-west-2:***:service/ascrum-demo/AscrumDemo-ApiService-abc (us-west-2) (status DRAINING)
+  LEFTOVER arn:aws:ecs:us-west-2:***:task/denied/c4e035ee0000 (us-west-2) (describe refused: AccessDeniedException)
+  LEFTOVER arn:aws:ecs:us-west-2:***:task/ascrum-demo/running0001 (us-west-2) (lastStatus RUNNING)
+  LEFTOVER arn:aws:ecs:us-west-2:***:task/ascrum-demo/failed0002 (us-west-2) (failure reason ACCESS_DENIED)
+  LEFTOVER arn:aws:elasticloadbalancing:us-west-2:***:loadbalancer/app/ascrum-demo/abc (us-west-2) (not checked: billable type)
+FAILED: demo resources remain (AC-AWS-04).
+```
+
+### Tests (`leftovers.test.ts`, block "live run 7"; existing tests not edited, the diff is additions only)
+- 12 new tests:
+  - refused, with no account id on the line;
+  - failed (ClusterNotFoundException);
+  - error text with no code: first line only, 12-digit number scrubbed;
+  - `status ACTIVE` and `status DRAINING`;
+  - `lastStatus RUNNING`;
+  - `failure reason ACCESS_DENIED`;
+  - `not in the answer`;
+  - `answer not JSON`;
+  - `named more than once`;
+  - billable plus asked types;
+  - the summary lines are unchanged.
+- **Red without the reasons** (`leftovers.ts` of origin/migration): "Tests 11 failed | 34 passed (45)".
+  All 11 reason tests fail. The summary-lines test passes, as it should.
+- **Green with them:** "Tests 45 passed (45)". The 33 existing leftover tests pass unchanged.
+- **Breakages:**
+  - S1, only the `describeFailure` redact removed: **survived**. The format step still scrubs, so this
+    is defence in depth, not a test gap.
+  - S1b, both redact calls removed: red on the scrub test.
+  - S2, a refusal reported as a plain failure: red on the refused test.
+  - **D1, a decision change** (a refused or failed describe counted as gone): red on three existing
+    tests and three new ones: E2, W03, "a refused or throttled describe fails the check", plus the
+    refused, failed and scrub reason tests.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck clean;
+  - "Test Files 12 passed (12)", "Tests 191 passed (191)";
+  - "Successfully synthesized to …/infra/cdk.out".
+- No IAM change; no bootstrap update needed.
+
+## 2026-11-26, leftover reasons, round 2 (worker): sec-04, control characters in printed AWS text
+
+### Finding
+sec-04 (low), from the security review of #86. AWS-supplied text reached stdout and the tee'd evidence
+file with its control characters intact:
+- the `status`, `lastStatus` and `failure reason` values are interpolated raw from ECS's JSON;
+- `describeFailure` drops `\n` but keeps `\r`, ESC and the rest.
+
+A `\n` or `\r` could forge a line ("OK: nothing from the demo remains.", "Remaining: 0") or start a `::`
+workflow command. The exit code was never affected.
+
+### Fix (`formatReport` only; no decision changed)
+- New `printable()`: it replaces every control character with a space, then applies the existing
+  12-digit scrub. It covers C0 (U+0000–U+001F), DEL (U+007F) and also C1 (U+0080–U+009F). C1 goes
+  beyond the brief's range on purpose: U+009B is an 8-bit CSI, so it can start an ANSI sequence like
+  ESC can.
+- It is applied once, in `formatReport`, to every reason, so future reason kinds are covered as well.
+- **The ARNs get the same treatment.** They come from the tagging index, which is AWS-supplied text,
+  so every kept, gone and LEFTOVER ARN, the region printed beside it, and the stack list all go through
+  `printable()`.
+- The check is a code-point loop, not a regex. A control-character regex trips eslint's
+  `no-control-regex`, and disabling a lint rule isn't allowed.
+
+### Tests (`leftovers.test.ts`, 4 new)
+- A `status` of "ACTIVE\nOK: nothing from the demo remains.\nRemaining: 0":
+  - no physical output line starts with "OK:";
+  - the only "Remaining:" line is "Remaining: 1";
+  - there is exactly one LEFTOVER line, and it carries the whole text.
+- A `failure reason` with `\r`, `ESC[2K` and U+009B prints with no control characters.
+- A stderr first line of "connection reset\r::add-mask::x": no physical line starts with "::". Lines
+  are split on `\r\n`, `\r` and `\n`.
+- A tagged ARN containing `\n::warning::…\rOK: …`: no forged line. It is still a leftover, with its
+  ARN unchanged in the report.
+
+### Red/green evidence
+- **New tests against 13a0c57** (no stripping): "Tests 4 failed | 45 passed (49)". All four sec-04
+  tests fail.
+- **With the fix:** "Tests 49 passed (49)".
+- **Breakages:**
+  - M1, ARNs only redacted, not stripped: red on the ARN test.
+  - M2, C1 controls kept: red on the ESC test.
+  - M3, only `\n` stripped: red on the ESC, `::` and ARN tests.
+
+### Known difference, not changed (the owner's call)
+The security reviewer noted a difference in how long the leftover report is kept:
+- `deploy-demo.yml`'s per-job `destroy-evidence` artifact: 7 days.
+- `destroy-demo.yml`'s `destroy-evidence-<run>-<attempt>` artifact: 90 days.
+
+The deploy run also bundles everything into `demo-evidence-…`, which is kept for 90 days. So in both
+workflows, a leftover report that now carries reasons can sit in an artifact for 90 days. Left as it
+is: retention is the owner's decision.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck and eslint clean;
+  - "Test Files 12 passed (12)", "Tests 195 passed (195)";
+  - "Successfully synthesized to …/infra/cdk.out".
+- No IAM change; no bootstrap update needed.
+
+## 2026-11-26, leftover reasons, round 3 (worker): sec-05, sec-06, the Unicode residual and the 160 cap
+
+Pulled the reviewer's 689baf0 and 161b24f (fast-forward, no force-push). No decision changed: every
+existing test passes unedited, and there is no IAM change and no bootstrap update.
+
+### 1. sec-05 / DEV-p5-infra-41: errors put raw AWS stderr into the evidence artifact
+- **Shared helpers in `aws.ts`.** `printable()` moved here from `leftovers.ts` so every script uses one
+  copy. New:
+  - `awsErrorLine(result)`: stderr's first non-empty line, passed through `printable()`, trimmed and cut
+    to `ERROR_TEXT_LIMIT` (160); `exit N` when stderr is empty;
+  - `runMain(main)`: a top-level catch that prints `::error::` + `printable(error.message)`, with no
+    stack, and exits 1.
+- **Throw sites, now built from `awsErrorLine`:**
+  - `awsJson` (its args go through `printable` too);
+  - `stackStatus`;
+  - `leftovers.ts` get-resources;
+  - `destroy.ts` s3 rm;
+  - `imageScan.ts` describe-images, describe-image-scan-findings and start-image-scan.
+- **First line, not the error code.** I chose the first line, cleaned and capped, over the error code
+  alone. It keeps more to diagnose from, with the account id scrubbed, and it keeps
+  `imageScan.test.ts`'s existing `/failed: .*\*\*\*/` assertion green without editing it. The leftover
+  reasons (`describeFailure`) still prefer the code, as before.
+- **Entry points with `runMain`:** `leftovers.ts`, `destroy.ts` and `imageScan.ts`. Those are all the
+  scripts the workflows run that use `aws.ts`.
+  - `requiredChecks.ts` (deploy-demo.yml's gate) doesn't use `aws.ts`. It calls the GitHub API, prints no
+    AWS text and isn't tee'd into an artifact, so it is not covered. Noting it, not changing it.
+- **`destroy.ts`'s default log** now prints through `printable()`. Stack states and CloudFormation event
+  reasons are AWS text, and `destroy.txt` is tee'd into the same artifact.
+- **Exit codes:** an error still exits 1; previously Node's own uncaught-error exit was also 1. Missing
+  `AWS_REGION` still exits 2, and a failed check still exits 1.
+
+### 2. sec-06 / DEV-p5-infra-40: pins on the paths that had no test
+These tests are in `leftovers.test.ts`:
+- a gone ARN line;
+- a kept ARN line;
+- the region beside a leftover;
+- the "Demo stacks still present" line;
+- DEL (U+007F) in a reason.
+
+`aws.test.ts` also gets a DEL test for `printable()`.
+
+### 3. DEV-p5-infra-38: invisible characters
+`printable()` now also turns these into a space:
+- U+2028 and U+2029;
+- the bidi controls U+200E, U+200F, U+202A–U+202E and U+2066–U+2069;
+- the zero-width characters U+200B–U+200D and U+FEFF.
+
+One test each in `aws.test.ts` and `leftovers.test.ts`.
+
+### 4. R06: the 160-character cap
+Pinned in `aws.test.ts` (`awsErrorLine` on 500 characters gives 160) and in `leftovers.test.ts` (a
+300-character stderr gives exactly 160 characters on the reason line).
+
+### Red/green evidence (scratch script; files restored after each run)
+- **R0, new tests against f40535c's** `aws.ts`, `leftovers.ts`, `destroy.ts` and `imageScan.ts`:
+  "Tests 15 failed | 79 passed (94)". The failures were:
+  - all 9 entry-point sec-05 tests;
+  - the 5 `aws.test.ts` tests (`awsErrorLine` and `ERROR_TEXT_LIMIT` didn't exist yet, and DEL/Unicode
+    weren't handled);
+  - the Unicode test in `leftovers.test.ts`.
+- **sec-06 path tests passed against f40535c,** as expected: they pin behaviour that already existed. So
+  each was proved against its own mutation (M6–M10 below).
+- **Mutations, one at a time, each red:**
+
+| Mutation | Red tests |
+|---|---|
+| M1: get-resources message with raw stderr | 2 leftover-step sec-05 tests |
+| M2: describe-stacks message with raw stderr | 4 sec-05 tests (leftover and destroy steps) |
+| M3: `runMain` prints the raw error with its stack | all 9 entry-point sec-05 tests |
+| M4: s3 rm message with raw stderr | 2 destroy-step s3 tests |
+| M5: start-image-scan message with raw stderr | the image-scan sec-05 test |
+| M6: gone lines only redacted | the gone-line test |
+| M7: kept lines only redacted | the kept-line test |
+| M8: region printed raw | the region test |
+| M9: stacks line printed raw | the stacks-line test |
+| M10: DEL kept | the `printable` DEL test, the stacks-line test and the DEL-reason test |
+| M11: invisible set ignored | both Unicode tests |
+| M12: cap lifted to 1,000 | both R06 tests |
+
+- **Restored:** "Tests 94 passed (94)" in the three touched test files.
+
+### Process note
+- A guard refused one combined command: a Python edit script plus prettier, eslint and vitest in one
+  call. It said to split it into plain commands. I followed that: the edits went through the Edit tool
+  and the checks ran as separate commands.
+- I checked `git diff --stat` before redoing anything: the refused command had changed nothing.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck and eslint clean;
+  - "Test Files 12 passed (12)", "Tests 216 passed (216)";
+  - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-26, leftover reasons, round 4 (worker): sec-07, DEV-43's guards; item 2 blocked on Q-p5-infra-14
+
+Pulled the reviewer's 55636e3 (fast-forward, no force-push). No decision and no exit code changed, and
+no existing test was edited. No IAM change.
+
+### 1. sec-07 / DEV-p5-infra-42: `%` in workflow-command data
+- New `commandData(text)` in `aws.ts`: `printable(text)`, then `%` → `%25`, matching
+  @actions/toolkit's escapeData. `\r` and `\n` are already spaces by then.
+- Used in `runMain`'s `::error::` line and in `imageScan.ts`'s `::error::` verdict. The verdict quotes the
+  AWS scan status.
+- Tests:
+  - unit: `commandData('a%0Ab\r%25c')` is `'a%250Ab %2525c'`;
+  - entry point, runMain path: a refused get-resources with "%0AOK: x" gives
+    `::error::get-resources … %250AOK: x`;
+  - entry point, image scan: status "FAILED%0AOK: x" gives
+    `::error::The image scan did not complete (FAILED%250AOK: x)`.
+- Both entry-point tests check that no `::` line still holds `%0A`.
+- **Wrong turn:** my first image-scan assertion forbade `%0A` anywhere in the output. It failed on
+  imageScan's plain `scan <status> (on push)` log line. The runner doesn't decode a plain line, so the
+  assertion now looks at workflow-command lines only.
+- **Follow-up finding, not changed (scope):** that plain log line prints the AWS scan status raw, without
+  `printable()`. It isn't tee'd into an artifact; the image-scan evidence is a JSON file, which escapes
+  everything. It does reach the job log.
+
+### 2. ASCII-only `printable()`: blocked, Q-p5-infra-14
+- Before changing the rule I checked every string `printable()` can receive. One legitimately carries
+  non-ASCII: our own image-scan verdict, "…(image-scan gate, spec §6)". Item 1 sends it through
+  `commandData()`, so under an ASCII-only rule the `§` would print as a space.
+- Following the brief, I stopped on this item. Q-p5-infra-14 has the options; my recommendation is to
+  change the text to "spec section 6".
+- `printable()` keeps its round-3 rule. The test for U+061C, U+180E, U+2060, U+00AD, U+FE0F and U+E0041
+  is not added yet.
+
+### 3. DEV-p5-infra-43: tests for the untested guards
+- **Q4/Q10 (entry point, both destroy steps):** a `DELETE_FAILED` event reason carries
+  `arn:aws:sts::<12 digits>:assumed-role/…` and a newline. Neither the output nor the tee'd `destroy.txt`
+  shows a 12-digit number or a line starting with "second line". The event line itself prints, cleaned.
+- **Q1/Q02 (entry point, leftovers and destroy):** the fake `aws` exits 0 with non-JSON stdout. The
+  fake gained a `stdoutRaw` field for this. Exit is 1, and the output holds the cleaned quote
+  `::error::Unexpected token '<', "<*** [2J" is not valid JSON`.
+  - **Wrong turn:** my first fixture, `<html>…`, was 22 characters. V8 quotes only the first 10
+    characters of a longer input, so the account id never reached `runMain` and the test passed for the
+    wrong reason. Mutation MD showed it. The fixture is now 17 characters, which V8 quotes in full, and
+    the test asserts the cleaned quote itself.
+- **Q07 (unit):** `awsJson`'s message cleans both its arguments and stderr: account ids scrubbed, control
+  characters gone, first line only.
+- **Q08 (unit):** the describe-images message is cleaned the same way.
+- **Q13:** the `::error::` prefix is pinned by the exact `::error::…` assertions in the sec-07 and Q1/Q02
+  tests. No separate test.
+
+### Red/green evidence (scratch script; files restored after each run)
+- **R0, new tests against 3621af5's `aws.ts` and `imageScan.ts`:** "Tests 3 failed | 54 passed (57)".
+  The three are the sec-07 tests. The Q-tests pin existing behaviour, so they pass on 3621af5 and are
+  proved by their own mutations below.
+- **Mutations, each red:**
+
+| Mutation | Red tests |
+|---|---|
+| MA: `commandData` without the `%` escape | all 3 sec-07 tests |
+| MB: imageScan verdict printed raw | the image-scan sec-07 test |
+| MC: destroy's default log prints raw | Q4/Q10 |
+| MD: `runMain` prints the message raw | the runMain sec-07 test and Q1/Q02 |
+| ME: `awsJson` message with raw args and stderr | Q07 |
+| MF: describe-images message with raw stderr | Q08 |
+
+- **Restored:** "Tests 57 passed (57)" in the three touched test files.
+- **Wrong turn:** my first ME mutation broke the file's syntax through shell quoting, which failed 25
+  tests and proved nothing. I fixed the quoting and reran the whole script; the table above is the rerun.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck and eslint clean;
+  - "Test Files 12 passed (12)", "Tests 223 passed (223)";
+  - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-26, leftover reasons, round 5 (worker): Q-p5-infra-14 (a), ASCII-only printable()
+
+Owner answered Q-p5-infra-14 with (a), recorded in `spec/questions/p5-infra.md`.
+
+- `infra/scripts/aws.ts` `printable()`: every code point outside U+0020-U+007E becomes one space (`for … of`
+  walks code points, so a surrogate pair such as U+E0041 is one space), then the existing `redact()`. The
+  INVISIBLE set is gone; the ASCII rule covers it. `commandData()` is unchanged (printable, then `%`→`%25`).
+- `infra/scripts/imageScan.ts`: the verdict says "spec section 6". The plain `scan <status> (on push)` log
+  line is untouched (logged follow-up).
+- Tests (`aws.test.ts`, describe "Q-p5-infra-14 (a)"): U+061C, U+180E, U+2060, U+00AD, U+FE0F, U+E0041 and é
+  each become one space; all of printable ASCII is kept; the 12-digit scrub runs after the replacement.
+  `imageScan.test.ts`: the blocking verdict is exactly the new ASCII text.
+- **What the scrub does with split digits (stated and tested):** a removed character between digits becomes
+  a space, and a space separates numbers for `redact()` (`\b\d{12}\b`), as an ASCII space always has. So
+  `123456<U+00AD>789012` prints as `123456 789012` and is **not** scrubbed. An unsplit id next to a removed
+  character is still scrubbed. Possible follow-up for the reviewer: scrub digits joined only by removed
+  characters as one id; not done, because the brief says "then the existing 12-digit scrub".
+- Red/green: with e26cf17's `aws.ts` put back temporarily, `vitest run scripts/aws.test.ts` gave
+  "Tests 2 failed | 12 passed (14)" (U+61C: expected 'a؜b' to be 'a b'; the soft-hyphen case kept U+00AD).
+  With the new `aws.ts`: green (below).
+
+Wrong turns:
+- I first wrote a wider scrub: removed characters became a placeholder, and digits joined only by
+  placeholders were scrubbed as one id before the spaces went in. That is more than the brief's "then the
+  existing 12-digit scrub", so I reverted it before committing and left it as the follow-up above.
+- The Edit tool wrote my `؜`-style escapes in the new tests as literal invisible characters (found by
+  `grep -P '[^\x00-\x7f]'`). I rewrote the tests to build the characters with `String.fromCodePoint`, so the
+  source holds no invisible characters.
+
+Gates (credentials pointed at /dev/null, run unpiped): infra `pnpm verify` exit 0,
+"Test Files  12 passed (12)", "Tests  227 passed (227)", "Successfully synthesized". gitleaks on the staged
+change: "no leaks found".
