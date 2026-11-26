@@ -4,7 +4,8 @@
 // FAKE_AWS_LOG. An unexpected call fails loudly. No network, no credentials.
 import { appendFileSync } from 'node:fs'
 
-type Rule = { match: string; code?: number; stdout?: unknown; stderr?: string }
+/** `stdoutRaw` is written as is (an answer that is not JSON); `stdout` is written as JSON. */
+type Rule = { match: string; code?: number; stdout?: unknown; stdoutRaw?: string; stderr?: string }
 
 const args = process.argv.slice(2).join(' ')
 if (process.env.FAKE_AWS_LOG) appendFileSync(process.env.FAKE_AWS_LOG, `${args}\n`)
@@ -14,6 +15,7 @@ if (!rule) {
   process.stderr.write(`fake aws: unexpected call: ${args}\n`)
   process.exit(99)
 }
-if (rule.stdout !== undefined) process.stdout.write(JSON.stringify(rule.stdout))
+if (rule.stdoutRaw !== undefined) process.stdout.write(rule.stdoutRaw)
+else if (rule.stdout !== undefined) process.stdout.write(JSON.stringify(rule.stdout))
 if (rule.stderr) process.stderr.write(rule.stderr)
 process.exit(rule.code ?? 0)

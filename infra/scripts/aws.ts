@@ -95,7 +95,16 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
   try {
     await main()
   } catch (error) {
-    console.error(`::error::${printable(error instanceof Error ? error.message : String(error))}`)
+    console.error(`::error::${commandData(error instanceof Error ? error.message : String(error))}`)
     process.exit(1)
   }
+}
+
+/**
+ * Text for the data part of a GitHub workflow command (`::error::<data>`): printable(), then `%` escaped as
+ * `%25`, as @actions/toolkit's escapeData does, so a `%0A` in AWS text cannot be read as an encoded newline
+ * by the runner (sec-07). \r and \n need no escape here: printable() has made them spaces.
+ */
+export function commandData(text: string): string {
+  return printable(text).replace(/%/g, '%25')
 }

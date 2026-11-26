@@ -1689,3 +1689,79 @@ Pinned in `aws.test.ts` (`awsErrorLine` on 500 characters gives 160) and in `lef
   - typecheck and eslint clean;
   - "Test Files 12 passed (12)", "Tests 216 passed (216)";
   - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-26, leftover reasons, round 4 (worker): sec-07, DEV-43's guards; item 2 blocked on Q-p5-infra-14
+
+Pulled the reviewer's 55636e3 (fast-forward, no force-push). No decision and no exit code changed, and
+no existing test was edited. No IAM change.
+
+### 1. sec-07 / DEV-p5-infra-42: `%` in workflow-command data
+- New `commandData(text)` in `aws.ts`: `printable(text)`, then `%` → `%25`, matching
+  @actions/toolkit's escapeData. `\r` and `\n` are already spaces by then.
+- Used in `runMain`'s `::error::` line and in `imageScan.ts`'s `::error::` verdict. The verdict quotes the
+  AWS scan status.
+- Tests:
+  - unit: `commandData('a%0Ab\r%25c')` is `'a%250Ab %2525c'`;
+  - entry point, runMain path: a refused get-resources with "%0AOK: x" gives
+    `::error::get-resources … %250AOK: x`;
+  - entry point, image scan: status "FAILED%0AOK: x" gives
+    `::error::The image scan did not complete (FAILED%250AOK: x)`.
+- Both entry-point tests check that no `::` line still holds `%0A`.
+- **Wrong turn:** my first image-scan assertion forbade `%0A` anywhere in the output. It failed on
+  imageScan's plain `scan <status> (on push)` log line. The runner doesn't decode a plain line, so the
+  assertion now looks at workflow-command lines only.
+- **Follow-up finding, not changed (scope):** that plain log line prints the AWS scan status raw, without
+  `printable()`. It isn't tee'd into an artifact; the image-scan evidence is a JSON file, which escapes
+  everything. It does reach the job log.
+
+### 2. ASCII-only `printable()`: blocked, Q-p5-infra-14
+- Before changing the rule I checked every string `printable()` can receive. One legitimately carries
+  non-ASCII: our own image-scan verdict, "…(image-scan gate, spec §6)". Item 1 sends it through
+  `commandData()`, so under an ASCII-only rule the `§` would print as a space.
+- Following the brief, I stopped on this item. Q-p5-infra-14 has the options; my recommendation is to
+  change the text to "spec section 6".
+- `printable()` keeps its round-3 rule. The test for U+061C, U+180E, U+2060, U+00AD, U+FE0F and U+E0041
+  is not added yet.
+
+### 3. DEV-p5-infra-43: tests for the untested guards
+- **Q4/Q10 (entry point, both destroy steps):** a `DELETE_FAILED` event reason carries
+  `arn:aws:sts::<12 digits>:assumed-role/…` and a newline. Neither the output nor the tee'd `destroy.txt`
+  shows a 12-digit number or a line starting with "second line". The event line itself prints, cleaned.
+- **Q1/Q02 (entry point, leftovers and destroy):** the fake `aws` exits 0 with non-JSON stdout. The
+  fake gained a `stdoutRaw` field for this. Exit is 1, and the output holds the cleaned quote
+  `::error::Unexpected token '<', "<*** [2J" is not valid JSON`.
+  - **Wrong turn:** my first fixture, `<html>…`, was 22 characters. V8 quotes only the first 10
+    characters of a longer input, so the account id never reached `runMain` and the test passed for the
+    wrong reason. Mutation MD showed it. The fixture is now 17 characters, which V8 quotes in full, and
+    the test asserts the cleaned quote itself.
+- **Q07 (unit):** `awsJson`'s message cleans both its arguments and stderr: account ids scrubbed, control
+  characters gone, first line only.
+- **Q08 (unit):** the describe-images message is cleaned the same way.
+- **Q13:** the `::error::` prefix is pinned by the exact `::error::…` assertions in the sec-07 and Q1/Q02
+  tests. No separate test.
+
+### Red/green evidence (scratch script; files restored after each run)
+- **R0, new tests against 3621af5's `aws.ts` and `imageScan.ts`:** "Tests 3 failed | 54 passed (57)".
+  The three are the sec-07 tests. The Q-tests pin existing behaviour, so they pass on 3621af5 and are
+  proved by their own mutations below.
+- **Mutations, each red:**
+
+| Mutation | Red tests |
+|---|---|
+| MA: `commandData` without the `%` escape | all 3 sec-07 tests |
+| MB: imageScan verdict printed raw | the image-scan sec-07 test |
+| MC: destroy's default log prints raw | Q4/Q10 |
+| MD: `runMain` prints the message raw | the runMain sec-07 test and Q1/Q02 |
+| ME: `awsJson` message with raw args and stderr | Q07 |
+| MF: describe-images message with raw stderr | Q08 |
+
+- **Restored:** "Tests 57 passed (57)" in the three touched test files.
+- **Wrong turn:** my first ME mutation broke the file's syntax through shell quoting, which failed 25
+  tests and proved nothing. I fixed the quoting and reran the whole script; the table above is the rerun.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck and eslint clean;
+  - "Test Files 12 passed (12)", "Tests 223 passed (223)";
+  - "Successfully synthesized to …/infra/cdk.out".

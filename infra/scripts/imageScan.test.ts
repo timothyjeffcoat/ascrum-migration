@@ -249,6 +249,23 @@ describe('spec §6 image-scan: the scan gate', () => {
     )
   })
 
+  // DEV-p5-infra-43 Q08 (sec-05): the describe-images error message is one cleaned line.
+  it('Q08: a refused describe-images throws one cleaned line: no account id, no control character, no second line', async () => {
+    const refused: AwsResult = {
+      code: 254,
+      stdout: '',
+      stderr:
+        'An error occurred (AccessDeniedException): arn:aws:sts::123456789012:x\r\u001b[2K::warning::y\nsecond line',
+    }
+    const error = await run(scripted([findings('COMPLETE')], undefined, refused).aws).then(
+      () => new Error('resolved'),
+      (thrown: unknown) => (thrown instanceof Error ? thrown : new Error(String(thrown))),
+    )
+    expect(error.message).toBe(
+      'describe-images failed: An error occurred (AccessDeniedException): arn:aws:sts::***:x  [2K::warning::y',
+    )
+  })
+
   it('image-scan (live run 2): a single manifest (OCI or Docker v2) is scanned by its digest, never by the tag', async () => {
     for (const mediaType of [OCI_MANIFEST, 'application/vnd.docker.distribution.manifest.v2+json']) {
       const image = images({ imageDigest: DIGEST, imageManifestMediaType: mediaType })

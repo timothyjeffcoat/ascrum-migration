@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { awsErrorLine, ERROR_TEXT_LIMIT, printable, redact, stackStatus, type Aws } from './aws.ts'
+import {
+  awsErrorLine,
+  awsJson,
+  commandData,
+  ERROR_TEXT_LIMIT,
+  printable,
+  redact,
+  stackStatus,
+  type Aws,
+} from './aws.ts'
 
 const failing =
   (stderr: string): Aws =>
@@ -66,6 +75,26 @@ describe('sec-05: awsErrorLine() turns stderr into one short printable line', ()
     ]
     const text = invisible.map((code) => `a${String.fromCodePoint(code)}`).join('')
     expect(printable(text)).toBe('a '.repeat(invisible.length))
+  })
+
+  // DEV-p5-infra-43 Q07: awsJson's message carries its arguments and stderr; both are cleaned.
+  it('Q07: awsJson() throws one cleaned line: no account id, no control character, no second line', async () => {
+    const aws: Aws = async () => ({
+      code: 254,
+      stdout: '',
+      stderr: 'An error occurred (AccessDenied): arn:aws:sts::123456789012:x\r::add-mask::y\nsecond line',
+    })
+    const error = await awsJson(aws, ['s3', 'rm', 's3://bucket-123456789012\u001b[2J']).then(
+      () => new Error('resolved'),
+      (thrown: unknown) => (thrown instanceof Error ? thrown : new Error(String(thrown))),
+    )
+    expect(error.message).toBe(
+      'aws s3 rm s3://bucket-*** [2J failed (254): An error occurred (AccessDenied): arn:aws:sts::***:x ::add-mask::y',
+    )
+  })
+
+  it('sec-07: commandData() escapes % as %25 after printable()', () => {
+    expect(commandData('a%0Ab\r%25c')).toBe('a%250Ab %2525c')
   })
 
   it('sec-04 / DEV-p5-infra-40: printable() turns DEL (U+007F) into a space', () => {

@@ -24,7 +24,7 @@
 // documents no fixed-in attribute (fixedInVersion exists only in enhancedFindings, Inspector's), so none
 // is recorded. The pass/fail verdict still reads only the severity counts.
 import { writeFileSync } from 'node:fs'
-import { awsCli, awsErrorLine, realSleep, runMain, type Aws, type Sleep } from './aws.ts'
+import { awsCli, awsErrorLine, commandData, realSleep, runMain, type Aws, type Sleep } from './aws.ts'
 
 export type ScanSummary = {
   status: string
@@ -206,7 +206,8 @@ if (import.meta.main) {
     writeFileSync(evidence, `${JSON.stringify(summary, null, 2)}\n`)
     const reason = verdict(summary)
     if (reason) {
-      console.error(`::error::${reason}`)
+      // The verdict quotes the scan status, which is AWS text (sec-07).
+      console.error(`::error::${commandData(reason)}`)
       process.exit(1)
     }
     console.log('image-scan: completed, no HIGH or CRITICAL finding.')
