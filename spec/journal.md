@@ -1222,3 +1222,15 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Run 7 failed on a fix that was correct. The new permission was merged but not yet deployed, so the check could not ask AWS about one task, and it refused to call the task gone. That is exactly what it should do. Run 8, with the permission deployed, was the first all-green run: up, tested over HTTPS and torn down in fifteen minutes, with the last check reporting 'nothing from the demo remains'."
+
+## 2026-11-26: Leftover lines that say why (p5-infra, PR #86, review)
+- **Why.** In live run 7, the leftover check printed a bare LEFTOVER for a task whose DescribeTasks call had been refused, because the bootstrap update wasn't deployed yet. The owner needed two AWS commands to find the cause. #86 prints a reason on every kept line, such as `describe refused: AccessDeniedException`, `lastStatus RUNNING`, `not in the answer` or `not checked: billable type`.
+- **Review.** The change is output-only.
+  - The 33 earlier leftover tests are untouched (the test diff is 104 additions, 0 deletions).
+  - All 7 of the reviewer's decision-changing breakages were red, and so were all 5 of the security reviewer's.
+  - On the reasons themselves, 9 of the reviewer's 11 breakages were red. One survivor is by design: account ids are scrubbed twice, so removing one scrub changes nothing. The other is an untested 160-character cap.
+  - Two low findings are open:
+    - `asked: not reported deleted` also covers a cluster, task definition or secret whose describe call failed (DEV-p5-infra-37);
+    - AWS-supplied text is printed without its control characters stripped, so a line break could forge an "OK" line in the log, though not the exit code (sec-04, DEV-38). The owner decides whether sec-04 is fixed in #86.
+- **Gate results (reviewer, `13a0c57`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 191 passed (191)", synth OK. The workflow entry-point tests that pin the summary lines pass. The `rg` check found only the 4 known false positives. No IAM change, so no bootstrap update.
+- **Decision.** No blocking findings. Not merged; the owner merges.
