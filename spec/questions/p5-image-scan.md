@@ -126,3 +126,30 @@ Options:
 *Recommended: (a)*, because it closes the class (any package left below an Alpine fix), not just zlib,
 and it does not depend on two vendors agreeing on a severity. (c) is complementary if Q-p5-image-scan-1
 (a) is accepted.
+
+## Owner answers (2026-11-26)
+The owner, relayed by the orchestrator: "yes, go with the recommendations". Implemented in the same PR
+(#88); the worklog's session 2 has the evidence.
+
+- **Q-p5-image-scan-1: (a).** In `docker/api.Dockerfile`'s runtime stage, `apk del` apk-tools, libapk,
+  ssl_client, libssl3, libcrypto3 and zlib. Keep apk's installed database (the scanners read it) and
+  busybox. The API floor line and its check go; `check-images.sh` checks that those six packages are
+  absent from the API image, failing closed if any is present or the installed database cannot be read.
+  The package-source comparison applies to the web image, and is adapted for the API.
+- **Q-p5-image-scan-2: (a) + (c).**
+  - (a): the web floor line gains brotli-libs, libexpat, libxslt, libxml2, curl, libcurl, musl and
+    musl-utils at the Alpine v3.24 fixed versions, checked by `check-images.sh` like the others.
+  - (c): the web image's Trivy result is report-only during a window whose exit is mechanical:
+    - it covers only findings in the `nginx` package; any other finding in the web image still fails;
+    - it ends by itself when the web image's installed nginx is >= 1.30.7 (the check reads the installed
+      version and then fails on everything);
+    - it has a hard expiry, 2026-12-31, after which the step fails regardless;
+    - every run prints a loud notice naming the window, the CVEs reported and the exit conditions;
+    - there is no ignore file: report-only is a scoped exit-code decision in the script, tested by
+      planted breaks.
+  - The API image stays fully gated.
+- **Q-p5-image-scan-3: (a).** A second Trivy pass on OS packages at all severities with
+  `--ignore-unfixed`, failing on any finding that has a fix, on both images. The nginx-only window
+  applies to that pass's nginx findings in the web image and nothing else. D03 must be shown red on the
+  API image and on the web image. The worklog notes Trivy not seeing Node's bundled OpenSSL, and
+  CVE-2026-4738 (Trivy MEDIUM vs ECR CRITICAL), for the reviewer's first Trivy/ECR disagreement entry.

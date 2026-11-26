@@ -281,3 +281,204 @@ and the njs module need them too, and the entrypoint and HEALTHCHECK need busybo
 - **Gitleaks** (8.30.1, the tarball re-downloaded and checked against the SHA-256 in setup-gitleaks:
   `OK`) on the staged change (everything after the first commit, ~42 KB): exit 0, `no leaks found`; and
   on the branch's first commit (`--log-opts=origin/migration..HEAD`, 1 commit): exit 0, `no leaks found`.
+
+## 2026-11-26, session 2 (worker): the owner's answers to Q-p5-image-scan-1..3
+
+**Why.** The orchestrator relayed the owner's answer ("yes, go with the recommendations") right after
+session 1's report. It is recorded in `spec/questions/p5-image-scan.md`, "Owner answers (2026-11-26)".
+Same branch, same PR (#88), same ports and compose settings.
+
+### Q-p5-image-scan-1 (a): Alpine's OpenSSL, zlib and apk leave the API image
+
+- **docker/api.Dockerfile:** the floor line and its comment are replaced by
+  `RUN apk del --no-cache apk-tools libapk ssl_client libssl3 libcrypto3 zlib`. The build log:
+  `Purging apk-tools (3.0.9-r0)`, `ca-certificates-bundle (20261020-r0)`, `libapk`, `ssl_client`,
+  `zlib (1.3.2-r1)`, `libssl3 (3.5.9-r0)`, `libcrypto3 (3.5.9-r0)`, `OK: 4544 KiB in 12 packages` (19
+  before). Busybox and apk's installed database stay; Trivy still reads the database (12 packages).
+- **ca-certificates-bundle goes too**, as a dependency of libapk. Nothing in the image needs it:
+  - Node uses its own CA store;
+  - the deployed API connects to RDS with `sslmode=no-verify` (`infra/src/demoStack.ts`, Q-p5-infra-3),
+    which never reads a CA file;
+  - the compose stack talks plain TCP to PostgreSQL;
+  - ECS's start command (`export DATABASE_URL=… && exec node …`) needs only `sh`, which busybox keeps.
+- **What `apk del` does with a shorter list** (tried on the pinned base before writing the check):
+  - Leaving `zlib` (or any of the libraries) out of the list changes nothing: once apk-tools goes, its
+    dependencies have no other user, and apk purges them anyway.
+  - Leaving `apk-tools` out keeps **all six**, and apk exits 0. apk prints "not removed due to:
+    apk-tools…", then *upgrades* libcrypto3, libssl3 and zlib from the live index, because apk-tools stays
+    in `world`.
+  - So the build step cannot be trusted to fail by itself. The absence check is what does.
+- **check-images.sh, `check_apk … removed` for the API.** It reads `/lib/apk/db/installed`
+  (`docker run … cat`) and fails if:
+  - the read fails, or the database does not list busybox and musl (so is not the real one);
+  - any of `apk-tools libapk ssl_client libssl3 libcrypto3 zlib` is listed;
+  - a main file of any of them is present (`/sbin/apk`, `/usr/bin/ssl_client`, `/usr/lib/libssl.so.3`,
+    `libcrypto.so.3`, `libz.so.1`), which also covers a database entry removed by hand.
+
+  The text rule is now "exactly one `RUN apk del --no-cache <names>` line, and nothing else may mention
+  apk". The web image keeps "exactly one `RUN apk add --no-cache <floors>` line".
+- **The package-source comparison, adapted for the API.** `apk del apk-tools` removes apk-tools' own
+  `/etc/apk/protected_paths.d`, and the unchanged comparison failed on it on the first run
+  (`< dir ./protected_paths.d`). The rules now:
+  - For the API, `/etc/apk` may only *lose* paths against the base, never gain or change one. With apk
+    gone nothing reads `/etc/apk` any more, but an added repository or key would still show that a build
+    step fetched from elsewhere before the del.
+  - The API's `world` must be the base's minus exactly the removed names.
+  - The web image's comparison stays exact.
+
+  Output: `ascrum-api:p5scan: absent: apk-tools libapk ssl_client libssl3 libcrypto3 zlib (installed
+  database and files)` and `/etc/apk adds or changes nothing against node:24.22.3-alpine3.24@… (gone with
+  apk: dir ./protected_paths.d ); world is the base's minus the removed packages`.
+- The API image still loads and starts (`main.ts loads exactly the 16 .ts files`; `starts with only
+  DATABASE_URL and answers /healthz: 200 {"status":"ok"}`), and the compose e2e is green (gates below).
+
+### Q-p5-image-scan-2 (a): eight more web floors
+
+Sources as in session 1: secdb v3.24 main for the fixed version, the aports 3.24-stable APKBUILD's
+`pkgver`/`pkgrel` and secfixes, and the v3.24 main index for what installs today.
+
+| Floor | secdb v3.24 main (fixed in) | aports 3.24-stable | Index today = installed after |
+|---|---|---|---|
+| `brotli-libs>=1.2.1-r0` | brotli 1.2.1-r0: CVE-2026-111497 | 1.2.1-r0 (secfixes 1.2.1-r0) | 1.2.1-r0 |
+| `libexpat>=2.10.0-r0` | expat 2.10.0-r0: CVE-2026-113351, -115506, -117610, -118370 | 2.11.0-r0 (secfixes 2.10.0-r0) | 2.11.0-r0 |
+| `libxslt>=1.1.43-r4` | 1.1.43-r4: CVE-2025-10911, CVE-2026-9947, -87636, -125350 | 1.1.43-r4 | 1.1.43-r4 |
+| `libxml2>=2.13.9-r3` | 2.13.9-r3: CVE-2026-86144 | 2.13.9-r5 (secfixes 2.13.9-r3) | 2.13.9-r5 |
+| `curl>=8.23.0-r0`, `libcurl>=8.23.0-r0` | curl 8.23.0-r0: 24 CVEs incl. CVE-2026-92392 | 8.23.0-r0 | 8.23.0-r0 |
+| `musl>=1.2.6-r3`, `musl-utils>=1.2.6-r3` | musl 1.2.6-r3: CVE-2026-107891 | 1.2.6-r3 | 1.2.6-r3 |
+
+The floor is secdb's fixed version, not today's newest, the same rule as the first three; libexpat and
+libxml2 install above their floor. The line now continues over three lines with `\`, which
+check-images.sh's reader joins. check-images.sh prints `ascrum-web:p5scan: OS packages at or above their
+floors:` for all 11 and `world is the base's plus the 11 floors`.
+
+### Q-p5-image-scan-2 (c) and Q-p5-image-scan-3 (a): the nginx window and the second pass
+
+`docker/scan-images.sh` now runs two passes per image:
+- **Pass 1:** OS and language packages, HIGH/CRITICAL, fixed or not.
+- **Pass 2:** OS packages only, every severity (`UNKNOWN…CRITICAL`), `--ignore-unfixed`. Every finding
+  here has a fix by construction, and any finding fails.
+
+The window:
+- **Its settings are constants in the script:** `WINDOW_PACKAGE=nginx`,
+  `WINDOW_CLOSES_AT_NGINX=1.30.7-r0`, `WINDOW_EXPIRES=2026-12-31`. Nothing from the environment can change
+  them: `TRIVY_*` is unset as before, and no other variable is read.
+- **Scope:** only the image in the **web** argument slot, and only findings with class `os-pkgs` whose
+  package is exactly `nginx` (not `nginx-module-*`), in either pass.
+- **It is open only if all three hold:**
+  - today (UTC) is not after the expiry;
+  - the image's installed `nginx` can be read from apk's database;
+  - `apk version -t <installed> 1.30.7-r0`, run in the image, prints exactly `<`.
+
+  Anything else closes it, including a missing apk or a missing package, and then nginx findings fail like
+  any other.
+- **Every run** prints a banner with the state, the exit conditions and every nginx finding it held (both
+  passes), and under GitHub Actions a `::warning::` annotation.
+
+**Results on today's images:**
+
+| Image | Pass | Findings | Failing |
+|---|---|---|---|
+| API (12 OS + 15 language packages) | pass 1 | 0 | 0 |
+| API | pass 2 | 0 | 0 |
+| web | pass 1 | 6, all nginx | 0 (window) |
+| web | pass 2 | 10, all nginx | 0 (window) |
+
+The scan exits 0. Pass 2's 10 nginx findings are pass 1's 6 plus CVE-2026-120967, -123640, -125283
+(MEDIUM, fixed in 1.30.7-r0) and CVE-2026-132779 (MEDIUM, fixed in **1.30.8-r0**). So when a 1.30.7 base
+arrives, the window closes and the scan still fails on -132779 until 1.30.8. That is the owner's "then
+fails on everything"; it is noted here so it is not a surprise. Every other web package has no fixed
+finding at any severity after the eight new floors.
+
+### Proofs
+
+Each case is a planted break, then restored and `cmp`-checked against a saved copy.
+
+| Id | Break | Result |
+|---|---|---|
+| A1 | `apk-tools` left out of the `apk del` list (all six stay, build exit 0) | check-images **exit 1**: each of the six `is installed; it must be removed`, the five files present, `world … > apk-tools`. scan-images exit 0, because apk upgraded the three libraries: only the absence check catches this |
+| A2 | the `apk del` line removed | check-images **exit 1**, the same 12 findings |
+| D03-web | `zlib>=1.4-r0` dropped from the web floor line (zlib stays 1.3.2-r0) | scan-images **exit 1**: pass 1 `HIGH CVE-2026-85091 zlib 1.3.2-r0`; pass 2 also `MEDIUM CVE-2026-4738` |
+| D03-API | the original D03: the pre-Q-1 API Dockerfile (from `origin/migration`) with zlib dropped from its floors (zlib stays 1.3.2-r1) | scan-images **exit 1**: pass 2 `MEDIUM CVE-2026-4738 zlib 1.3.2-r1 (fixed: 1.4-r0)`. Pass 1 alone passed it in session 1. **D03 is now red on both images.** The API as it now is has no D03 (no zlib, no floors); A1 and A2 are its counterpart |
+| W1 | a non-nginx finding in the web image inside the window: the `libexpat` floor dropped | scan-images **exit 1**: 4 HIGH libexpat findings in pass 1, 7 libexpat findings in pass 2; the nginx findings are still held |
+| W2 | installed nginx at the closing version (`WINDOW_CLOSES_AT_NGINX` planted at 1.30.6-r1 in a copy of the script) | **exit 1**: `state: closed: installed nginx 1.30.6-r1 compared with 1.30.6-r1 gives '='`; 6 + 10 nginx findings fail |
+| W3 | past the expiry (`WINDOW_EXPIRES` planted at 2026-11-25) | **exit 1**: `state: expired: today (2026-11-26) is after 2026-11-25`; 6 + 10 nginx findings fail |
+| W4 | the web image passed in the API slot | **exit 1**: all nginx findings fail (the window is never evaluated for that slot) |
+| DB | the "DB too old" branch, which session 1 left unexercised (`DB_MAX_AGE_SECONDS` planted at 60) | **exit 1**: `the downloaded DB was built at 2026-11-26T13:14:47Z, more than 0 hours ago`. The message rounds 60 s down to hours; that happens only in the planted copy |
+| green | the real files | check-images exit 0; scan-images exit 0, window open |
+
+Note on D03-web, A1 and A2: the runner restored the Dockerfiles *before* running check-images, so
+check-images compared the broken image with the real list. For D03-web that made check-images red too
+(`zlib 1.3.2-r0 is not shown at or above 1.4-r0`). A real D03, with the list and the image both missing
+zlib, still passes check-images, as session 1 showed; the scan is what catches it.
+
+### For the reviewer: the first Trivy/ECR disagreement entry (owner's answer to Q-p5-image-cves-2)
+
+- **CVE-2026-4738** in Alpine's `zlib` 1.3.2-r1: Trivy 0.76.2 rates it **MEDIUM**, ECR rated it
+  **CRITICAL** in live run 3. Trivy's vendor severities are bitnami 4, julia 4 and ubuntu 2, and it warns
+  that it uses other vendors' severities for Alpine. Pass 2 now catches the finding whatever its severity,
+  and the API image no longer has zlib.
+- **Node's bundled OpenSSL 3.5.9** (five CVEs that OpenSSL rates Low, fixed in 3.5.10): **Trivy does not
+  see it.** The API image's Node.js result lists 15 packages (pg and its dependencies) and nothing for the
+  `node` binary, at any severity. Whether ECR sees it is unknown; run 3's six findings were all Alpine
+  packages.
+- **The five OpenSSL CVEs in `libssl3`/`libcrypto3` 3.5.9-r0:** Trivy rates them MEDIUM/LOW, ECR rated
+  them HIGH/MEDIUM. This is now moot for both images: the API removes the packages and the web image
+  floors them.
+
+### Mistakes and refusals, session 2
+
+- **The `/etc/apk` comparison failed on the API's first run.** I had not checked what `apk del
+  apk-tools` does to `/etc/apk`: it removes apk-tools' `protected_paths.d`. Adapted as described above.
+- **The proof runner's "restored" line printed "NO" for every case.** It tested `git diff --quiet HEAD`,
+  which cannot be clean while the session's edits are uncommitted. The `cmp` checks against the saved
+  originals were all equal, and I re-checked them separately (`all-equal`).
+- **Worktree guard, three refusals, each a plain split, nothing retried in another form:**
+  - a `for` loop over aports URLs: moved into a script file;
+  - a `sed` rewrite of the mutation runner: I wrote the new runner with the Write tool;
+  - a long heredoc append to this worklog: written to a scratch file and appended with `cat`.
+
+### DEV-p5-image-cves-07 bypasses, re-run against session 2's check
+
+The same 14 lines as session 1, each inserted before the API's new `RUN apk del` line. Every case was
+restored and `cmp`-checked (`restored yes` for all 14), and **all 14 exit 1**:
+- **B01–B06, B11–B13** are red on the text rules (option prefixes, quotes, exec form, "only the one
+  `RUN apk del --no-cache …` line may mention apk or APK_").
+- **B07, B09, B10** (built) are red on `/etc/apk … has paths its base … does not`, B07 also on the text
+  rule.
+- **B08** is red on the text rule.
+- **B14** (built; a hidden `apk add curl` before the del) is red on `world … > curl`. Because curl needs
+  them, apk kept ssl_client, libssl3, libcrypto3 and zlib, so the absence check flags those four too.
+
+### Gates (session 2, unpiped, exit codes from the commands)
+
+- **web** (`STUB_PORT=4801 PREVIEW_PORT=5973 PAGES_PORT=5974`, `DATABASE_URL` → a throwaway PostgreSQL
+  on 55580, stopped afterwards): `pnpm verify` exit 0.
+  - `All matched files use Prettier code style!`
+  - unit: `Test Files 42 passed (42)`, `Tests 443 passed (443)`
+  - integration: `Test Files 6 passed (6)`, `Tests 87 passed (87)`
+  - e2e: `42 passed (24.1s)`
+- **infra**: `pnpm verify` exit 0, with `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` pointed at
+  `/dev/null`, `AWS_EC2_METADATA_DISABLED=true` and no AWS variables.
+  - `All matched files use Prettier code style!`
+  - `Test Files 12 passed (12)`, `Tests 236 passed (236)`
+  - `Successfully synthesized`
+
+  Run this time because `infra/scripts/workflows.test.ts` reads the workflow files and ci.yml changed.
+- **The e2e-compose job's steps, locally** (project `ascrum-p5scan`, `IMAGE_TAG=p5scan`), each with its
+  own exit code:
+  - `docker compose --profile prod-check build`: exit 0.
+  - `docker/check-images.sh ascrum-api:p5scan ascrum-web:p5scan`: exit 0, ending `… the API loads and
+    starts, web OS package floors, API without apk/OpenSSL/zlib, package sources in both images`.
+  - `docker/scan-images.sh ascrum-api:p5scan ascrum-web:p5scan`: **exit 0**. `Trivy 0.76.2, vulnerability
+    DB built 2026-11-26T13:14:47Z`, then `scan-images: no failing finding in either image`, with the nginx
+    window notice (open; 6 + 10 nginx findings reported, not failing).
+  - `up --wait --wait-timeout 180`: exit 0 (db, api-prod and web-prod healthy).
+  - `pnpm e2e:compose`: exit 0, `48 passed (42.0s)`.
+  - `docker/check-client-address.sh`: exit 0.
+  - `docker/check-health.sh`: exit 0 (`AC-CTR-03: probes create no session; unhealthy without the
+    database; healthy again when it is back`).
+  - `down --volumes --remove-orphans`: exit 0.
+- **hadolint:** not used by this repo.
+- **Gitleaks 8.30.1** (the SHA-256-checked copy from session 1): on the staged session 2 change (~37 KB),
+  exit 0, `no leaks found`; on the branch's 4 commits so far (`--log-opts=origin/migration..HEAD`,
+  ~53 KB), exit 0, `no leaks found`.
