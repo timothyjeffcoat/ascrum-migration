@@ -211,3 +211,27 @@ and every failed or refused describe, = LEFTOVER) don't depend on the answer exc
 write them, with the grant, once this is answered.
 
 Owner answer (2026-11-26): (b).
+
+**Q-p5-infra-13. May the leftover check count an ECS service that ECS reports as MISSING as gone?** *(answered)*
+Context (review of #84, DEV-p5-infra-35):
+- The #84 leftover check counts a service as gone only when it is `INACTIVE`. A service in
+  DescribeServices' `failures` with reason `MISSING` stays a LEFTOVER.
+- The DeleteService reference says an INACTIVE service may be cleaned up and purged after a while; ECS
+  then no longer knows it.
+- Run 7 recreates the `ascrum-demo` cluster. Run 6's service ARN carries a random suffix, so if the
+  tagging index still lists it during run 7's check, ECS can only answer MISSING for it. Run 7 would
+  then fail on a run-6 ghost.
+
+Options:
+- (a) Keep MISSING as a leftover. That is safe, but it can fail a clean run until the tagging index
+  drops the entry.
+- (b) Count a service that `failures` names with reason exactly `MISSING` as gone. Only that ARN, only
+  if it was asked about, and only that reason. Any other failure reason, a failed call, or an ARN the
+  answer doesn't mention stays a LEFTOVER.
+
+Recommendation: (b).
+- An ECS service itself is not billed; only its tasks are. Tasks are still checked one by one: STOPPED
+  or MISSING is gone, anything else is a leftover.
+- A MISSING service therefore cannot hide running cost.
+
+Owner answer (2026-11-26): count a MISSING service as gone

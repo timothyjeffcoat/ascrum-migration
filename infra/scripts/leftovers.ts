@@ -62,14 +62,17 @@ export async function isGhost(aws: Aws, arn: string): Promise<boolean> {
 // ECS services and tasks (live run 6: both were still in the tagging index after the destroy, as INACTIVE
 // and STOPPED). They are described in batches per cluster: DescribeServices takes up to 10 services,
 // DescribeTasks up to 100 tasks (Amazon ECS API Reference).
-// - A service's status is ACTIVE, DRAINING or INACTIVE (API Reference, Service). Only INACTIVE is gone:
-//   DRAINING still runs tasks.
+// - A service's status is ACTIVE, DRAINING or INACTIVE (API Reference, Service). INACTIVE is gone, and so
+//   is a service the answer names in `failures` with reason MISSING: DeleteService says an INACTIVE service
+//   may be cleaned up and purged, after which ECS no longer knows it (Q-p5-infra-13, owner answer). A
+//   service is not billed; its tasks are, and they are checked one by one. DRAINING still runs tasks.
 // - A task's lastStatus moves through PROVISIONING, PENDING, ACTIVATING, RUNNING, DEACTIVATING, STOPPING,
 //   DEPROVISIONING to STOPPED (Developer Guide, "Amazon ECS task lifecycle"). Only STOPPED is gone, or a
 //   task DescribeTasks reports as a MISSING failure (it keeps stopped tasks "for at least one hour").
-// - Everything else is a leftover: any other state, a service reported MISSING, an ARN the answer does not
-//   mention, and every call that fails (refused, cluster not found, throttled past the CLI's retries).
-//   A call that fails never counts as gone.
+// - Everything else is a leftover: any other state, a failure with any reason but MISSING, an ARN the
+//   answer does not mention or mentions more than once, an answer that is not JSON, and every call that
+//   fails (refused, cluster not found, throttled past the CLI's retries). A call that fails never counts
+//   as gone, and an answer only clears ARNs its own call asked about.
 const ECS_BATCH = { service: 10, task: 100 } as const
 type EcsKind = keyof typeof ECS_BATCH
 
@@ -121,14 +124,18 @@ export async function ecsGhosts(aws: Aws, arns: string[]): Promise<Set<string>> 
         continue
       }
       const asked = new Set(batch)
-      const mark = (arn: string | undefined) => {
-        if (arn !== undefined && asked.has(arn)) gone.add(arn)
-      }
-      if (kind === 'service') {
-        for (const service of answer.services ?? []) if (service.status === 'INACTIVE') mark(service.serviceArn)
-      } else {
-        for (const task of answer.tasks ?? []) if (task.lastStatus === 'STOPPED') mark(task.taskArn)
-        for (const failure of answer.failures ?? []) if (failure.reason === 'MISSING') mark(failure.arn)
+      // Every entry of the answer as [ARN, says gone]; an ARN mentioned twice (or as found and as a failure)
+      // is a contradictory answer and stays a leftover.
+      const entries: [string | undefined, boolean][] = [
+        ...(kind === 'service'
+          ? (answer.services ?? []).map((s): [string | undefined, boolean] => [s.serviceArn, s.status === 'INACTIVE'])
+          : (answer.tasks ?? []).map((t): [string | undefined, boolean] => [t.taskArn, t.lastStatus === 'STOPPED'])),
+        ...(answer.failures ?? []).map((f): [string | undefined, boolean] => [f.arn, f.reason === 'MISSING']),
+      ]
+      const mentions = new Map<string, number>()
+      for (const [arn] of entries) if (arn !== undefined) mentions.set(arn, (mentions.get(arn) ?? 0) + 1)
+      for (const [arn, saysGone] of entries) {
+        if (saysGone && arn !== undefined && asked.has(arn) && mentions.get(arn) === 1) gone.add(arn)
       }
     }
   }

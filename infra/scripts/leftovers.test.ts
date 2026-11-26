@@ -18,6 +18,8 @@ const SERVICE = `arn:aws:ecs:${REGION}:${ACCOUNT}:service/ascrum-demo/AscrumDemo
 const TASK = `arn:aws:ecs:${REGION}:${ACCOUNT}:task/ascrum-demo/52eadf489a174a1db91daddd286dd6c6`
 const TASK_2 = `arn:aws:ecs:${REGION}:${ACCOUNT}:task/ascrum-demo/0123456789abcdef0123456789abcdef`
 const DEMO_CLUSTER = `arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/ascrum-demo`
+// A task of a second cluster (sec-03 / E2).
+const OTHER_TASK = `arn:aws:ecs:${REGION}:${ACCOUNT}:task/other-cluster/fedcba9876543210fedcba9876543210`
 
 async function check(world: FakeWorld, sleep: () => Promise<void> = async () => {}) {
   const { aws } = fakeAws(world)
@@ -193,13 +195,110 @@ describe('AC-AWS-04: the final leftover check', () => {
       expect(batches.map((c) => c.length - 7)).toEqual([10, 2]) // 7 = ecs, describe-services, --cluster, arn, --services, --region, region
     })
 
-    for (const status of ['ACTIVE', 'DRAINING', 'MISSING']) {
+    for (const status of ['ACTIVE', 'DRAINING']) {
       it(`AC-AWS-04 / live run 6: a ${status} service is a leftover`, async () => {
         const { report } = await check({ stacks: {}, tagged: tagged(SERVICE), serviceStatus: { [SERVICE]: status } })
         expect(report.ok).toBe(false)
         expect(report.remaining).toEqual([SERVICE])
       })
     }
+
+    // Q-p5-infra-13: DeleteService says an INACTIVE service may be purged; ECS then answers MISSING.
+    it('AC-AWS-04 / Q-p5-infra-13: a MISSING service is gone', async () => {
+      const { report } = await check({ stacks: {}, tagged: tagged(SERVICE), serviceStatus: { [SERVICE]: 'MISSING' } })
+      expect(report.ok).toBe(true)
+      expect(report.gone).toEqual([SERVICE])
+    })
+
+    it('AC-AWS-04 / Q-p5-infra-13: a service failure with any other reason is a leftover', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        serviceStatus: { [SERVICE]: 'failure:ACCESS_DENIED' },
+      })
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([SERVICE])
+    })
+
+    // sec-03 / E4, and the reviewer's W04 (the same mutation; the second reason checks "exactly MISSING").
+    for (const reason of ['ACCESS_DENIED', 'missing']) {
+      it(`AC-AWS-04 / sec-03 (E4, W04): a task failure with reason ${reason} is a leftover`, async () => {
+        const { report } = await check({
+          stacks: {},
+          tagged: tagged(TASK),
+          taskStatus: { [TASK]: `failure:${reason}` },
+        })
+        expect(report.ok).toBe(false)
+        expect(report.remaining).toEqual([TASK])
+      })
+    }
+
+    it('AC-AWS-04 / sec-03 (E2): a stray ARN in one cluster’s answer does not clear a candidate of another cluster whose call failed', async () => {
+      const fake = fakeAws({ stacks: {}, tagged: tagged(TASK, OTHER_TASK) })
+      const stopped = (arn: string) => ({ taskArn: arn, lastStatus: 'STOPPED' })
+      const report = await findLeftovers({
+        aws: async (args) => {
+          if (args[1] !== 'describe-tasks') return fake.aws(args)
+          if (args.includes(DEMO_CLUSTER))
+            return { code: 0, stderr: '', stdout: JSON.stringify({ tasks: [stopped(TASK), stopped(OTHER_TASK)] }) }
+          return {
+            code: 254,
+            stdout: '',
+            stderr: 'An error occurred (AccessDeniedException) when calling DescribeTasks',
+          }
+        },
+        region: REGION,
+        attempts: 1,
+      })
+      expect(report.gone).toEqual([TASK])
+      expect(report.remaining).toEqual([OTHER_TASK])
+    })
+
+    it('AC-AWS-04 / W01: an answer that is not JSON leaves the whole batch as leftovers', async () => {
+      const fake = fakeAws({ stacks: {}, tagged: tagged(TASK, TASK_2) })
+      const report = await findLeftovers({
+        aws: async (args) =>
+          args[1] === 'describe-tasks' ? { code: 0, stderr: '', stdout: '<html>not json' } : fake.aws(args),
+        region: REGION,
+        attempts: 1,
+      })
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([TASK, TASK_2])
+    })
+
+    it('AC-AWS-04 / W03: a ClusterNotFoundException leaves the whole batch as leftovers', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK, TASK_2),
+        taskStatus: { [TASK]: 'STOPPED', [TASK_2]: 'MISSING' },
+        ecsError: {
+          'describe-tasks':
+            'An error occurred (ClusterNotFoundException) when calling the DescribeTasks operation: Cluster not found.',
+        },
+      })
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([TASK, TASK_2])
+    })
+
+    it('AC-AWS-04 / sec-03 (hardening): an ARN the answer names twice, or as found and as a failure, is a leftover', async () => {
+      const fake = fakeAws({ stacks: {}, tagged: tagged(TASK, TASK_2) })
+      const answer = {
+        tasks: [
+          { taskArn: TASK, lastStatus: 'STOPPED' },
+          { taskArn: TASK, lastStatus: 'STOPPED' },
+          { taskArn: TASK_2, lastStatus: 'STOPPED' },
+        ],
+        failures: [{ arn: TASK_2, reason: 'MISSING' }],
+      }
+      const report = await findLeftovers({
+        aws: async (args) =>
+          args[1] === 'describe-tasks' ? { code: 0, stderr: '', stdout: JSON.stringify(answer) } : fake.aws(args),
+        region: REGION,
+        attempts: 1,
+      })
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([TASK, TASK_2])
+    })
 
     for (const status of ['RUNNING', 'PENDING', 'PROVISIONING', 'DEPROVISIONING', 'STOPPING']) {
       it(`AC-AWS-04 / live run 6: a ${status} task is a leftover`, async () => {

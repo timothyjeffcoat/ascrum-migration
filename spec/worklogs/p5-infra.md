@@ -1396,3 +1396,68 @@ The owner answered Q-p5-infra-12 with **(b)**, recorded under the question (comm
   - typecheck clean;
   - "Test Files 12 passed (12)", "Tests 172 passed (172)";
   - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-26, live run 6, round 3 (worker): #84 back for Q-p5-infra-13 and the test gaps (DEV-p5-infra-33/-34/-35)
+
+This round builds on the reviewer's commit 1d9c8fb, fast-forwarded, no force-push. No IAM change, so the
+expected bootstrap diff is unchanged from round 2.
+
+### A. Q-p5-infra-13: a MISSING ECS service is gone
+- I wrote up Q-p5-infra-13 in `spec/questions/p5-infra.md`: context from DEV-p5-infra-35, options (a)
+  and (b), recommendation (b). It carries the owner's answer, "Owner answer (2026-11-26): count a
+  MISSING service as gone".
+- `leftovers.ts` now treats each answer the same way for services and tasks. It builds a list of
+  [ARN, says gone] entries:
+  - service: `status === 'INACTIVE'`;
+  - task: `lastStatus === 'STOPPED'`;
+  - any `failures` entry: `reason === 'MISSING'`, exactly.
+- An entry clears an ARN only when all three hold:
+  - the entry says gone;
+  - this batch asked about that ARN;
+  - the answer names that ARN exactly once.
+- Any other failure reason stays a LEFTOVER, and so do a failed call and an answer that isn't JSON.
+- The comment cites DeleteService: an INACTIVE service may be cleaned up and purged.
+- **Optional hardening, done.** An ARN named twice, or as both found and failed, stays a LEFTOVER. It
+  was small once the classification was a single entries list.
+- The fake can now return `failure:<reason>` for any reason.
+
+### B. Tests (`leftovers.test.ts`)
+Renamed and changed:
+- "a MISSING service is a leftover" is now "AC-AWS-04 / Q-p5-infra-13: a MISSING service is gone".
+
+New:
+- Service failure: "… a service failure with any other reason is a leftover" (reason ACCESS_DENIED).
+- **E4 and W04:** "AC-AWS-04 / sec-03 (E4, W04): a task failure with reason … is a leftover", for
+  ACCESS_DENIED and lowercase `missing`. W04 is the same mutation as E4, so one test, looped over two
+  reasons, covers both. The lowercase case pins "exactly MISSING".
+- **E2:** "… a stray ARN in one cluster's answer does not clear a candidate of another cluster whose
+  call failed".
+  - OTHER_TASK, in `other-cluster`, is a candidate.
+  - The `ascrum-demo` call answers STOPPED for both TASK and OTHER_TASK.
+  - The `other-cluster` call is refused.
+  - Expected: gone `[TASK]`, remaining `[OTHER_TASK]`.
+- **W01:** "an answer that is not JSON leaves the whole batch as leftovers".
+- **W03:** "a ClusterNotFoundException leaves the whole batch as leftovers". The fake would have answered
+  STOPPED and MISSING for those tasks if the call had worked.
+- **Hardening:** "an ARN the answer names twice, or as found and as a failure, is a leftover".
+
+### Red/green evidence
+- **New tests against the round-1 script** (`leftovers.ts` from 1d9c8fb): "Tests 2 failed | 31 passed
+  (33)". The two failures are the MISSING-service test and the hardening test; both are new behaviour.
+  The E2, E4/W04, W01, W03 and service-reason tests pass on the round-1 code too. That matches the
+  reviewers' finding: the code already failed closed there, and only the tests were missing.
+- **Breakages, one at a time, each red, then restored green** ("Tests 33 passed (33)"):
+  - E2, `asked.has` removed: red on the E2 test (1 failed).
+  - E4/W04, any task failure reason counted as gone: red on both E4/W04 cases (2 failed).
+  - Any service failure reason counted as gone: red on the service-reason test (1 failed).
+  - Q-13, a MISSING service not counted as gone: red on the MISSING-service test (1 failed).
+  - W01, non-JSON counted as gone: red on the W01 test (1 failed).
+  - W03, ClusterNotFound counted as gone: red on the W03 test (1 failed).
+  - Hardening, duplicate mentions ignored: red on the hardening test (1 failed).
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck clean;
+  - "Test Files 12 passed (12)", "Tests 179 passed (179)";
+  - "Successfully synthesized to …/infra/cdk.out".

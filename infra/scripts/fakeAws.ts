@@ -17,9 +17,9 @@ export type FakeWorld = {
   tagged?: Record<string, Record<string, Record<string, string>>>
   taskDefinitionStatus?: Record<string, string>
   clusterStatus?: Record<string, string>
-  /** ECS service status by ARN (default ACTIVE); 'MISSING' answers with a MISSING failure. */
+  /** ECS service status by ARN (default ACTIVE); 'MISSING' or 'failure:<reason>' answers with a failure. */
   serviceStatus?: Record<string, string>
-  /** ECS task lastStatus by ARN (default RUNNING); 'MISSING' answers with a MISSING failure. */
+  /** ECS task lastStatus by ARN (default RUNNING); 'MISSING' or 'failure:<reason>' answers with a failure. */
   taskStatus?: Record<string, string>
   /** stderr of a failing ECS describe call, by command (describe-services, describe-tasks). */
   ecsError?: Record<string, string>
@@ -138,8 +138,12 @@ export function fakeAws(world: FakeWorld): { aws: Aws; calls: string[][] } {
       const asked = args.slice(start, end === -1 ? undefined : end)
       const states = (command === 'describe-services' ? world.serviceStatus : world.taskStatus) ?? {}
       const fallback = command === 'describe-services' ? 'ACTIVE' : 'RUNNING'
-      const found = asked.filter((arn) => states[arn] !== 'MISSING')
-      const failures = asked.filter((arn) => states[arn] === 'MISSING').map((arn) => ({ arn, reason: 'MISSING' }))
+      const reason = (arn: string) => {
+        const state = states[arn]
+        return state === 'MISSING' ? 'MISSING' : state?.startsWith('failure:') ? state.slice('failure:'.length) : null
+      }
+      const found = asked.filter((arn) => reason(arn) === null)
+      const failures = asked.filter((arn) => reason(arn) !== null).map((arn) => ({ arn, reason: reason(arn) }))
       return ok(
         command === 'describe-services'
           ? { services: found.map((arn) => ({ serviceArn: arn, status: states[arn] ?? fallback })), failures }
