@@ -1461,3 +1461,77 @@ New:
   - typecheck clean;
   - "Test Files 12 passed (12)", "Tests 179 passed (179)";
   - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-26, leftover reasons (worker): each LEFTOVER line says why it was kept
+
+### Why
+In live run 7 (45744570258) the check printed only `LEFTOVER …:task/ascrum-demo/c4e035ee… (us-west-2)`.
+The cause was a refused `ecs:DescribeTasks`: #84's bootstrap update landed after the run. Telling that
+apart from "the task is still stopping" took the owner two AWS commands. Runs 8 and 9, and the
+standalone destroy 45753370925, were green.
+
+### Change (`infra/scripts/leftovers.ts`; output only, decisions unchanged)
+- `ecsGhosts` takes an optional `reasons` map and fills it for every asked ARN that isn't gone:
+  - `describe refused: <code>` for an access-denied code;
+  - `describe failed: <code>`, or stderr's first line (trimmed, at most 160 characters) when the CLI
+    printed no code;
+  - `answer not JSON`;
+  - `not in the answer`;
+  - `named more than once`;
+  - `status <X>` (service) or `lastStatus <X>` (task);
+  - `failure reason <X>`.
+- The gone/leftover expressions are untouched. The reasons are worked out next to them, from the same
+  answer.
+- Every other leftover gets one of two reasons:
+  - `not checked: billable type`, for the S14 types `isGhost` never asks about;
+  - `asked: not reported deleted`, for task definitions, clusters and secrets `isGhost` asked about
+    that are still there. `isGhost` still returns only a boolean; I didn't change its logic.
+- **Account ids:** echoed error text goes through `redact` (12-digit numbers become `***`) in
+  `describeFailure`, and again when the line is formatted. The error code is preferred, so the usual
+  refused-call text, which names the role ARN, is never echoed at all.
+- `LeftoverReport` gains an optional `reasons` field. Exit codes and the summary lines ("Remaining: N",
+  "OK: …", "FAILED: …") are unchanged.
+
+Sample, from the fake (scratch script):
+```
+Remaining: 5
+  LEFTOVER arn:aws:ecs:us-west-2:***:service/ascrum-demo/AscrumDemo-ApiService-abc (us-west-2) (status DRAINING)
+  LEFTOVER arn:aws:ecs:us-west-2:***:task/denied/c4e035ee0000 (us-west-2) (describe refused: AccessDeniedException)
+  LEFTOVER arn:aws:ecs:us-west-2:***:task/ascrum-demo/running0001 (us-west-2) (lastStatus RUNNING)
+  LEFTOVER arn:aws:ecs:us-west-2:***:task/ascrum-demo/failed0002 (us-west-2) (failure reason ACCESS_DENIED)
+  LEFTOVER arn:aws:elasticloadbalancing:us-west-2:***:loadbalancer/app/ascrum-demo/abc (us-west-2) (not checked: billable type)
+FAILED: demo resources remain (AC-AWS-04).
+```
+
+### Tests (`leftovers.test.ts`, block "live run 7"; existing tests not edited, the diff is additions only)
+- 12 new tests:
+  - refused, with no account id on the line;
+  - failed (ClusterNotFoundException);
+  - error text with no code: first line only, 12-digit number scrubbed;
+  - `status ACTIVE` and `status DRAINING`;
+  - `lastStatus RUNNING`;
+  - `failure reason ACCESS_DENIED`;
+  - `not in the answer`;
+  - `answer not JSON`;
+  - `named more than once`;
+  - billable plus asked types;
+  - the summary lines are unchanged.
+- **Red without the reasons** (`leftovers.ts` of origin/migration): "Tests 11 failed | 34 passed (45)".
+  All 11 reason tests fail. The summary-lines test passes, as it should.
+- **Green with them:** "Tests 45 passed (45)". The 33 existing leftover tests pass unchanged.
+- **Breakages:**
+  - S1, only the `describeFailure` redact removed: **survived**. The format step still scrubs, so this
+    is defence in depth, not a test gap.
+  - S1b, both redact calls removed: red on the scrub test.
+  - S2, a refusal reported as a plain failure: red on the refused test.
+  - **D1, a decision change** (a refused or failed describe counted as gone): red on three existing
+    tests and three new ones: E2, W03, "a refused or throttled describe fails the check", plus the
+    refused, failed and scrub reason tests.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck clean;
+  - "Test Files 12 passed (12)", "Tests 191 passed (191)";
+  - "Successfully synthesized to …/infra/cdk.out".
+- No IAM change; no bootstrap update needed.

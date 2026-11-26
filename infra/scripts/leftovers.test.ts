@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { redact, type Aws } from './aws.ts'
 import { fakeAws, type FakeWorld } from './fakeAws.ts'
 import { findLeftovers, formatReport, isGhost } from './leftovers.ts'
 
@@ -352,6 +353,109 @@ describe('AC-AWS-04: the final leftover check', () => {
         'describe-task-definition',
         'describe-clusters',
       ])
+    })
+  })
+
+  // Live run 7: a refused DescribeTasks printed only "LEFTOVER …"; the line now says why it was kept.
+  describe('live run 7: each leftover line says why it was kept', () => {
+    const tagged = (...arns: string[]) => ({ [REGION]: Object.fromEntries(arns.map((a) => [a, demo])) })
+    const lineFor = (report: Awaited<ReturnType<typeof findLeftovers>>, arn: string) =>
+      formatReport(report).find((line) => line.startsWith('  LEFTOVER') && line.includes(redact(arn))) ?? ''
+    const answering = (world: FakeWorld, stdout: string) => {
+      const fake = fakeAws(world)
+      const aws: Aws = async (args) => (args[1] === 'describe-tasks' ? { code: 0, stderr: '', stdout } : fake.aws(args))
+      return findLeftovers({ aws, region: REGION, attempts: 1 })
+    }
+    const REFUSED = `An error occurred (AccessDeniedException) when calling the DescribeTasks operation: User: arn:aws:sts::${ACCOUNT}:assumed-role/ascrum-github-deploy/GitHubActions is not authorized to perform: ecs:DescribeTasks`
+
+    it('AC-AWS-04 / live run 7: a refused describe says "describe refused" with the error code, and no account id', async () => {
+      const { report } = await check({ stacks: {}, tagged: tagged(TASK), ecsError: { 'describe-tasks': REFUSED } })
+      const line = lineFor(report, TASK)
+      expect(line).toContain('(describe refused: AccessDeniedException)')
+      expect(line).not.toContain(ACCOUNT)
+    })
+
+    it('AC-AWS-04 / live run 7: a failed describe says "describe failed" with the error code', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK),
+        ecsError: {
+          'describe-tasks':
+            'An error occurred (ClusterNotFoundException) when calling the DescribeTasks operation: Cluster not found.',
+        },
+      })
+      expect(lineFor(report, TASK)).toContain('(describe failed: ClusterNotFoundException)')
+    })
+
+    it('AC-AWS-04 / live run 7: error text without a code is cut to its first line and 12-digit numbers are scrubbed', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        ecsError: {
+          'describe-services': `Could not connect to the endpoint for account ${ACCOUNT} in ${REGION}\nsecond line`,
+        },
+      })
+      const line = lineFor(report, SERVICE)
+      expect(line).toContain(`(describe failed: Could not connect to the endpoint for account *** in ${REGION})`)
+      expect(line).not.toContain(ACCOUNT)
+      expect(line).not.toContain('second line')
+    })
+
+    for (const status of ['ACTIVE', 'DRAINING']) {
+      it(`AC-AWS-04 / live run 7: a ${status} service says "(status ${status})"`, async () => {
+        const { report } = await check({ stacks: {}, tagged: tagged(SERVICE), serviceStatus: { [SERVICE]: status } })
+        expect(lineFor(report, SERVICE)).toContain(`(status ${status})`)
+      })
+    }
+
+    it('AC-AWS-04 / live run 7: a task still running says "(lastStatus RUNNING)"', async () => {
+      const { report } = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: 'RUNNING' } })
+      expect(lineFor(report, TASK)).toContain('(lastStatus RUNNING)')
+    })
+
+    it('AC-AWS-04 / live run 7: a failure that is not MISSING says "(failure reason …)"', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK),
+        taskStatus: { [TASK]: 'failure:ACCESS_DENIED' },
+      })
+      expect(lineFor(report, TASK)).toContain('(failure reason ACCESS_DENIED)')
+    })
+
+    it('AC-AWS-04 / live run 7: an ARN the answer leaves out says "(not in the answer)"', async () => {
+      const report = await answering({ stacks: {}, tagged: tagged(TASK) }, JSON.stringify({ tasks: [], failures: [] }))
+      expect(report.remaining).toEqual([TASK])
+      expect(lineFor(report, TASK)).toContain('(not in the answer)')
+    })
+
+    it('AC-AWS-04 / live run 7: an answer that is not JSON says "(answer not JSON)"', async () => {
+      const report = await answering({ stacks: {}, tagged: tagged(TASK) }, '<html>not json')
+      expect(lineFor(report, TASK)).toContain('(answer not JSON)')
+    })
+
+    it('AC-AWS-04 / live run 7: an ARN named twice says "(named more than once)"', async () => {
+      const stopped = { taskArn: TASK, lastStatus: 'STOPPED' }
+      const report = await answering(
+        { stacks: {}, tagged: tagged(TASK) },
+        JSON.stringify({ tasks: [stopped, stopped] }),
+      )
+      expect(lineFor(report, TASK)).toContain('(named more than once)')
+    })
+
+    it('AC-AWS-04 / live run 7: a billable type says "(not checked: billable type)"; an asked type that is still there says so', async () => {
+      const { report } = await check({ stacks: {}, tagged: tagged(ALB, TASK_DEF) })
+      expect(lineFor(report, ALB)).toContain('(not checked: billable type)')
+      expect(lineFor(report, TASK_DEF)).toContain('(asked: not reported deleted)')
+    })
+
+    it('AC-AWS-04 / live run 7: the summary lines are unchanged', async () => {
+      const failed = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: 'RUNNING' } })
+      const text = formatReport(failed.report)
+      expect(text).toContain('Remaining: 1')
+      expect(text.at(-1)).toBe('FAILED: demo resources remain (AC-AWS-04).')
+      const passed = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: 'STOPPED' } })
+      expect(formatReport(passed.report)).toContain('Remaining: 0')
+      expect(formatReport(passed.report).at(-1)).toBe('OK: nothing from the demo remains.')
     })
   })
 })
