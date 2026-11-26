@@ -1231,6 +1231,12 @@ These come from how the first post's comments went: every question was about tru
   - On the reasons themselves, 9 of the reviewer's 11 breakages were red. One survivor is by design: account ids are scrubbed twice, so removing one scrub changes nothing. The other is an untested 160-character cap.
   - Two low findings are open:
     - `asked: not reported deleted` also covers a cluster, task definition or secret whose describe call failed (DEV-p5-infra-37);
-    - AWS-supplied text is printed without its control characters stripped, so a line break could forge an "OK" line in the log, though not the exit code (sec-04, DEV-38). The owner decides whether sec-04 is fixed in #86.
-- **Gate results (reviewer, `13a0c57`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 191 passed (191)", synth OK. The workflow entry-point tests that pin the summary lines pass. The `rg` check found only the 4 known false positives. No IAM change, so no bootstrap update.
+    - AWS-supplied text is printed without its control characters stripped, so a line break could forge an "OK" line in the log, though not the exit code (sec-04, DEV-38). The owner approved fixing sec-04 in #86.
+- **Round 2 (`f40535c`).**
+  - **The fix.** `printable()` turns every C0, DEL and C1 control character into a space before the account-id scrub, and it applies to every printed reason, ARN, region and stack name. There are 4 new tests, and only `formatReport` changed, so no decision changed.
+  - **Breakages.** 6 of the reviewer's 11 breakages on the new code were red. The 5 survivors are correct code with no test: the `gone`, `kept`, region and stack lines, and DEL. The security re-check found the same (sec-06, DEV-40).
+  - **Security re-check.** It closed sec-04. It also found a pre-existing path outside the diff: an uncaught error can print raw AWS stderr, including the account id, into the evidence artifact (sec-05, DEV-41). The gate still fails closed.
+  - **Retention.** The leftover report is kept for 90 days, not 7, in two of its three artifacts. That is the owner's call (DEV-39).
+  - **Open.** -40 and -41 are low and open; the owner decides whether they go into #86.
+- **Gate results (reviewer, no AWS credentials).** On `13a0c57`: infra `pnpm verify` exit 0, "Tests 191 passed (191)", synth OK. On `f40535c`: exit 0, "Tests 195 passed (195)", synth OK. The workflow entry-point tests that pin the summary lines pass. The `rg` check found only the 4 known false positives. No IAM change, so no bootstrap update.
 - **Decision.** No blocking findings. Not merged; the owner merges.
