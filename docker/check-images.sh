@@ -299,9 +299,56 @@ API_RUNTIME_RUN_LITERALS=(
   'RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*'
   "RUN printf '{ \"type\": \"module\" }\\n' > web/package.json"
 )
+# The Dockerfile's shape, before its runtime RUNs are read (DEV-p5-image-scan-sec-03 and -sec-04, the
+# security re-check of round 2, which built and ran an untrusted apk past the RUN allowlist twice):
+#   - no heredoc anywhere (`<<` in any instruction, any stage). instructions() does not parse heredoc
+#     bodies, so a body line reading `FROM <pinned image>` started a "stage" and hid the real runtime
+#     stage's RUN. Neither Dockerfile uses one, so refusing them means the reader never has to parse them;
+#   - every logical instruction starts with a Dockerfile instruction keyword, so FROM is counted only as
+#     the keyword of an instruction (with heredocs refused, nothing else can put a line there);
+#   - no SHELL or ONBUILD in any stage: SHELL changes what every later RUN means (the repro put the apk
+#     call in SHELL's own `-c` string), ONBUILD runs instructions in a later build;
+#   - in the runtime stage, only the keywords that file uses today (RUNTIME_KEYWORDS). Anything else
+#     (ADD, VOLUME, ENTRYPOINT, ARG, LABEL, ...) fails; adding one is a reviewed edit here.
+# A Dependabot FROM bump changes none of these.
+declare -A RUNTIME_KEYWORDS=(
+  [docker/api.Dockerfile]='FROM ENV RUN WORKDIR COPY USER EXPOSE HEALTHCHECK CMD'
+  [docker/web.Dockerfile]='FROM ENV USER RUN COPY EXPOSE HEALTHCHECK'
+)
+DOCKERFILE_KEYWORDS=' FROM RUN CMD LABEL MAINTAINER EXPOSE ENV ADD COPY ENTRYPOINT VOLUME USER WORKDIR ARG ONBUILD STOPSIGNAL HEALTHCHECK SHELL '
+check_dockerfile_shape() {
+  local dockerfile=$1 line keyword stage=0 last=0 n=0
+  local -a kw=()
+  while IFS= read -r line; do
+    read -r keyword _ <<< "$line"
+    [[ -n $keyword ]] || continue # a blank line between instructions, which Docker ignores
+    keyword=${keyword^^}
+    n=$((n + 1))
+    kw[n]=$keyword
+    [[ $keyword != FROM ]] || last=$n
+    if [[ $line == *'<<'* ]]; then
+      fail "$dockerfile: a heredoc (<<) in an instruction; the reader does not parse heredoc bodies: $line"
+    fi
+    if [[ $DOCKERFILE_KEYWORDS != *" $keyword "* ]]; then
+      fail "$dockerfile: a line that does not start with a Dockerfile instruction keyword: $line"
+    elif [[ $keyword == SHELL || $keyword == ONBUILD ]]; then
+      fail "$dockerfile: $keyword is not allowed in any stage: $line"
+    fi
+  done < <(instructions "$dockerfile")
+  if [[ -z ${RUNTIME_KEYWORDS[$dockerfile]:-} ]]; then
+    fail "$dockerfile: no runtime keyword list in RUNTIME_KEYWORDS"
+    return
+  fi
+  for ((stage = last; stage >= 1 && stage <= n; stage++)); do
+    if [[ " ${RUNTIME_KEYWORDS[$dockerfile]} " != *" ${kw[stage]} "* ]]; then
+      fail "$dockerfile: ${kw[stage]} is not one of the runtime stage's permitted instructions (${RUNTIME_KEYWORDS[$dockerfile]})"
+    fi
+  done
+}
 check_runtime_runs() {
   local dockerfile=$1 verb=$2 line norm runs=0 lit literal w inner ok bad before=$findings
   local -a words literals=()
+  check_dockerfile_shape "$dockerfile"
   [[ $dockerfile != docker/api.Dockerfile ]] || literals=("${API_RUNTIME_RUN_LITERALS[@]}")
   while IFS= read -r line; do
     read -ra words <<< "$line"
