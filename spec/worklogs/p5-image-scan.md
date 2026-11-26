@@ -482,3 +482,133 @@ restored and `cmp`-checked (`restored yes` for all 14), and **all 14 exit 1**:
 - **Gitleaks 8.30.1** (the SHA-256-checked copy from session 1): on the staged session 2 change (~37 KB),
   exit 0, `no leaks found`; on the branch's 4 commits so far (`--log-opts=origin/migration..HEAD`,
   ~53 KB), exit 0, `no leaks found`.
+
+## 2026-11-26, session 3 (worker): PR #88 round 2 (DEV-p5-image-scan-05, -07 A/B, -04 (a))
+
+The reviewer's commit (deviations, MIGRATION, journal) was pulled with `git pull --ff-only` first; this
+session did not touch those files. Scope was exactly the round-2 brief: no other change.
+
+### DEV-p5-image-scan-05 (sec-01): a runtime-stage RUN allowlist
+
+The hole: `check_apk` chose which instructions to inspect with a grep for `apk`/`APK_` on the raw text, so
+a name the shell joins later (`ap''k`, `"ap"k`, `a\pk`, `$(echo ap)k`) was never inspected. Two changes in
+`docker/check-images.sh`:
+
+1. **`check_runtime_runs`**, called from `check_apk` for each image. It takes the runtime stage (every
+   instruction after the last FROM, continuation lines already joined by `instructions()`, whitespace
+   collapsed) and requires every RUN in it to be one of the permitted forms:
+   - web: `RUN apk add --no-cache` followed only by whole-word single-quoted floors matching `APK_FLOOR`;
+   - API: `RUN apk del --no-cache` followed only by bare names matching `APK_NAME`, plus two fixed
+     literals (`API_RUNTIME_RUN_LITERALS`): the `rm -rf` of npm/corepack/yarn and the
+     `printf '{ "type": "module" }\n' > web/package.json` line, compared byte for byte.
+
+   A RUN that is not one of the two literals first fails if it holds `$(`, a backtick, `${`, any backslash
+   (continuations are joined before this, so any remaining backslash is not one) or a quote that splits a
+   word (only a whole word may be quoted, `'zlib>=1.4-r0'` passes, `ap''k` and `"ap"k` do not). Any other
+   RUN in the runtime stage fails, whatever it says.
+
+   **The printf line.** It holds `\n` and quoted words with spaces, so the metacharacter rule would reject
+   it. It is exempt only because its whole text is a fixed literal: change a byte and it is "not a
+   permitted form". This is the one judgement call; recorded here for the reviewer rather than asked,
+   because the brief said "anything else already there: list them", and listing it as an exact literal
+   is stricter than a metacharacter rule could be.
+
+   **Dependabot.** A base-image bump rewrites only the FROM line (tag and digest). The allowlist compares
+   RUN instructions only, and the stage boundary is found by the FROM keyword, not its value, so a FROM
+   bump needs no allowlist edit. What does need an edit is a new RUN in a runtime stage, which is the point.
+   A floor that a bump makes unnecessary still passes the allowlist; removing it is the existing
+   "if the base image now has the fixes, remove this check with the step" path.
+2. **The apk/APK_ filter** (which still covers every stage, the build stages included) now runs on the
+   text with `'`, `"` and `\` removed, so `ap''k`, `"ap"k` and `a\pk` are inspected as `apk` in any stage.
+   Spellings through `$(…)`, backticks or `${…}` are not something a text filter can see; in the runtime
+   stage the allowlist rejects them, in build stages nothing ships from them except through COPY.
+
+**Red/green** (each line planted into the Dockerfile in a scratch copy run, restored afterwards and
+`cmp`-checked: `restored yes` for all ten; "before" = the check as committed at f987dfb):
+
+| id | planted (web unless marked) | before | after | caught by |
+|---|---|---|---|---|
+| C1 | `RUN ap''k --allow-untrusted -X https://dl-cdn.alpinelinux.org/alpine/edge/main add --no-cache 'zlib>=1.4-r0'` before the floor line; **image built** (exit 0) | **exit 0** | exit 1 | quote-split word; normalised filter: `--allow-untrusted`, `-X`, second apk line |
+| C2 | `RUN a\pk --allow-untrusted add --no-cache 'zlib>=1.4-r0'` | **exit 0** | exit 1 | backslash; normalised filter |
+| C3 | `RUN "ap"k --allow-untrusted add --no-cache 'zlib>=1.4-r0'` | **exit 0** | exit 1 | quote-split word; normalised filter |
+| C4 | `RUN $(echo ap)k --allow-untrusted add --no-cache 'zlib>=1.4-r0'` | **exit 0** | exit 1 | `$(` (the allowlist alone: no text filter sees this one) |
+| C5 | `RUN X=apk && ${X} --allow-untrusted add --no-cache 'zlib>=1.4-r0'` | exit 1 | exit 1 | `${` (before: only because the word `apk` appears in `X=apk`) |
+| C6 | ``RUN `echo apk` --allow-untrusted add --no-cache 'zlib>=1.4-r0'`` | exit 1 | exit 1 | backtick |
+| C7 | `RUN X=apk; $X --allow-untrusted add --no-cache curl` | exit 1 | exit 1 | not a permitted form |
+| C8 | API: C1's line with `zlib`, before the `apk del` line | **exit 0** | exit 1 | quote-split word; normalised filter |
+| C9 | the real floor line rewritten as `RUN a\pk add --no-cache …` (same eleven floors) | exit 1 | exit 1 | backslash (before: only the world/floors-missing side effects) |
+| C10 | API: `RUN apk del --no-cache … libcrypto3 $(echo zlib)` | exit 1 | exit 1 | `$(`; not a package name |
+
+C1 was built, as the reviewer did, to show the image really changes; C2–C10 are text cases, so they were
+run against the real images. Green: the real Dockerfiles give
+`docker/api.Dockerfile: the runtime stage's 3 RUN instruction(s) are all permitted forms` and
+`docker/web.Dockerfile: the runtime stage's 1 RUN instruction(s) are all permitted forms`, check exit 0.
+
+### DEV-p5-image-scan-07 note A: the warning annotation's data
+
+`gha_data` in `docker/scan-images.sh` drops everything but printable ASCII, CR and LF, then escapes as the
+Actions toolkit's `escapeData` does, `%` first (`%`→`%25`, CR→`%0D`, LF→`%0A`). The whole message goes
+through it, not only `window_reason`. Test (the function extracted from the script, not a copy), with a
+planted reason `nginx 1.30.6-r0 < 1.30.7-r0` + LF + `::error::planted second command %0A literal` + CR +
+`\x01` + `é` + ` end`:
+`::warning title=t::nginx 1.30.6-r0 < 1.30.7-r0%0A::error::planted second command %250A literal%0D end`:
+no newline left (one line), the literal `%0A` became `%250A`, the LF became `%0A`, the CR `%0D`, and the
+control byte and the non-ASCII bytes were dropped.
+
+### DEV-p5-image-scan-07 note B: `--pull never`
+
+Every `docker run` in both scripts now has `--pull never` (9 in check-images, 3 in scan-images; a grep for
+`docker run ` without it finds none). The one image that was being pulled implicitly, the start-up check's
+PostgreSQL (`services.db.image` from the compose file, pinned by digest and checked by the pin check), is
+now pulled explicitly by that digest when it is not present, just before the check: a consequence of the
+flag, not a new behaviour. Proof:
+
+- `docker run --pull never --rm --network none --entrypoint sh ascrum-web:does-not-exist-p5scan -c true`:
+  `Error response from daemon: No such image`, exit 125, and `docker events --filter type=image` over the
+  run shows **0** image events (no pull attempted).
+- `docker/scan-images.sh ascrum-api:p5scan ascrum-web:does-not-exist-p5scan`: the API scanned as usual,
+  then `scan-images FAIL: ascrum-web:does-not-exist-p5scan: could not count the packages in
+  /lib/apk/db/installed`, exit 1, with no pull.
+
+### DEV-p5-image-scan-04 (a), optional, done because it was three lines
+
+`scan-images.sh` now refuses any Trivy whose `--version` is not exactly `PINNED_TRIVY_VERSION=0.76.2`
+(exit 2), and the action's comment says to move the two together. A fake `trivy` printing
+`Version: 0.69.4`: `scan-images: … is Trivy '0.69.4', not the pinned 0.76.2`, exit 2. Part (b) (comparing
+the Node package count) was not in the brief and was not done.
+
+### Mistakes and wrong turns, session 3
+
+- **Guard refusal.** My first edit to `scan-images.sh` was a single Bash call (a Python rewrite plus a
+  test). The worktree guard refused it as too complex to verify. Following the standing rule, I did not
+  re-spell it as another shell command; I made the edit with the Edit tool and ran the test from a
+  scratch script.
+- **The reviewer's list was short by one.** The deviation names `ap''k`, `a\pk` and `$(echo ap)k`.
+  Running the old check showed `"ap"k` passing too (C3), and the same hole in the API Dockerfile (C8).
+  Conversely `${X}` (C5) was already red before the fix, but only by luck: the planted line also held
+  the word `apk` in `X=apk`.
+- **Normalising alone would not have closed it.** C4 (`$(echo ap)k`) is caught only by the allowlist's
+  metacharacter rule. A text filter cannot list every way a shell can build a command name, which is why
+  the allowlist, not the filter, is the fix.
+
+### Gates (session 3, unpiped, exit codes from the commands)
+
+- **The e2e-compose job's steps, locally** (project `ascrum-p5scan`, `IMAGE_TAG=p5scan`), each with its
+  own exit code:
+  - `docker compose --profile prod-check build`: exit 0.
+  - `docker/check-images.sh ascrum-api:p5scan ascrum-web:p5scan`: exit 0, with both "all permitted forms"
+    lines above and ending `… web OS package floors, API without apk/OpenSSL/zlib, package sources in
+    both images`.
+  - `docker/scan-images.sh ascrum-api:p5scan ascrum-web:p5scan`: exit 0. `Trivy 0.76.2, vulnerability DB
+    built 2026-11-26T13:14:47Z, downloaded 2026-11-26T18:40:04Z`, then `scan-images: no failing finding
+    in either image`, with the nginx window notice (still open).
+  - `up --wait`: exit 0. `pnpm e2e:compose`: exit 0, `48 passed (39.9s)`.
+  - `docker/check-client-address.sh`: exit 0. `docker/check-health.sh`: exit 0. `down`: exit 0.
+- **infra `pnpm verify`:** not run. `.github/workflows/ci.yml` did not change this session (only the
+  setup-trivy action's comment did), and the brief asks for it only if ci.yml changes.
+- **web `pnpm verify`:** not run; nothing under `web/` changed.
+- **Gitleaks 8.30.1** (the SHA-256-checked copy from session 1): on the staged session 3 change (~16 KB),
+  exit 0, `no leaks found`; on the branch's 8 commits (`--log-opts=origin/migration..HEAD`, ~118 KB),
+  exit 0, `no leaks found`. A first run scanned **0 bytes** staged, because my combined `git add … &&
+  git status … && grep …` had been refused by the worktree guard and nothing was staged; caught by
+  reading the byte count, staged with separate commands, and re-run.
