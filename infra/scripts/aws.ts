@@ -50,25 +50,20 @@ export function redact(text: string): string {
   return text.replace(/\b\d{12}\b/g, '***')
 }
 
-// Characters that move text without being visible: line and paragraph separators, bidi controls and
-// zero-width characters (DEV-p5-infra-38). Together with C0, DEL and C1 below, none can forge a line or
-// hide text in a log or an evidence file.
-const INVISIBLE = new Set([
-  0x2028, 0x2029, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b,
-  0x200c, 0x200d, 0xfeff,
-])
-
 /**
- * AWS-supplied text made safe to print: every control character becomes a space, so it cannot start a
- * new line, move the cursor or hide text (no forged "OK: …" or "Remaining: 0" line and no `::` workflow
- * command in the log or the evidence file; sec-04). C0 (U+0000-U+001F), DEL (U+007F), C1 (U+0080-U+009F,
- * which holds an 8-bit CSI) and the INVISIBLE set are covered. Then the 12-digit scrub.
+ * AWS-supplied text made safe to print (sec-04; Q-p5-infra-14, owner answer (a)): only printable ASCII,
+ * U+0020-U+007E, is kept. Every other code point becomes one space, so nothing can start a new line, move
+ * the cursor, reorder or hide text: no forged "OK: ..." or "Remaining: 0" line and no `::` workflow command
+ * in a log or an evidence file. That covers C0, DEL, C1, line separators, bidi controls, zero-width and
+ * format characters, variation selectors and tag characters; `for ... of` walks code points, so a surrogate
+ * pair becomes one space. Then the existing 12-digit scrub. A removed character between digits is now a
+ * space, which separates numbers for redact() just as an ASCII space does.
  */
 export function printable(text: string): string {
   let out = ''
   for (const char of text) {
     const code = char.codePointAt(0) ?? 0
-    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) || INVISIBLE.has(code) ? ' ' : char
+    out += code >= 0x20 && code <= 0x7e ? char : ' '
   }
   return redact(out)
 }

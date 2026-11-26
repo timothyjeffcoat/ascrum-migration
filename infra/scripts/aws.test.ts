@@ -101,3 +101,31 @@ describe('sec-05: awsErrorLine() turns stderr into one short printable line', ()
     expect(printable('OK\u007fDEL')).toBe('OK DEL')
   })
 })
+
+describe('Q-p5-infra-14 (a): printable() keeps only printable ASCII, U+0020-U+007E', () => {
+  const ch = (code: number) => String.fromCodePoint(code)
+
+  it('Q-p5-infra-14: each previously missed character, and a non-ASCII letter, becomes one space', () => {
+    // U+061C Arabic letter mark, U+180E Mongolian vowel separator, U+2060 word joiner, U+00AD soft hyphen,
+    // U+FE0F variation selector-16, U+E0041 tag letter A (a surrogate pair: one code point), U+00E9 e-acute.
+    for (const code of [0x061c, 0x180e, 0x2060, 0x00ad, 0xfe0f, 0xe0041, 0x00e9]) {
+      expect(printable(`a${ch(code)}b`), `U+${code.toString(16).toUpperCase()}`).toBe('a b')
+    }
+    expect(printable(`caf${ch(0xe9)} ${ch(0xe0041)}${ch(0xe0042)}!`)).toBe('caf    !')
+  })
+
+  it('Q-p5-infra-14: every printable ASCII character is kept as it is', () => {
+    const ascii = Array.from({ length: 0x7f - 0x20 }, (_, i) => String.fromCharCode(0x20 + i)).join('')
+    expect(printable(ascii)).toBe(ascii)
+  })
+
+  it('Q-p5-infra-14: the 12-digit scrub runs after the replacement', () => {
+    // A plain account id is still scrubbed, and one next to a removed character too.
+    expect(printable('id 123456789012 x')).toBe('id *** x')
+    expect(printable(`arn:aws:sts::123456789012${ch(0x200b)}:x`)).toBe('arn:aws:sts::*** :x')
+    // A removed character between digits becomes a space, and a space separates numbers for redact(), as an
+    // ASCII space always has: these digits do not join up into 12, so neither half is scrubbed.
+    expect(printable(`id 123456${ch(0x00ad)}789012 x`)).toBe('id 123456 789012 x')
+    expect(printable('id 123456 789012 x')).toBe('id 123456 789012 x')
+  })
+})

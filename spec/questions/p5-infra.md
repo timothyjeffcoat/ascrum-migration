@@ -236,7 +236,7 @@ Recommendation: (b).
 
 Owner answer (2026-11-26): count a MISSING service as gone
 
-**Q-p5-infra-14. An ASCII-only `printable()` would blank the "§" in the image-scan verdict.** *(open, blocks item 2 of #86's final round)*
+**Q-p5-infra-14. An ASCII-only `printable()` would blank the "§" in the image-scan verdict.** *(answered 2026-11-26)*
 
 Context: the brief for #86's final round says to make `printable()` keep only U+0020–U+007E (DEV-38
 residual), and to stop and ask if anything we print legitimately needs non-ASCII.
@@ -271,3 +271,5 @@ stays readable.
 
 Not done in this round: item 2 (the ASCII rule and its test). Items 1 and 3 are done and don't depend
 on the answer.
+
+Owner answer (2026-11-26): (a) — printable() keeps only ASCII U+0020–U+007E; the image-scan verdict says 'spec section 6'.

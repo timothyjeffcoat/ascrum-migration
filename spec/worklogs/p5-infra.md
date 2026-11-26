@@ -1765,3 +1765,36 @@ no existing test was edited. No IAM change.
   - typecheck and eslint clean;
   - "Test Files 12 passed (12)", "Tests 223 passed (223)";
   - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-26, leftover reasons, round 5 (worker): Q-p5-infra-14 (a), ASCII-only printable()
+
+Owner answered Q-p5-infra-14 with (a), recorded in `spec/questions/p5-infra.md`.
+
+- `infra/scripts/aws.ts` `printable()`: every code point outside U+0020-U+007E becomes one space (`for … of`
+  walks code points, so a surrogate pair such as U+E0041 is one space), then the existing `redact()`. The
+  INVISIBLE set is gone; the ASCII rule covers it. `commandData()` is unchanged (printable, then `%`→`%25`).
+- `infra/scripts/imageScan.ts`: the verdict says "spec section 6". The plain `scan <status> (on push)` log
+  line is untouched (logged follow-up).
+- Tests (`aws.test.ts`, describe "Q-p5-infra-14 (a)"): U+061C, U+180E, U+2060, U+00AD, U+FE0F, U+E0041 and é
+  each become one space; all of printable ASCII is kept; the 12-digit scrub runs after the replacement.
+  `imageScan.test.ts`: the blocking verdict is exactly the new ASCII text.
+- **What the scrub does with split digits (stated and tested):** a removed character between digits becomes
+  a space, and a space separates numbers for `redact()` (`\b\d{12}\b`), as an ASCII space always has. So
+  `123456<U+00AD>789012` prints as `123456 789012` and is **not** scrubbed. An unsplit id next to a removed
+  character is still scrubbed. Possible follow-up for the reviewer: scrub digits joined only by removed
+  characters as one id; not done, because the brief says "then the existing 12-digit scrub".
+- Red/green: with e26cf17's `aws.ts` put back temporarily, `vitest run scripts/aws.test.ts` gave
+  "Tests 2 failed | 12 passed (14)" (U+61C: expected 'a؜b' to be 'a b'; the soft-hyphen case kept U+00AD).
+  With the new `aws.ts`: green (below).
+
+Wrong turns:
+- I first wrote a wider scrub: removed characters became a placeholder, and digits joined only by
+  placeholders were scrubbed as one id before the spaces went in. That is more than the brief's "then the
+  existing 12-digit scrub", so I reverted it before committing and left it as the follow-up above.
+- The Edit tool wrote my `؜`-style escapes in the new tests as literal invisible characters (found by
+  `grep -P '[^\x00-\x7f]'`). I rewrote the tests to build the characters with `String.fromCodePoint`, so the
+  source holds no invisible characters.
+
+Gates (credentials pointed at /dev/null, run unpiped): infra `pnpm verify` exit 0,
+"Test Files  12 passed (12)", "Tests  227 passed (227)", "Successfully synthesized". gitleaks on the staged
+change: "no leaks found".

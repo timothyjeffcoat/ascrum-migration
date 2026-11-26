@@ -179,7 +179,8 @@ export function verdict(summary: ScanSummary): string | null {
     return `The image scan did not complete (${summary.status}); the image-scan gate passes only a completed scan.`
   }
   const blocking = blockingCount(summary)
-  if (blocking !== 0) return `The API image has ${blocking} HIGH or CRITICAL findings (image-scan gate, spec §6).`
+  if (blocking !== 0)
+    return `The API image has ${blocking} HIGH or CRITICAL findings (image-scan gate, spec section 6).`
   return null
 }
 

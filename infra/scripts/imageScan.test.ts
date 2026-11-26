@@ -207,6 +207,14 @@ describe('spec §6 image-scan: the scan gate', () => {
     expect(verdict(summary)).toMatch(/2 HIGH or CRITICAL findings/)
   })
 
+  // Q-p5-infra-14 (a): the verdict goes through printable(), which keeps only ASCII, so it says "section".
+  it('Q-p5-infra-14: the blocking verdict is plain ASCII and cites "spec section 6"', async () => {
+    const summary = await run(scripted([findings('COMPLETE', { HIGH: 1 })]).aws)
+    const text = verdict(summary) ?? ''
+    expect(text).toBe('The API image has 1 HIGH or CRITICAL findings (image-scan gate, spec section 6).')
+    expect([...text].every((char) => char >= ' ' && char <= '~')).toBe(true)
+  })
+
   it('image-scan (live run 3): a finding without package attributes keeps null package fields', async () => {
     const summary = await run(scripted([findings('COMPLETE', { MEDIUM: 1 })]).aws)
     expect(summary.findings).toEqual([
