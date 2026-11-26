@@ -1535,3 +1535,63 @@ FAILED: demo resources remain (AC-AWS-04).
   - "Test Files 12 passed (12)", "Tests 191 passed (191)";
   - "Successfully synthesized to …/infra/cdk.out".
 - No IAM change; no bootstrap update needed.
+
+## 2026-11-26, leftover reasons, round 2 (worker): sec-04, control characters in printed AWS text
+
+### Finding
+sec-04 (low), from the security review of #86. AWS-supplied text reached stdout and the tee'd evidence
+file with its control characters intact:
+- the `status`, `lastStatus` and `failure reason` values are interpolated raw from ECS's JSON;
+- `describeFailure` drops `\n` but keeps `\r`, ESC and the rest.
+
+A `\n` or `\r` could forge a line ("OK: nothing from the demo remains.", "Remaining: 0") or start a `::`
+workflow command. The exit code was never affected.
+
+### Fix (`formatReport` only; no decision changed)
+- New `printable()`: it replaces every control character with a space, then applies the existing
+  12-digit scrub. It covers C0 (U+0000–U+001F), DEL (U+007F) and also C1 (U+0080–U+009F). C1 goes
+  beyond the brief's range on purpose: U+009B is an 8-bit CSI, so it can start an ANSI sequence like
+  ESC can.
+- It is applied once, in `formatReport`, to every reason, so future reason kinds are covered as well.
+- **The ARNs get the same treatment.** They come from the tagging index, which is AWS-supplied text,
+  so every kept, gone and LEFTOVER ARN, the region printed beside it, and the stack list all go through
+  `printable()`.
+- The check is a code-point loop, not a regex. A control-character regex trips eslint's
+  `no-control-regex`, and disabling a lint rule isn't allowed.
+
+### Tests (`leftovers.test.ts`, 4 new)
+- A `status` of "ACTIVE\nOK: nothing from the demo remains.\nRemaining: 0":
+  - no physical output line starts with "OK:";
+  - the only "Remaining:" line is "Remaining: 1";
+  - there is exactly one LEFTOVER line, and it carries the whole text.
+- A `failure reason` with `\r`, `ESC[2K` and U+009B prints with no control characters.
+- A stderr first line of "connection reset\r::add-mask::x": no physical line starts with "::". Lines
+  are split on `\r\n`, `\r` and `\n`.
+- A tagged ARN containing `\n::warning::…\rOK: …`: no forged line. It is still a leftover, with its
+  ARN unchanged in the report.
+
+### Red/green evidence
+- **New tests against 13a0c57** (no stripping): "Tests 4 failed | 45 passed (49)". All four sec-04
+  tests fail.
+- **With the fix:** "Tests 49 passed (49)".
+- **Breakages:**
+  - M1, ARNs only redacted, not stripped: red on the ARN test.
+  - M2, C1 controls kept: red on the ESC test.
+  - M3, only `\n` stripped: red on the ESC, `::` and ARN tests.
+
+### Known difference, not changed (the owner's call)
+The security reviewer noted a difference in how long the leftover report is kept:
+- `deploy-demo.yml`'s per-job `destroy-evidence` artifact: 7 days.
+- `destroy-demo.yml`'s `destroy-evidence-<run>-<attempt>` artifact: 90 days.
+
+The deploy run also bundles everything into `demo-evidence-…`, which is kept for 90 days. So in both
+workflows, a leftover report that now carries reasons can sit in an artifact for 90 days. Left as it
+is: retention is the owner's decision.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck and eslint clean;
+  - "Test Files 12 passed (12)", "Tests 195 passed (195)";
+  - "Successfully synthesized to …/infra/cdk.out".
+- No IAM change; no bootstrap update needed.

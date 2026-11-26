@@ -248,17 +248,33 @@ export async function findLeftovers(options: {
   return report
 }
 
+/**
+ * AWS-supplied text (ARNs from the tagging index, stack states, reasons built from ECS answers and CLI
+ * errors) with every control character replaced by a space, so it cannot start a new line, move the
+ * cursor or hide text: no forged "OK: …" or "Remaining: 0" line and no `::` workflow command in the log
+ * or the evidence file (sec-04). C0 (U+0000-U+001F), DEL (U+007F) and C1 (U+0080-U+009F, which holds an
+ * 8-bit CSI) are all covered. Then the 12-digit scrub, as before.
+ */
+export function printable(text: string): string {
+  let out = ''
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? ' ' : char
+  }
+  return redact(out)
+}
+
 export function formatReport(report: LeftoverReport): string[] {
   const lines = [
-    `Demo stacks still present: ${report.stacks.length === 0 ? 'none' : report.stacks.join(', ')}`,
+    `Demo stacks still present: ${report.stacks.length === 0 ? 'none' : printable(report.stacks.join(', '))}`,
     `Kept (one-time bootstrap, ascrum-env=${TAG.bootstrap}): ${report.kept.length}`,
-    ...report.kept.map((arn) => `  kept     ${redact(arn)}`),
+    ...report.kept.map((arn) => `  kept     ${printable(arn)}`),
     `Deleted, still in the tagging index (inactive or pending deletion): ${report.gone.length}`,
-    ...report.gone.map((arn) => `  gone     ${redact(arn)}`),
+    ...report.gone.map((arn) => `  gone     ${printable(arn)}`),
     `Remaining: ${report.remaining.length}`,
     ...report.remaining.map((arn) => {
       const reason = report.reasons?.[arn]
-      return `  LEFTOVER ${redact(arn)} (${regionOf(arn)})${reason ? ` (${redact(reason)})` : ''}`
+      return `  LEFTOVER ${printable(arn)} (${printable(regionOf(arn))})${reason ? ` (${printable(reason)})` : ''}`
     }),
     report.ok ? 'OK: nothing from the demo remains.' : 'FAILED: demo resources remain (AC-AWS-04).',
   ]

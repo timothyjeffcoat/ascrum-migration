@@ -448,6 +448,57 @@ describe('AC-AWS-04: the final leftover check', () => {
       expect(lineFor(report, TASK_DEF)).toContain('(asked: not reported deleted)')
     })
 
+    // sec-04: AWS-supplied text must not forge lines, hide text or inject workflow commands.
+    const physicalLines = (lines: string[]) => lines.join('\n').split(/\r\n|\r|\n/)
+    const hasControl = (line: string) =>
+      [...line].some((char) => {
+        const code = char.codePointAt(0) ?? 0
+        return code < 0x20 || (code >= 0x7f && code <= 0x9f)
+      })
+
+    it('AC-AWS-04 / sec-04: a status with a newline stays on its LEFTOVER line and cannot forge "OK:"', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        serviceStatus: { [SERVICE]: 'ACTIVE\nOK: nothing from the demo remains.\nRemaining: 0' },
+      })
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('OK:'))).toEqual([])
+      expect(lines.filter((line) => line.startsWith('Remaining:'))).toEqual(['Remaining: 1'])
+      expect(lines.filter((line) => line.startsWith('  LEFTOVER'))).toHaveLength(1)
+      expect(lineFor(report, SERVICE)).toContain('(status ACTIVE OK: nothing from the demo remains. Remaining: 0)')
+    })
+
+    it('AC-AWS-04 / sec-04: a failure reason with a carriage return and an ESC sequence prints without control characters', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK),
+        taskStatus: { [TASK]: 'failure:ACCESS\r\u001b[2K\u009b2KDENIED' },
+      })
+      const text = formatReport(report).join('\n')
+      expect(text.split('\n').some((line) => hasControl(line))).toBe(false)
+      expect(lineFor(report, TASK)).toContain('(failure reason ACCESS  [2K 2KDENIED)')
+    })
+
+    it('AC-AWS-04 / sec-04: error text with "\\r::add-mask::" cannot start an output line with "::"', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(TASK),
+        ecsError: { 'describe-tasks': 'connection reset\r::add-mask::x\nsecond line' },
+      })
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('::'))).toEqual([])
+      expect(lineFor(report, TASK)).toContain('(describe failed: connection reset ::add-mask::x)')
+    })
+
+    it('AC-AWS-04 / sec-04: an ARN from the tagging index is printed without control characters too', async () => {
+      const forged = `${ALB}\n::warning::forged\rOK: nothing from the demo remains.`
+      const { report } = await check({ stacks: {}, tagged: tagged(forged) })
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('::') || line.startsWith('OK:'))).toEqual([])
+      expect(report.remaining).toEqual([forged])
+    })
+
     it('AC-AWS-04 / live run 7: the summary lines are unchanged', async () => {
       const failed = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: 'RUNNING' } })
       const text = formatReport(failed.report)
