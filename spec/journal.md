@@ -1237,6 +1237,11 @@ These come from how the first post's comments went: every question was about tru
   - **Breakages.** 6 of the reviewer's 11 breakages on the new code were red. The 5 survivors are correct code with no test: the `gone`, `kept`, region and stack lines, and DEL. The security re-check found the same (sec-06, DEV-40).
   - **Security re-check.** It closed sec-04. It also found a pre-existing path outside the diff: an uncaught error can print raw AWS stderr, including the account id, into the evidence artifact (sec-05, DEV-41). The gate still fails closed.
   - **Retention.** The leftover report is kept for 90 days, not 7, in two of its three artifacts. That is the owner's call (DEV-39).
-  - **Open.** -40 and -41 are low and open; the owner decides whether they go into #86.
-- **Gate results (reviewer, no AWS credentials).** On `13a0c57`: infra `pnpm verify` exit 0, "Tests 191 passed (191)", synth OK. On `f40535c`: exit 0, "Tests 195 passed (195)", synth OK. The workflow entry-point tests that pin the summary lines pass. The `rg` check found only the 4 known false positives. No IAM change, so no bootstrap update.
+  - **Open after round 2.** -40 and -41 were low and open; the owner approved a third round.
+- **Round 3 (`3621af5`).**
+  - **The fix.** One helper turns any failed AWS call into its first stderr line, cleaned and capped at 160 characters. One top-level catch prints a single `::error::` line with no stack and exits 1. Both are used in the leftover check, the destroy and the image scan. The tests run the real workflow steps with a fake `aws` and read the tee'd evidence.
+  - **Reviewer check.** No decision or exit code changed: making either script exit 0 on failure, or the image-scan verdict pass, was red. 9 of the reviewer's 14 breakages were red. The survivors are guards without a test: the outer clean-up in the top-level catch, destroy's cleaned log, and two throw sites.
+  - **Security re-check.** It closed sec-05 and sec-06, and found two low items (DEV-42, -43): `%` is not escaped in the `::error::` data, so `%0A` from AWS shows as a line break inside the annotation (never a new command), and the untested guards above.
+  - **Owner decisions.** The 90-day retention stays (DEV-39, accepted), and DEV-37 goes to the follow-up.
+- **Gate results (reviewer, no AWS credentials).** On `13a0c57`: infra `pnpm verify` exit 0, "Tests 191 passed (191)", synth OK. On `f40535c`: exit 0, "Tests 195 passed (195)", synth OK. On `3621af5`: exit 0, "Tests 216 passed (216)", synth OK. The workflow entry-point tests that pin the summary lines pass. The `rg` check found only the 4 known false positives. No IAM change, so no bootstrap update.
 - **Decision.** No blocking findings. Not merged; the owner merges.
