@@ -305,13 +305,14 @@ describe('bootstrap stack: OIDC and the deploy role', () => {
         [
           'ec2:DescribeManagedPrefixLists',
           'ecs:DescribeClusters',
-          'ecs:DescribeServices',
           'ecs:DescribeTaskDefinition',
           'secretsmanager:DescribeSecret',
           'tag:GetResources',
         ],
         ['*'],
       ],
+      LeftoverEcsServices: [['ecs:DescribeServices'], [ARN('ecs', 'service/ascrum-demo/*')]],
+      LeftoverEcsTasks: [['ecs:DescribeTasks'], [ARN('ecs', 'task/ascrum-demo/*')]],
       ReadApiLogs: [
         ['logs:DescribeLogStreams', 'logs:FilterLogEvents'],
         [ARN('logs', 'log-group:/ascrum/demo/api'), ARN('logs', 'log-group:/ascrum/demo/api:*')],
@@ -320,6 +321,31 @@ describe('bootstrap stack: OIDC and the deploy role', () => {
     expect(Object.fromEntries(allow.map((s) => [s.Sid, [actionsOf(s).sort(), resourcesOf(s)]]))).toEqual(expected)
     // R24: never a secret's value; R25: object writes only in the web bucket.
     expect(allow.flatMap(actionsOf)).not.toContain('secretsmanager:GetSecretValue')
+  })
+
+  // Live run 6 / Q-p5-infra-12 (b): the leftover check describes the demo's ECS service and tasks, and
+  // only those; neither action is on "*" anywhere in the deploy role.
+  it('live run 6 / Q-p5-infra-12: ecs:DescribeServices and ecs:DescribeTasks only on the ascrum-demo cluster, never on "*"', () => {
+    const allow = deployRolePolicy().filter((s) => s.Effect === 'Allow')
+    const cases = [
+      ['ecs:DescribeServices', 'LeftoverEcsServices', 'service/ascrum-demo/*'],
+      ['ecs:DescribeTasks', 'LeftoverEcsTasks', 'task/ascrum-demo/*'],
+    ] as const
+    for (const [action, sid, resource] of cases) {
+      const granting = allow.filter((s) => actionsOf(s).some((pattern) => grantsAction(pattern, action)))
+      expect(
+        granting.map((s) => s.Sid),
+        action,
+      ).toEqual([sid])
+      for (const statement of granting) {
+        expect(resourcesOf(statement), action).toEqual([ARN('ecs', resource)])
+        expect(resourcesOf(statement), action).not.toContain('*')
+        const condition = (statement.Condition ?? {}) as Record<string, Record<string, unknown>>
+        expect(Object.keys(condition), action).toEqual(['ArnEquals'])
+        expect(Object.keys(condition.ArnEquals ?? {}), action).toEqual(['ecs:cluster'])
+        expect(flat(condition.ArnEquals?.['ecs:cluster']), action).toBe(ARN('ecs', 'cluster/ascrum-demo'))
+      }
+    }
   })
 })
 

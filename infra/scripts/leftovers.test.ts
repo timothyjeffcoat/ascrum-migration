@@ -13,6 +13,11 @@ const SECRET = `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:rds!db-123-ab
 const BUDGET = `arn:aws:budgets::${ACCOUNT}:budget/ascrum-demo-monthly`
 const ROLE_POLICY = `arn:aws:iam::${ACCOUNT}:policy/ascrum-demo-role-boundary`
 const DISTRIBUTION = `arn:aws:cloudfront::${ACCOUNT}:distribution/E123`
+// Live run 6: the two ARNs the tagging index still listed after the destroy.
+const SERVICE = `arn:aws:ecs:${REGION}:${ACCOUNT}:service/ascrum-demo/AscrumDemo-ApiServiceC9037CF0-mABjA6XISVgD`
+const TASK = `arn:aws:ecs:${REGION}:${ACCOUNT}:task/ascrum-demo/52eadf489a174a1db91daddd286dd6c6`
+const TASK_2 = `arn:aws:ecs:${REGION}:${ACCOUNT}:task/ascrum-demo/0123456789abcdef0123456789abcdef`
+const DEMO_CLUSTER = `arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/ascrum-demo`
 
 async function check(world: FakeWorld, sleep: () => Promise<void> = async () => {}) {
   const { aws } = fakeAws(world)
@@ -118,7 +123,7 @@ describe('AC-AWS-04: the final leftover check', () => {
     await expect(check(world)).rejects.toThrow('describe-stacks AscrumDemoRegistry failed')
   })
 
-  it('AC-AWS-04 / O4 (S14): only ECS task definitions, ECS clusters and secrets can be ghosts; RDS, EC2, ELB, CloudFront, S3, logs and ECR are leftovers without asking', async () => {
+  it('AC-AWS-04 / O4 (S14): only ECS task definitions, clusters, services and tasks and secrets can be ghosts; RDS, EC2, ELB, CloudFront, S3, logs and ECR are leftovers without asking', async () => {
     const billable = [
       `arn:aws:rds:${REGION}:${ACCOUNT}:db:ascrum-demo-db`,
       `arn:aws:rds:${REGION}:${ACCOUNT}:subgrp:ascrum-demo-db`,
@@ -129,7 +134,6 @@ describe('AC-AWS-04: the final leftover check', () => {
       'arn:aws:s3:::ascrum-demo-web-bucket',
       `arn:aws:logs:${REGION}:${ACCOUNT}:log-group:/ascrum/demo/api`,
       `arn:aws:ecr:${REGION}:${ACCOUNT}:repository/ascrum-demo-api`,
-      `arn:aws:ecs:${REGION}:${ACCOUNT}:service/ascrum-demo/AscrumDemo-ApiService`,
     ]
     const { aws, calls } = fakeAws({ stacks: {} })
     for (const arn of billable) expect(await isGhost(aws, arn), arn).toBe(false)
@@ -151,5 +155,104 @@ describe('AC-AWS-04: the final leftover check', () => {
   it('AC-AWS-04: an active cluster is a leftover', async () => {
     const { report } = await check({ stacks: {}, tagged: { [REGION]: { [CLUSTER]: demo } } })
     expect(report.remaining).toEqual([CLUSTER])
+  })
+
+  describe('live run 6: ECS services and tasks the tagging index still lists', () => {
+    const tagged = (...arns: string[]) => ({ [REGION]: Object.fromEntries(arns.map((a) => [a, demo])) })
+
+    it('AC-AWS-04 / live run 6: an INACTIVE service and a STOPPED or MISSING task are gone, asked in one call per cluster and kind', async () => {
+      const world: FakeWorld = {
+        stacks: {},
+        tagged: tagged(SERVICE, TASK, TASK_2),
+        serviceStatus: { [SERVICE]: 'INACTIVE' },
+        taskStatus: { [TASK]: 'STOPPED', [TASK_2]: 'MISSING' },
+      }
+      const { aws, calls } = fakeAws(world)
+      const report = await findLeftovers({ aws, region: REGION, attempts: 1, pollMs: 1, sleep: async () => {} })
+      expect(report.ok).toBe(true)
+      expect(report.gone).toEqual([SERVICE, TASK, TASK_2])
+      expect(report.remaining).toEqual([])
+      const ecsCalls = calls.filter(([service]) => service === 'ecs')
+      expect(ecsCalls).toEqual([
+        ['ecs', 'describe-services', '--cluster', DEMO_CLUSTER, '--services', SERVICE, '--region', REGION],
+        ['ecs', 'describe-tasks', '--cluster', DEMO_CLUSTER, '--tasks', TASK, TASK_2, '--region', REGION],
+      ])
+    })
+
+    it('AC-AWS-04 / live run 6: services are described 10 at a time (the DescribeServices limit)', async () => {
+      const services = Array.from({ length: 12 }, (_, i) => `${SERVICE}-${i}`)
+      const world: FakeWorld = {
+        stacks: {},
+        tagged: tagged(...services),
+        serviceStatus: Object.fromEntries(services.map((a) => [a, 'INACTIVE'])),
+      }
+      const { aws, calls } = fakeAws(world)
+      const report = await findLeftovers({ aws, region: REGION, attempts: 1, pollMs: 1, sleep: async () => {} })
+      expect(report.ok).toBe(true)
+      const batches = calls.filter(([, command]) => command === 'describe-services')
+      expect(batches.map((c) => c.length - 7)).toEqual([10, 2]) // 7 = ecs, describe-services, --cluster, arn, --services, --region, region
+    })
+
+    for (const status of ['ACTIVE', 'DRAINING', 'MISSING']) {
+      it(`AC-AWS-04 / live run 6: a ${status} service is a leftover`, async () => {
+        const { report } = await check({ stacks: {}, tagged: tagged(SERVICE), serviceStatus: { [SERVICE]: status } })
+        expect(report.ok).toBe(false)
+        expect(report.remaining).toEqual([SERVICE])
+      })
+    }
+
+    for (const status of ['RUNNING', 'PENDING', 'PROVISIONING', 'DEPROVISIONING', 'STOPPING']) {
+      it(`AC-AWS-04 / live run 6: a ${status} task is a leftover`, async () => {
+        const { report } = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: status } })
+        expect(report.ok).toBe(false)
+        expect(report.remaining).toEqual([TASK])
+      })
+    }
+
+    it('AC-AWS-04 / live run 6: a refused or throttled describe fails the check; it never counts as gone', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE, TASK),
+        serviceStatus: { [SERVICE]: 'INACTIVE' },
+        taskStatus: { [TASK]: 'STOPPED' },
+        ecsError: {
+          'describe-services':
+            'An error occurred (ThrottlingException) when calling the DescribeServices operation (reached max retries: 2): Rate exceeded',
+          'describe-tasks': 'An error occurred (AccessDeniedException) when calling the DescribeTasks operation',
+        },
+      })
+      expect(report.ok).toBe(false)
+      expect(report.gone).toEqual([])
+      expect(report.remaining).toEqual([SERVICE, TASK])
+    })
+
+    it('AC-AWS-04 / live run 6: an answer about another ARN does not clear the one asked about', async () => {
+      const fake = fakeAws({ stacks: {}, tagged: tagged(TASK) })
+      const report = await findLeftovers({
+        aws: async (args) =>
+          args[1] === 'describe-tasks'
+            ? { code: 0, stderr: '', stdout: JSON.stringify({ tasks: [{ taskArn: TASK_2, lastStatus: 'STOPPED' }] }) }
+            : fake.aws(args),
+        region: REGION,
+        attempts: 1,
+      })
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([TASK])
+    })
+
+    it('AC-AWS-04 / live run 6: task definitions and clusters are still asked one by one, as before', async () => {
+      const { aws, calls } = fakeAws({
+        stacks: {},
+        tagged: tagged(TASK_DEF, CLUSTER),
+        taskDefinitionStatus: { [TASK_DEF]: 'INACTIVE' },
+        clusterStatus: { [CLUSTER]: 'INACTIVE' },
+      })
+      const report = await findLeftovers({ aws, region: REGION, attempts: 1 })
+      expect(report.gone).toEqual([TASK_DEF, CLUSTER])
+      expect(calls.filter(([service]) => service === 'ecs').map(([, command]) => command)).toEqual([
+        'describe-task-definition',
+        'describe-clusters',
+      ])
+    })
   })
 })
