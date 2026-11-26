@@ -2,9 +2,11 @@
 # AC-CTR-02 and the image checks around it. Checks the built images themselves (their config, history and
 # every file in them), plus the static pins they are built from:
 #   - non-root; no dev dependencies, test files or .env files (AC-CTR-02);
-#   - every image docker/*.Dockerfile uses (FROM, COPY --from, RUN --mount from, the # syntax= frontend;
-#     any keyword case) and every pulled compose image pinned by version and digest (DEV-p5-containers-09,
-#     -12);
+#   - every image docker/*.Dockerfile uses (FROM, COPY --from, RUN --mount from; any keyword case) and
+#     every pulled compose image pinned by version and digest (DEV-p5-containers-09, -12); no `# syntax=`
+#     frontend; compose builds exactly these two Dockerfiles from the repo root, with no build options
+#     (DEV-p5-image-scan-13);
+#   - no setuid or setgid file in either image (DEV-p5-image-scan-12);
 #   - no secret in any layer's command, build argument, ENV or label: the image history and config are
 #     scanned with Gitleaks, no ENV name looks like a credential (DEV-p5-containers-09), and no value
 #     holds a URL with a password (DEV-p5-containers-13);
@@ -64,6 +66,21 @@ check_user() {
   echo "$image: USER=$user, runs as uid $uid"
 }
 
+# No setuid or setgid file anywhere in the image's own filesystem (DEV-p5-image-scan-12: a
+# `COPY --chmod=4755` of node ran with euid 0 for the non-root user). Both clean images have none, so the
+# rule is exactly none. Run as uid 0 so no directory is unreadable; any error from find fails the check.
+check_setuid() {
+  local image=$1 found
+  if ! found=$(docker run --pull never --rm --network none --user 0 --entrypoint find "$image" \
+    / -xdev -type f '(' -perm -4000 -o -perm -2000 ')' 2>&1); then
+    fail "$image: could not list setuid and setgid files: $found"
+  elif [[ -n $found ]]; then
+    fail "$image: setuid or setgid files: $(tr '\n' ' ' <<< "$found")"
+  else
+    echo "$image: no setuid or setgid file"
+  fi
+}
+
 # No .env file, and no test file or test folder, anywhere in the image.
 check_common() {
   local image=$1 list=$2 hits
@@ -93,24 +110,38 @@ PINNED='^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]*[0-9][A-Za-z0-9._-]*@sha256:[0-9a-
 # `RUN --mount=...,from=<image>`, not only through FROM. So each file is read as Docker reads it, one
 # logical instruction at a time, and every image reference in it is checked: FROM, COPY/ADD --from= and
 # RUN --mount from=. A reference to an earlier stage (by name in any case, or by index) is fine; anything
-# else must be pinned. The `# syntax=` parser directive names the frontend image that runs the build, so
-# it must be pinned too; this repo's Dockerfiles have none and use the engine's built-in frontend
+# else must be pinned. The `# syntax=` parser directive names the frontend image that runs the build; it
+# is refused outright (DEV-p5-image-scan-13), and the files use the engine's built-in frontend
 # (spec/worklogs/p5-hardening.md). An `# escape=` directive would change the continuation character this
 # reader relies on, so it is refused.
 
-# One logical instruction per line: comment lines dropped (also inside a continuation, as Docker does),
-# `\` continuations joined, blank lines inside a continuation skipped.
+# One logical instruction per line, joined exactly as BuildKit's parser joins them
+# (frontend/dockerfile/parser/parser.go, checked against this engine in spec/worklogs/p5-image-scan.md,
+# session 5): trailing CR/LF trimmed; comment lines (`#` after leading whitespace) and blank lines
+# dropped, also inside a continuation; a line ending in a backslash that is not itself escaped
+# (`(^|[^\\])\\[ \t]*$`, spaces and tabs allowed after it) continues, and the backslash and those blanks
+# are removed with NOTHING put in their place, while the next line keeps its leading whitespace. The
+# reader used to insert a space there (DEV-p5-image-scan-11: `COPY <\` + `<USER …` is a heredoc to
+# BuildKit and was `COPY < <USER` here). check_dockerfile_shape also tests the raw file, so a mismatch
+# left in this reader still fails closed.
 instructions() {
-  awk '
+  LC_ALL=C awk '
+    { sub(/[\r\n]+$/, "") }
     /^[[:space:]]*#/ { next }
-    /^[[:space:]]*$/ && buf != "" { next }
+    /^[[:space:]]*$/ { next }
     {
       line = $0
-      if (sub(/\\[[:space:]]*$/, "", line)) { buf = buf line " "; next }
+      if (match(line, /(^|[^\\])\\[ \t]*$/)) {
+        sub(/\\[ \t]*$/, "", line)
+        buf = buf line
+        cont = 1
+        next
+      }
       print buf line
       buf = ""
+      cont = 0
     }
-    END { if (buf != "") print buf }' "$1"
+    END { if (cont) print buf }' "$1"
 }
 
 pin_findings=$findings
@@ -125,13 +156,15 @@ for dockerfile in docker/*.Dockerfile; do
     [[ $ref =~ $PINNED ]] ||
       fail "$dockerfile: $what $ref is not pinned by version and digest (written out, not through an ARG)"
   }
+  # Parser directives, looked for on every line (BuildKit reads them only at the top, after any leading
+  # whitespace, as `#` or `//` comments; any line is stricter). No `syntax` at all (DEV-p5-image-scan-13):
+  # even a pinned one swaps the frontend that parses the file, and with it everything this check reads.
   while IFS='=' read -r name value; do
     case ${name,,} in
-      syntax) [[ $value =~ $PINNED ]] ||
-        fail "$dockerfile: the # syntax= frontend image $value is not pinned by version and digest" ;;
+      syntax) fail "$dockerfile: a syntax parser directive ($value) is not allowed; the engine's built-in frontend builds these files" ;;
       escape) fail "$dockerfile: an # escape= parser directive is not supported by this check" ;;
     esac
-  done < <(sed -nE 's/^#[[:space:]]*([A-Za-z]+)[[:space:]]*=[[:space:]]*([^[:space:]]*).*/\1=\2/p' "$dockerfile")
+  done < <(sed -nE 's,^[[:space:]]*(#|//)[[:space:]]*([A-Za-z][A-Za-z0-9]*)[[:space:]]*=[[:space:]]*([^[:space:]]*).*,\2=\3,p' "$dockerfile")
   froms=0
   while read -r keyword rest; do
     keyword=${keyword^^}
@@ -180,6 +213,34 @@ while IFS=$'\t' read -r service image pull; do
 done < <(jq -r '.services | to_entries[] | select(.value.build == null) | [.key, .value.image, (.value.pull_policy // "")] | @tsv' <<< "$compose_json")
 if ((findings == pin_findings)); then
   echo "pins: every image the Dockerfiles use (FROM, COPY --from, RUN --mount from) and every pulled compose image is pinned by version and digest"
+fi
+
+# What compose builds (DEV-p5-image-scan-13): CI builds through `docker compose --profile prod-check build`,
+# the deploy with `docker build -f docker/<name>.Dockerfile .`, and this script reads those two files. So
+# the services that compose builds must be exactly api and web, each with a build section of exactly
+# {context: the repo root, dockerfile: docker/<name>.Dockerfile} as compose resolves it: no args (so no
+# BUILDKIT_SYNTAX), additional_contexts, target, dockerfile_inline, ssh, secrets or any other key.
+build_findings=$findings
+repo_root=$(pwd -P)
+declare -A compose_dockerfile=([api]=docker/api.Dockerfile [web]=docker/web.Dockerfile)
+compose_builds=$(jq -r '.services | to_entries[] | select(.value.build != null) | .key' <<< "$compose_json" | LC_ALL=C sort | tr '\n' ' ')
+[[ $compose_builds == 'api web ' ]] ||
+  fail "compose.yaml: the services with a build section are '${compose_builds% }', not exactly api and web"
+for service in api web; do
+  build=$(jq -c --arg s "$service" '.services[$s].build // null' <<< "$compose_json")
+  keys=$(jq -r 'if type == "object" then keys | join(",") else "none" end' <<< "$build")
+  context=$(jq -r 'if type == "object" then .context // "" else "" end' <<< "$build")
+  file=$(jq -r 'if type == "object" then .dockerfile // "" else "" end' <<< "$build")
+  if [[ $keys != context,dockerfile ]]; then
+    fail "compose.yaml: service $service's build has keys '$keys', not exactly context and dockerfile: $build"
+  elif [[ $(realpath -m -- "$context") != "$repo_root" ]]; then
+    fail "compose.yaml: service $service builds from context $context, not the repo root"
+  elif [[ $file != "${compose_dockerfile[$service]}" ]]; then
+    fail "compose.yaml: service $service builds $file, not ${compose_dockerfile[$service]}"
+  fi
+done
+if ((findings == build_findings)); then
+  echo "compose: api and web build exactly docker/api.Dockerfile and docker/web.Dockerfile from the repo root, with no build options"
 fi
 
 # The API runs through main.ts, which reads its settings with loadConfig() (and so refuses ALLOW_RESET in
@@ -317,8 +378,23 @@ declare -A RUNTIME_KEYWORDS=(
 )
 DOCKERFILE_KEYWORDS=' FROM RUN CMD LABEL MAINTAINER EXPOSE ENV ADD COPY ENTRYPOINT VOLUME USER WORKDIR ARG ONBUILD STOPSIGNAL HEALTHCHECK SHELL '
 check_dockerfile_shape() {
-  local dockerfile=$1 line keyword stage=0 last=0 n=0
+  local dockerfile=$1 line keyword stage=0 last=0 n=0 raw odd
   local -a kw=()
+  # The heredoc test again on the raw file, independent of instructions() (DEV-p5-image-scan-11): comment
+  # lines dropped, then every backslash, space, tab, CR, LF, VT and FF deleted. Any `<<` left fails. This
+  # finds every `<<` BuildKit could see after its own joining (it only ever removes backslash-newlines,
+  # blanks after them, comment lines and blank lines), and more, so a reader mismatch fails closed.
+  raw=$(LC_ALL=C awk '!/^[[:space:]]*#/' "$dockerfile" | LC_ALL=C tr -d '\\ \t\r\n\v\f')
+  if [[ $raw == *'<<'* ]]; then
+    fail "$dockerfile: '<<' (a heredoc, possibly split over continuation lines) in the raw file"
+  fi
+  # BuildKit trims Unicode whitespace (U+00A0, U+2000…) before `#`, and a byte-order mark before line 1;
+  # the reader above trims ASCII only. A line that starts with a non-ASCII byte is refused, so a comment
+  # BuildKit drops can never be read here as text.
+  odd=$(LC_ALL=C grep -n $'^[ \t\v\f\r]*[\x80-\xff]' "$dockerfile" || true)
+  if [[ -n $odd ]]; then
+    fail "$dockerfile: a line starts with a non-ASCII byte (Unicode whitespace or a byte-order mark): ${odd%%$'\n'*}"
+  fi
   while IFS= read -r line; do
     read -r keyword _ <<< "$line"
     [[ -n $keyword ]] || continue # a blank line between instructions, which Docker ignores
@@ -547,6 +623,7 @@ check_apk() {
 
 # --- API ---------------------------------------------------------------------------------------
 check_user "$api_image"
+check_setuid "$api_image"
 check_secrets "$api_image" docker/api.Dockerfile
 files_of "$api_image" > "$work/api.txt"
 check_common "$api_image" "$work/api.txt"
@@ -630,6 +707,7 @@ echo "$api_image: installed packages: $(grep -oE '^app/api/node_modules/\.pnpm/[
 
 # --- web ---------------------------------------------------------------------------------------
 check_user "$web_image"
+check_setuid "$web_image"
 check_secrets "$web_image" docker/web.Dockerfile
 files_of "$web_image" > "$work/web.txt"
 check_common "$web_image" "$work/web.txt"
@@ -645,4 +723,4 @@ if [[ $findings -gt 0 ]]; then
   echo "check-images: $findings finding(s)" >&2
   exit 1
 fi
-echo "check-images: AC-CTR-02 (non-root, no dev dependencies, test files or .env), pins, no secrets in layers or config, the API loads and starts, web OS package floors, API without apk/OpenSSL/zlib, package sources in both images"
+echo "check-images: AC-CTR-02 (non-root, no dev dependencies, test files or .env), pins, compose builds, no setuid or setgid files, no secrets in layers or config, the API loads and starts, web OS package floors, API without apk/OpenSSL/zlib, package sources in both images"
