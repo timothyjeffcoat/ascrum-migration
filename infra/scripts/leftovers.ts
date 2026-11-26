@@ -12,7 +12,17 @@
 // Those are asked about directly, and none of them costs anything. Anything else still listed is retried a
 // few times before the check fails.
 import { DEMO_STACKS_DESTROY_ORDER, TAG } from '../src/names.ts'
-import { awsCli, realSleep, redact, stackStatus, type Aws, type Sleep } from './aws.ts'
+import {
+  awsCli,
+  awsErrorLine,
+  printable,
+  realSleep,
+  redact,
+  runMain,
+  stackStatus,
+  type Aws,
+  type Sleep,
+} from './aws.ts'
 
 type Mapping = { ResourceARN: string; Tags?: { Key: string; Value: string }[] }
 
@@ -35,7 +45,7 @@ async function tagged(aws: Aws, region: string): Promise<Mapping[]> {
     '--tag-filters',
     `Key=${TAG.project.key},Values=${TAG.project.value}`,
   ])
-  if (result.code !== 0) throw new Error(`get-resources in ${region} failed: ${result.stderr.trim()}`)
+  if (result.code !== 0) throw new Error(`get-resources in ${region} failed: ${awsErrorLine(result)}`)
   return (JSON.parse(result.stdout) as { ResourceTagMappingList?: Mapping[] }).ResourceTagMappingList ?? []
 }
 
@@ -83,8 +93,7 @@ function asksAbout(arn: string): boolean {
  */
 export function describeFailure(result: { code: number; stderr: string }): string {
   const code = /\(([A-Za-z][A-Za-z0-9.]*)\)/.exec(result.stderr)?.[1]
-  const detail = code ?? (result.stderr.trim().split('\n')[0] ?? '').trim().slice(0, 160)
-  const text = redact(detail || `exit ${result.code}`)
+  const text = code ?? awsErrorLine(result)
   return /AccessDenied|UnauthorizedOperation|NotAuthorized/i.test(text)
     ? `describe refused: ${text}`
     : `describe failed: ${text}`
@@ -248,22 +257,6 @@ export async function findLeftovers(options: {
   return report
 }
 
-/**
- * AWS-supplied text (ARNs from the tagging index, stack states, reasons built from ECS answers and CLI
- * errors) with every control character replaced by a space, so it cannot start a new line, move the
- * cursor or hide text: no forged "OK: …" or "Remaining: 0" line and no `::` workflow command in the log
- * or the evidence file (sec-04). C0 (U+0000-U+001F), DEL (U+007F) and C1 (U+0080-U+009F, which holds an
- * 8-bit CSI) are all covered. Then the 12-digit scrub, as before.
- */
-export function printable(text: string): string {
-  let out = ''
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0
-    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? ' ' : char
-  }
-  return redact(out)
-}
-
 export function formatReport(report: LeftoverReport): string[] {
   const lines = [
     `Demo stacks still present: ${report.stacks.length === 0 ? 'none' : printable(report.stacks.join(', '))}`,
@@ -282,12 +275,14 @@ export function formatReport(report: LeftoverReport): string[] {
 }
 
 if (import.meta.main) {
-  const region = process.env.AWS_REGION
-  if (!region) {
-    console.error('AWS_REGION is required')
-    process.exit(2)
-  }
-  const report = await findLeftovers({ aws: awsCli, region })
-  for (const line of formatReport(report)) console.log(line)
-  process.exit(report.ok ? 0 : 1)
+  await runMain(async () => {
+    const region = process.env.AWS_REGION
+    if (!region) {
+      console.error('AWS_REGION is required')
+      process.exit(2)
+    }
+    const report = await findLeftovers({ aws: awsCli, region })
+    for (const line of formatReport(report)) console.log(line)
+    process.exit(report.ok ? 0 : 1)
+  })
 }

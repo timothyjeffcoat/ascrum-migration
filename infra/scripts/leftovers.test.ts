@@ -499,6 +499,90 @@ describe('AC-AWS-04: the final leftover check', () => {
       expect(report.remaining).toEqual([forged])
     })
 
+    // sec-06 / DEV-p5-infra-40: the scrub and the strip on every printed path, not only the reasons.
+    it('AC-AWS-04 / sec-06: a gone ARN line is printed without control characters or account id', async () => {
+      const forged = `${TASK_DEF}\u001b[2J\n::warning::forged`
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(forged),
+        taskDefinitionStatus: { [forged]: 'INACTIVE' },
+      })
+      expect(report.gone).toEqual([forged])
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('::'))).toEqual([])
+      const gone = lines.filter((line) => line.startsWith('  gone'))
+      expect(gone).toHaveLength(1)
+      expect(gone.some(hasControl)).toBe(false)
+      expect(gone.join('')).not.toContain(ACCOUNT)
+    })
+
+    it('AC-AWS-04 / sec-06: a kept ARN line is printed without control characters or account id', async () => {
+      const forged = `${ROLE_POLICY}\rOK: nothing from the demo remains.`
+      const { report } = await check({ stacks: {}, tagged: { [REGION]: { [forged]: bootstrap } } })
+      expect(report.ok).toBe(true)
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('OK:'))).toEqual(['OK: nothing from the demo remains.'])
+      const kept = lines.filter((line) => line.startsWith('  kept'))
+      expect(kept).toHaveLength(1)
+      expect(kept.some(hasControl)).toBe(false)
+      expect(kept.join('')).not.toContain(ACCOUNT)
+    })
+
+    it('AC-AWS-04 / sec-06: the region printed beside a leftover is printed without control characters', async () => {
+      const forged = `arn:aws:elasticloadbalancing:eu-west-1\r\u001b[2KRemaining 0:${ACCOUNT}:loadbalancer/app/x/1`
+      const { report } = await check({ stacks: {}, tagged: tagged(forged) })
+      const lines = physicalLines(formatReport(report))
+      const leftover = lines.filter((line) => line.startsWith('  LEFTOVER'))
+      expect(leftover).toHaveLength(1)
+      expect(lines.some(hasControl)).toBe(false)
+      expect(leftover[0]).toContain('(eu-west-1  [2KRemaining 0)')
+    })
+
+    it('AC-AWS-04 / sec-06: the "Demo stacks still present" line is printed without control characters or account id', async () => {
+      const { report } = await check({
+        stacks: { AscrumDemo: { states: [`DELETE_FAILED\nOK: nothing from the demo remains.\u007f${ACCOUNT}`] } },
+        tagged: {},
+      })
+      const lines = physicalLines(formatReport(report))
+      expect(lines.filter((line) => line.startsWith('OK:'))).toEqual([])
+      const stacksLine = lines.filter((line) => line.startsWith('Demo stacks still present:'))
+      expect(stacksLine).toHaveLength(1)
+      expect(stacksLine.some(hasControl)).toBe(false)
+      expect(stacksLine.join('')).not.toContain(ACCOUNT)
+    })
+
+    it('AC-AWS-04 / sec-06: DEL (U+007F) in a reason becomes a space', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        serviceStatus: { [SERVICE]: 'ACTIVE\u007fX' },
+      })
+      expect(lineFor(report, SERVICE)).toContain('(status ACTIVE X)')
+    })
+
+    it('AC-AWS-04 / DEV-p5-infra-38: line separators, bidi controls and zero-width characters become spaces', async () => {
+      const invisible = '  ‎‏‪‫‬‭‮⁦⁧⁨⁩​‌‍﻿'
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        serviceStatus: { [SERVICE]: `ACTIVE${invisible}X` },
+      })
+      const line = lineFor(report, SERVICE)
+      expect([...invisible].filter((char) => line.includes(char))).toEqual([])
+      expect(line).toContain(`(status ACTIVE${' '.repeat(invisible.length)}X)`)
+    })
+
+    it('AC-AWS-04 / R06: at most 160 characters of error text are echoed', async () => {
+      const { report } = await check({
+        stacks: {},
+        tagged: tagged(SERVICE),
+        ecsError: { 'describe-services': 'x'.repeat(300) },
+      })
+      const line = lineFor(report, SERVICE)
+      expect(line).toContain(`(describe failed: ${'x'.repeat(160)})`)
+      expect(line).not.toContain('x'.repeat(161))
+    })
+
     it('AC-AWS-04 / live run 7: the summary lines are unchanged', async () => {
       const failed = await check({ stacks: {}, tagged: tagged(TASK), taskStatus: { [TASK]: 'RUNNING' } })
       const text = formatReport(failed.report)

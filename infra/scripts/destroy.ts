@@ -9,7 +9,18 @@
 // deleted. CloudFormation deletes each stack with the stack's own execution role. A second run finds
 // nothing and changes nothing.
 import { DEMO_STACKS_DESTROY_ORDER } from '../src/names.ts'
-import { awsCli, awsJson, realSleep, redact, stackStatus, type Aws, type Sleep } from './aws.ts'
+import {
+  awsCli,
+  awsErrorLine,
+  awsJson,
+  printable,
+  realSleep,
+  redact,
+  runMain,
+  stackStatus,
+  type Aws,
+  type Sleep,
+} from './aws.ts'
 
 export type DestroyOptions = {
   aws: Aws
@@ -36,7 +47,7 @@ async function emptyBuckets(aws: Aws, stack: string, region: string, log: (line:
     const bucket = resource.PhysicalResourceId
     const result = await aws(['s3', 'rm', `s3://${bucket}`, '--recursive', '--only-show-errors', '--region', region])
     if (result.code !== 0 && !/NoSuchBucket/.test(result.stderr)) {
-      throw new Error(`emptying s3://${redact(bucket)} failed: ${result.stderr.trim()}`)
+      throw new Error(`emptying s3://${redact(bucket)} failed: ${awsErrorLine(result)}`)
     }
     log(`  emptied bucket ${redact(bucket)}`)
   }
@@ -55,7 +66,15 @@ async function failureEvents(aws: Aws, stack: string, region: string): Promise<s
 }
 
 export async function destroyDemo(options: DestroyOptions): Promise<{ deleted: string[]; absent: string[] }> {
-  const { aws, region, sleep = realSleep, log = console.log, timeoutMs = 75 * 60_000, pollMs = 15_000 } = options
+  // The default log prints AWS-supplied text (stack states, event reasons) through printable() (sec-05).
+  const {
+    aws,
+    region,
+    sleep = realSleep,
+    log = (line: string) => console.log(printable(line)),
+    timeoutMs = 75 * 60_000,
+    pollMs = 15_000,
+  } = options
   const deleted: string[] = []
   const absent: string[] = []
 
@@ -110,11 +129,13 @@ export async function destroyDemo(options: DestroyOptions): Promise<{ deleted: s
 }
 
 if (import.meta.main) {
-  const region = process.env.AWS_REGION
-  if (!region) {
-    console.error('AWS_REGION is required')
-    process.exit(2)
-  }
-  const { deleted, absent } = await destroyDemo({ aws: awsCli, region })
-  console.log(`deleted: ${deleted.join(', ') || 'none'}; already absent: ${absent.join(', ') || 'none'}`)
+  await runMain(async () => {
+    const region = process.env.AWS_REGION
+    if (!region) {
+      console.error('AWS_REGION is required')
+      process.exit(2)
+    }
+    const { deleted, absent } = await destroyDemo({ aws: awsCli, region })
+    console.log(`deleted: ${deleted.join(', ') || 'none'}; already absent: ${absent.join(', ') || 'none'}`)
+  })
 }

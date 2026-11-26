@@ -1595,3 +1595,97 @@ is: retention is the owner's decision.
   - "Test Files 12 passed (12)", "Tests 195 passed (195)";
   - "Successfully synthesized to …/infra/cdk.out".
 - No IAM change; no bootstrap update needed.
+
+## 2026-11-26, leftover reasons, round 3 (worker): sec-05, sec-06, the Unicode residual and the 160 cap
+
+Pulled the reviewer's 689baf0 and 161b24f (fast-forward, no force-push). No decision changed: every
+existing test passes unedited, and there is no IAM change and no bootstrap update.
+
+### 1. sec-05 / DEV-p5-infra-41: errors put raw AWS stderr into the evidence artifact
+- **Shared helpers in `aws.ts`.** `printable()` moved here from `leftovers.ts` so every script uses one
+  copy. New:
+  - `awsErrorLine(result)`: stderr's first non-empty line, passed through `printable()`, trimmed and cut
+    to `ERROR_TEXT_LIMIT` (160); `exit N` when stderr is empty;
+  - `runMain(main)`: a top-level catch that prints `::error::` + `printable(error.message)`, with no
+    stack, and exits 1.
+- **Throw sites, now built from `awsErrorLine`:**
+  - `awsJson` (its args go through `printable` too);
+  - `stackStatus`;
+  - `leftovers.ts` get-resources;
+  - `destroy.ts` s3 rm;
+  - `imageScan.ts` describe-images, describe-image-scan-findings and start-image-scan.
+- **First line, not the error code.** I chose the first line, cleaned and capped, over the error code
+  alone. It keeps more to diagnose from, with the account id scrubbed, and it keeps
+  `imageScan.test.ts`'s existing `/failed: .*\*\*\*/` assertion green without editing it. The leftover
+  reasons (`describeFailure`) still prefer the code, as before.
+- **Entry points with `runMain`:** `leftovers.ts`, `destroy.ts` and `imageScan.ts`. Those are all the
+  scripts the workflows run that use `aws.ts`.
+  - `requiredChecks.ts` (deploy-demo.yml's gate) doesn't use `aws.ts`. It calls the GitHub API, prints no
+    AWS text and isn't tee'd into an artifact, so it is not covered. Noting it, not changing it.
+- **`destroy.ts`'s default log** now prints through `printable()`. Stack states and CloudFormation event
+  reasons are AWS text, and `destroy.txt` is tee'd into the same artifact.
+- **Exit codes:** an error still exits 1; previously Node's own uncaught-error exit was also 1. Missing
+  `AWS_REGION` still exits 2, and a failed check still exits 1.
+
+### 2. sec-06 / DEV-p5-infra-40: pins on the paths that had no test
+These tests are in `leftovers.test.ts`:
+- a gone ARN line;
+- a kept ARN line;
+- the region beside a leftover;
+- the "Demo stacks still present" line;
+- DEL (U+007F) in a reason.
+
+`aws.test.ts` also gets a DEL test for `printable()`.
+
+### 3. DEV-p5-infra-38: invisible characters
+`printable()` now also turns these into a space:
+- U+2028 and U+2029;
+- the bidi controls U+200E, U+200F, U+202A–U+202E and U+2066–U+2069;
+- the zero-width characters U+200B–U+200D and U+FEFF.
+
+One test each in `aws.test.ts` and `leftovers.test.ts`.
+
+### 4. R06: the 160-character cap
+Pinned in `aws.test.ts` (`awsErrorLine` on 500 characters gives 160) and in `leftovers.test.ts` (a
+300-character stderr gives exactly 160 characters on the reason line).
+
+### Red/green evidence (scratch script; files restored after each run)
+- **R0, new tests against f40535c's** `aws.ts`, `leftovers.ts`, `destroy.ts` and `imageScan.ts`:
+  "Tests 15 failed | 79 passed (94)". The failures were:
+  - all 9 entry-point sec-05 tests;
+  - the 5 `aws.test.ts` tests (`awsErrorLine` and `ERROR_TEXT_LIMIT` didn't exist yet, and DEL/Unicode
+    weren't handled);
+  - the Unicode test in `leftovers.test.ts`.
+- **sec-06 path tests passed against f40535c,** as expected: they pin behaviour that already existed. So
+  each was proved against its own mutation (M6–M10 below).
+- **Mutations, one at a time, each red:**
+
+| Mutation | Red tests |
+|---|---|
+| M1: get-resources message with raw stderr | 2 leftover-step sec-05 tests |
+| M2: describe-stacks message with raw stderr | 4 sec-05 tests (leftover and destroy steps) |
+| M3: `runMain` prints the raw error with its stack | all 9 entry-point sec-05 tests |
+| M4: s3 rm message with raw stderr | 2 destroy-step s3 tests |
+| M5: start-image-scan message with raw stderr | the image-scan sec-05 test |
+| M6: gone lines only redacted | the gone-line test |
+| M7: kept lines only redacted | the kept-line test |
+| M8: region printed raw | the region test |
+| M9: stacks line printed raw | the stacks-line test |
+| M10: DEL kept | the `printable` DEL test, the stacks-line test and the DEL-reason test |
+| M11: invisible set ignored | both Unicode tests |
+| M12: cap lifted to 1,000 | both R06 tests |
+
+- **Restored:** "Tests 94 passed (94)" in the three touched test files.
+
+### Process note
+- A guard refused one combined command: a Python edit script plus prettier, eslint and vitest in one
+  call. It said to split it into plain commands. I followed that: the edits went through the Edit tool
+  and the checks ran as separate commands.
+- I checked `git diff --stat` before redoing anything: the refused command had changed nothing.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck and eslint clean;
+  - "Test Files 12 passed (12)", "Tests 216 passed (216)";
+  - "Successfully synthesized to …/infra/cdk.out".

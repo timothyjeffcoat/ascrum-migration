@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { redact, stackStatus, type Aws } from './aws.ts'
+import { awsErrorLine, ERROR_TEXT_LIMIT, printable, redact, stackStatus, type Aws } from './aws.ts'
 
 const failing =
   (stderr: string): Aws =>
@@ -38,5 +38,37 @@ describe('AC-AWS-04: stackStatus() reads absence only from CloudFormation’s ow
 
   it('spec §11: redact() hides 12-digit account ids', () => {
     expect(redact('arn:aws:iam::123456789012:role/x')).toBe('arn:aws:iam::***:role/x')
+  })
+})
+
+describe('sec-05: awsErrorLine() turns stderr into one short printable line', () => {
+  it('sec-05: only the first non-empty line, account ids scrubbed, control characters gone', () => {
+    const line = awsErrorLine({
+      code: 254,
+      stderr: '\n  An error occurred (AccessDenied): arn:aws:sts::123456789012:x\r::add-mask::y\nsecond line\n',
+    })
+    expect(line).toBe('An error occurred (AccessDenied): arn:aws:sts::***:x ::add-mask::y')
+  })
+
+  it(`sec-05 / R06: at most ${ERROR_TEXT_LIMIT} characters are echoed`, () => {
+    expect(ERROR_TEXT_LIMIT).toBe(160)
+    expect(awsErrorLine({ code: 1, stderr: 'x'.repeat(500) })).toBe('x'.repeat(160))
+  })
+
+  it('sec-05: no stderr at all gives the exit code', () => {
+    expect(awsErrorLine({ code: 255, stderr: '\n\n' })).toBe('exit 255')
+  })
+
+  it('DEV-p5-infra-38: printable() turns line separators, bidi controls and zero-width characters into spaces', () => {
+    const invisible = [
+      0x2028, 0x2029, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b,
+      0x200c, 0x200d, 0xfeff,
+    ]
+    const text = invisible.map((code) => `a${String.fromCodePoint(code)}`).join('')
+    expect(printable(text)).toBe('a '.repeat(invisible.length))
+  })
+
+  it('sec-04 / DEV-p5-infra-40: printable() turns DEL (U+007F) into a space', () => {
+    expect(printable('OK\u007fDEL')).toBe('OK DEL')
   })
 })

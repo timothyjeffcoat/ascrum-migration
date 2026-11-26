@@ -24,7 +24,7 @@
 // documents no fixed-in attribute (fixedInVersion exists only in enhancedFindings, Inspector's), so none
 // is recorded. The pass/fail verdict still reads only the severity counts.
 import { writeFileSync } from 'node:fs'
-import { awsCli, realSleep, redact, type Aws, type Sleep } from './aws.ts'
+import { awsCli, awsErrorLine, realSleep, runMain, type Aws, type Sleep } from './aws.ts'
 
 export type ScanSummary = {
   status: string
@@ -121,7 +121,7 @@ export async function scanImage(options: ScanOptions): Promise<ScanSummary> {
     '--region',
     region,
   ])
-  if (described.code !== 0) throw new Error(`describe-images failed: ${redact(described.stderr.trim())}`)
+  if (described.code !== 0) throw new Error(`describe-images failed: ${awsErrorLine(described)}`)
   const details = (JSON.parse(described.stdout) as { imageDetails?: ImageDetail[] }).imageDetails ?? []
   const detail = details.length === 1 ? details[0] : undefined
   const mediaType = detail?.imageManifestMediaType ?? null
@@ -137,7 +137,7 @@ export async function scanImage(options: ScanOptions): Promise<ScanSummary> {
     const result = await aws(['ecr', 'describe-image-scan-findings', ...image])
     if (result.code === 0) return JSON.parse(result.stdout) as Findings
     if (SCAN_NOT_FOUND.test(result.stderr)) return null
-    throw new Error(`describe-image-scan-findings failed: ${redact(result.stderr.trim())}`)
+    throw new Error(`describe-image-scan-findings failed: ${awsErrorLine(result)}`)
   }
   const poll = async (ms: number, done: (body: Findings | null) => boolean) => {
     let body = await describe()
@@ -153,7 +153,7 @@ export async function scanImage(options: ScanOptions): Promise<ScanSummary> {
   if (body === null) {
     log('No scan appeared after the push (the registry scans this repository manually); starting one.')
     const started = await aws(['ecr', 'start-image-scan', ...image])
-    if (started.code !== 0) throw new Error(`start-image-scan failed: ${redact(started.stderr.trim())}`)
+    if (started.code !== 0) throw new Error(`start-image-scan failed: ${awsErrorLine(started)}`)
     startedByThisRun = true
   }
   const pending = (b: Findings | null) =>
@@ -184,29 +184,31 @@ export function verdict(summary: ScanSummary): string | null {
 }
 
 if (import.meta.main) {
-  const [repository, imageTag, evidence] = process.argv.slice(2)
-  const region = process.env.AWS_REGION
-  if (!repository || !imageTag || !evidence || !region) {
-    console.error('usage: AWS_REGION=… node imageScan.ts <repository> <image tag> <evidence json>')
-    process.exit(2)
-  }
-  // Two minutes for a scan on push to appear, fifteen for a scan to complete, polled every 10 s. Only the
-  // entry-point tests shorten the poll (IMAGE_SCAN_POLL_MS); the workflow never sets it (workflows.test.ts).
-  const pollMs = Number(process.env.IMAGE_SCAN_POLL_MS ?? 10_000)
-  const summary = await scanImage({
-    aws: awsCli,
-    repository,
-    imageTag,
-    region,
-    pollMs,
-    appearMs: 12 * pollMs,
-    completeMs: 90 * pollMs,
+  await runMain(async () => {
+    const [repository, imageTag, evidence] = process.argv.slice(2)
+    const region = process.env.AWS_REGION
+    if (!repository || !imageTag || !evidence || !region) {
+      console.error('usage: AWS_REGION=… node imageScan.ts <repository> <image tag> <evidence json>')
+      process.exit(2)
+    }
+    // Two minutes for a scan on push to appear, fifteen for a scan to complete, polled every 10 s. Only the
+    // entry-point tests shorten the poll (IMAGE_SCAN_POLL_MS); the workflow never sets it (workflows.test.ts).
+    const pollMs = Number(process.env.IMAGE_SCAN_POLL_MS ?? 10_000)
+    const summary = await scanImage({
+      aws: awsCli,
+      repository,
+      imageTag,
+      region,
+      pollMs,
+      appearMs: 12 * pollMs,
+      completeMs: 90 * pollMs,
+    })
+    writeFileSync(evidence, `${JSON.stringify(summary, null, 2)}\n`)
+    const reason = verdict(summary)
+    if (reason) {
+      console.error(`::error::${reason}`)
+      process.exit(1)
+    }
+    console.log('image-scan: completed, no HIGH or CRITICAL finding.')
   })
-  writeFileSync(evidence, `${JSON.stringify(summary, null, 2)}\n`)
-  const reason = verdict(summary)
-  if (reason) {
-    console.error(`::error::${reason}`)
-    process.exit(1)
-  }
-  console.log('image-scan: completed, no HIGH or CRITICAL finding.')
 }
