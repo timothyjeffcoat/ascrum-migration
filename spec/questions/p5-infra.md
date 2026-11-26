@@ -161,7 +161,7 @@ removed and renames and transfers move a repository to the immutable form, so th
 ever help an attacker. If GitHub ever emitted the name form again, the role fails closed and the fix is a
 bootstrap redeploy. Owner: confirm, or ask for the fallback explicitly.
 
-**Q-p5-infra-12. Live run 6: the leftover check needs `ecs:DescribeTasks` on the deploy role.** *(open, blocks the live-run-6 fix)*
+**Q-p5-infra-12. Live run 6: the leftover check needs `ecs:DescribeTasks` on the deploy role.** *(answered)*
 Context: run 45725657601 deployed, passed the smoke test and destroyed cleanly. Then AC-AWS-04
 (`infra/scripts/leftovers.ts`) failed on two false positives that the tagging index still listed: the
 ECS service (`INACTIVE`, per the owner) and its task (`STOPPED`). The fix is to ask ECS about both, the
@@ -209,3 +209,5 @@ Recommendation: (a), or (b) if the owner wants the tightening in the same redepl
 changes (services: `INACTIVE` = gone; tasks: `STOPPED` or reported MISSING = gone; everything else,
 and every failed or refused describe, = LEFTOVER) don't depend on the answer except for this grant. I'll
 write them, with the grant, once this is answered.
+
+Owner answer (2026-11-26): (b).
