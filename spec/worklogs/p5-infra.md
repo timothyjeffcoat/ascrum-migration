@@ -1798,3 +1798,47 @@ Wrong turns:
 Gates (credentials pointed at /dev/null, run unpiped): infra `pnpm verify` exit 0,
 "Test Files  12 passed (12)", "Tests  227 passed (227)", "Successfully synthesized". gitleaks on the staged
 change: "no leaks found".
+
+## 2026-11-26, logging follow-up (worker): DEV-p5-infra-37, -44
+
+Branch `convert/p5-infra-log-followups` from `origin/migration` (fac11d8, #86 merged).
+
+1. **DEV-p5-infra-44 (sec-09), split account ids.** The brief's first option, `redact()` on the raw text
+   before the ASCII filter, does not catch the split id on its own: `\b\d{12}\b` needs 12 adjacent digits,
+   and U+00AD or U+200B sits between them. So I used the row's other option: a removed code point (or a run of
+   them) between two digits is deleted, not spaced, then the filter, then `redact()`. I also kept `redact()`
+   on the raw text first. Without it, deletion could glue a digit onto an id that was already whole
+   (`123456789012<U+00AD>3` would print 13 digits, which is worse than today's `*** 3`). One extra call, no
+   new rule. `commandData()` is unchanged. A plain ASCII space still separates numbers (tested, as today).
+   The #86 test that pinned `123456<U+00AD>789012` → `123456 789012` described exactly the behaviour this
+   fixes, so I changed it. Its remaining assertions moved to "Q-p5-infra-14: an account id is scrubbed, also
+   next to a removed character", which also settles DEV-43's test-name nit.
+2. **DEV-p5-infra-44, imageScan's default log** now prints through `printable()`, as destroy.ts does. A test
+   spies on `console.log` with a status carrying `\n`, `::add-mask::`, an account id and ESC, and expects one
+   cleaned line.
+3. **DEV-p5-infra-37.** `isGhost` takes an optional `reasons` map. When a describe call for a task definition,
+   cluster or secret fails without meaning "gone", it records `describeFailure(result)` (`describe refused:
+   <code>` / `describe failed: …`, the ECS wording). `findLeftovers` passes the map and only falls back to
+   `asked: not reported deleted` when no reason was recorded. The return values of `isGhost` are unchanged,
+   so every decision is the same: still LEFTOVER, fail-closed. Tests: a refused DescribeClusters, a throttled
+   DescribeTaskDefinition, and a DescribeSecret connection error each print the new reason and stay
+   LEFTOVER (`ok` false). A ResourceNotFoundException is still gone. Answered "still there" for all three
+   types still prints `asked: not reported deleted`.
+
+Red/green (each file put back to `origin/migration`, then restored):
+- `aws.ts` old: "Tests 1 failed | 17 passed (18)". The failing test was the U+00AD/U+200B one; the glued and
+  plain-space tests describe today's output, so they pass on both.
+- Mutant, no `redact()` on the raw text: the glued-digit test is red (1 failed).
+- Mutant, the brief's first option (redact before and after, spacing kept): the U+00AD/U+200B test is red
+  (1 failed). This confirms it was not enough on its own.
+- `imageScan.ts` and `leftovers.ts` old: "Tests 4 failed | 71 passed (75)". The failures were the default-log
+  test and the three DEV-37 failure tests; the "still there" and not-found test passes on both.
+
+Wrong turns:
+- My first combined edit command (python plus a grep) was refused by the worktree guard ("split it into
+  plain commands"). I followed that and used the Edit tool, then separate plain commands. A second combined
+  heredoc-plus-sed command was refused the same way, and I handled it the same way.
+
+Gates (credentials pointed at /dev/null, run unpiped): infra `pnpm verify` exit 0,
+"Test Files  12 passed (12)", "Tests  236 passed (236)", "Successfully synthesized". gitleaks on the staged
+change: "no leaks found".

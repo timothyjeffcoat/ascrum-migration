@@ -56,16 +56,36 @@ export function redact(text: string): string {
  * the cursor, reorder or hide text: no forged "OK: ..." or "Remaining: 0" line and no `::` workflow command
  * in a log or an evidence file. That covers C0, DEL, C1, line separators, bidi controls, zero-width and
  * format characters, variation selectors and tag characters; `for ... of` walks code points, so a surrogate
- * pair becomes one space. Then the existing 12-digit scrub. A removed character between digits is now a
- * space, which separates numbers for redact() just as an ASCII space does.
+ * pair becomes one space.
+ *
+ * The 12-digit scrub (DEV-p5-infra-44, sec-09): removed code points that sit between two digits are deleted
+ * rather than spaced, so `123456<U+00AD>789012` joins up and is scrubbed as one id; on screen it reads as
+ * one anyway. redact() also runs on the raw text first, so an id that is already whole stays scrubbed even
+ * when the deletion glues another digit to it (`123456789012<U+00AD>3` prints `*** 3`, not 13 digits).
+ * Over-scrubbing is the safe direction. An ASCII space still separates numbers, as it always has.
  */
 export function printable(text: string): string {
+  const chars = [...redact(text)]
   let out = ''
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0
-    out += code >= 0x20 && code <= 0x7e ? char : ' '
+  for (const [i, char] of chars.entries()) {
+    if (isPrintableAscii(char)) {
+      out += char
+      continue
+    }
+    let next = i + 1
+    while (next < chars.length && !isPrintableAscii(chars[next] ?? ' ')) next++
+    out += isDigit(out.at(-1)) && isDigit(chars[next]) ? '' : ' '
   }
   return redact(out)
+}
+
+function isPrintableAscii(char: string): boolean {
+  const code = char.codePointAt(0) ?? 0
+  return code >= 0x20 && code <= 0x7e
+}
+
+function isDigit(char: string | undefined): boolean {
+  return char !== undefined && char >= '0' && char <= '9'
 }
 
 /** At most this many characters of AWS error text are echoed. */
