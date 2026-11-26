@@ -1179,7 +1179,7 @@ These come from how the first post's comments went: every question was about tru
 **Moment (article candidate)**
 - "Run 6 was the first time the whole thing worked: 46 resources, a signed-in smoke test over HTTPS, and a clean teardown in under six minutes. It still went red, because the last check, the one that proves nothing is left running, was too strict. AWS's tag index remembers deleted things. The fix needed one more read permission on the deploy role. That was the owner's call, so the worker stopped and asked instead of granting it."
 
-## 2026-11-26: Live runs 7 and 8: a fix that worked, a bootstrap that came late, then the first green run (orchestrator)
+## 2026-11-26: Live runs 7 to 9: a fix that worked, a bootstrap that came late, the first green run, and a cancel (orchestrator)
 - **Run 7 (45744570258, on `67c8ad3`, #84 merged).** The owner started it before updating the bootstrap for #84.
   - **Deploy:** all 46 resources ("Deployment time: 407.48s"). **Smoke test:** "5 passed (14.2s)". **Destroy:** no demo stacks left.
   - **Leftover check:** it cleared both ECS services and both task definitions. One of the services was run 6's purged one, reported MISSING, so Q-p5-infra-13 already paid off. Then it failed on one entry, run 7's own task.
@@ -1205,8 +1205,18 @@ These come from how the first post's comments went: every question was about tru
     6. a read that the load balancer makes with the caller's credentials and that no CloudFormation schema lists;
     7. a leftover check too strict about ECS;
     8. a bootstrap deployed after the run that needed it.
+- **Run 9 (45750808738, on `67c8ad3`): the cancel test (owner breakage O4).** The owner started the run, and the orchestrator cancelled it at 03:48:14 UTC, 2.5 min after AscrumDemo began creating, so the database was mid-create.
+  - **Deploy job:** `cancelled` (03:44:32 to 03:48:33).
+  - **Destroy job:** it ran anyway, as designed (`if: always() && needs.gate.result == 'success'`), from 03:48:37 to 03:59:41.
+  - **What it did:**
+    - It found "AscrumDemo: CREATE_IN_PROGRESS". Cancelling the run stops the CDK process, but CloudFormation goes on creating the stack.
+    - `destroy.ts` waited until the stack "settled: CREATE_COMPLETE".
+    - It emptied the web bucket, then deleted AscrumDemo and AscrumDemoRegistry, each on the first attempt.
+    - The destroy step took 647 s. That is about twice a normal teardown, because the stack had to finish creating first.
+  - **Leftover check:** 10 s. "Remaining: 0", "OK: nothing from the demo remains." It recognised 11 deleted ECS entries as gone.
+  - **Run conclusion:** `cancelled`. Every job after the cancel was green.
+  - **What it shows.** A cancel leaves nothing running: the teardown is a separate job that does not depend on the deploy finishing. It is also the reason the workflow never cancels a running deploy for the next one (`cancel-in-progress: false`).
 - **Still to prove live (owner breakage O4).**
-  - A run cancelled while the stack is being created. It is next, as run 9.
   - A standalone run of `destroy-demo.yml`.
   - The bill the next day.
 
