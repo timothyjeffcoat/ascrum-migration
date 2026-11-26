@@ -11,9 +11,10 @@
 #   - the API image holds exactly the source files the API loads, they all load (an import smoke test),
 #     its CMD is `node api/src/main.ts`, and it actually starts against PostgreSQL and answers /healthz
 #     (DEV-p5-containers-05: an image that crashed at start used to pass here);
-#   - in both images, the Alpine packages each runtime stage raises are at or above their floors, and
-#     the package sources (apk options in the Dockerfile; /etc/apk and world in the image) are the base
-#     image's (p5-image-cves, p5-image-scan: DEV-p5-image-cves-04, -05, -07).
+#   - the web image's Alpine packages are at or above their floors, the API image no longer holds apk-tools
+#     or Alpine's OpenSSL and zlib, and in both the package sources (apk options in the Dockerfile; /etc/apk
+#     and world in the image) are the base image's (p5-image-cves, p5-image-scan: DEV-p5-image-cves-04,
+#     -05, -07; Q-p5-image-scan-1 (a)).
 #
 #   docker/check-images.sh <api image> <web image>        (from the repo root)
 #
@@ -238,27 +239,38 @@ check_secrets() {
   fi
 }
 
-# --- OS package floors and package sources (both images) ------------------------------------------
-# OS package fixes (p5-image-cves, live deploy run 3; p5-image-scan, Q-p5-image-cves-3): each runtime stage
-# raises the Alpine packages its pinned base ships below a security fix with one
-# `apk add --no-cache '<package>>=<fixed version>' …` line, that Dockerfile's one list of floors. Everything
-# here fails closed (sec-01): the list must exist and every entry must be a valid apk version floor; the
-# built image must hold each package, and apk's own comparison, run in the image, must print exactly `>` or
-# `=`. Empty output (an invalid version), an error (no apk in the image), a missing package or a missing
-# list all fail. When a base image carries the fixes and the step goes, this check goes with it.
+# --- OS packages and package sources (both images) -------------------------------------------------
+# Each runtime stage has exactly one apk instruction, and what it may do depends on the image:
+#   - web (`floors`): `RUN apk add --no-cache '<package>>=<fixed version>' …` raises the Alpine packages the
+#     pinned nginx base ships below a security fix (p5-image-cves, live deploy run 3; Q-p5-image-cves-3 (a),
+#     Q-p5-image-scan-2 (a)). That line is the one list of floors. Everything here fails closed (sec-01): the
+#     list must exist and every entry must be a valid apk version floor; the built image must hold each
+#     package, and apk's own comparison, run in the image, must print exactly `>` or `=`. Empty output (an
+#     invalid version), an error (no apk in the image), a missing package or a missing list all fail.
+#   - API (`removed`): `RUN apk del --no-cache <package> …` removes apk-tools and Alpine's OpenSSL and zlib,
+#     whose only users in that image were apk and busybox's ssl_client (Q-p5-image-scan-1 (a)). The built
+#     image must not list any of API_REMOVED in apk's installed database, nor hold their main files; a
+#     database that cannot be read, or that does not list busybox and musl (so is not the real one), fails.
 #
 # Package sources (sec-02, DEV-p5-image-cves-05 and -07): no apk step may trust unsigned packages or use
 # another repository or key set. Read from the Dockerfile, with every word's quotes stripped first:
 #   - apk options are matched by prefix, because apk accepts abbreviated long options (`--allow-unt`):
 #     --allow-u*, --keys-d*, --repositor* (also --repositories-file) and -X*;
 #   - an exec-form RUN (`RUN ["apk", …]`) that mentions apk fails: it is not read as words here;
-#   - the floor line is the only instruction that may mention apk or an APK_ variable at all, which also
+#   - the one apk line is the only instruction that may mention apk or an APK_ variable at all, which also
 #     refuses a second `apk add`/`apk upgrade` line (reviewer N12), `echo … >> /etc/apk/repositories`
 #     (N08) and `wget … -O /etc/apk/keys/…` (N16), and a RUN heredoc, which this reader cannot parse.
 # And from the images, whatever the Dockerfile's spelling: everything under /etc/apk except `world`
-# (repositories, keys, any config) must be identical, byte for byte, to the runtime base image's; `world`
-# must be the base's plus exactly the floors; no ENV name starts with APK_.
+# (repositories, keys, any config) must be identical, byte for byte, to the runtime base image's (API: may
+# only lose paths, never gain or change one, since `apk del apk-tools` removes its own config); `world`
+# must be the base's plus exactly the floors (web), or the base's minus exactly the removed packages (API:
+# with apk gone, nothing in the image can install from it, but a package added before the `apk del` would
+# still show there); no ENV name starts with APK_.
 APK_FLOOR='^[a-z0-9][a-z0-9+._-]*>=[0-9]+(\.[0-9]+)*[a-z]?(_(alpha|beta|pre|rc|cvs|svn|git|hg|p)[0-9]*)*(-r[0-9]+)?$'
+APK_NAME='^[a-z0-9][a-z0-9+._-]*$'
+# What the API image must not hold (owner's answer to Q-p5-image-scan-1 (a)), and a main file of each.
+API_REMOVED=(apk-tools libapk ssl_client libssl3 libcrypto3 zlib)
+API_REMOVED_FILES=(/sbin/apk /usr/bin/ssl_client /usr/lib/libssl.so.3 /usr/lib/libcrypto.so.3 /usr/lib/libz.so.1)
 # Every path under /etc/apk with its type and content hash (as root, so nothing is unreadable), then
 # world's entries. A failed run prints nothing usable and fails the comparison.
 APK_STATE='cd /etc/apk || exit 1
@@ -270,8 +282,16 @@ done
 echo "world:"
 tr " " "\n" < world | sed "/^$/d" | sort'
 check_apk() {
-  local image=$1 dockerfile=$2 before=$findings line keyword rest word words floor_lines=0 versions='' base
-  local -a floors=()
+  local image=$1 dockerfile=$2 mode=$3 before=$findings line keyword rest word words apk_lines=0 versions='' base verb
+  local -a floors=() removed=()
+  case $mode in
+    floors) verb=add ;;
+    removed) verb=del ;;
+    *)
+      fail "check_apk: unknown mode $mode"
+      return
+      ;;
+  esac
   while read -r line; do
     read -r keyword rest <<< "$line"
     keyword=${keyword^^}
@@ -294,47 +314,75 @@ check_apk() {
           fail "$dockerfile: an apk step uses $word (unsigned packages, or another repository or key set)" ;;
       esac
     done
-    if ! [[ $keyword == RUN && ${words[0]:-} == apk && ${words[1]:-} == add ]]; then
-      fail "$dockerfile: only the one 'RUN apk add --no-cache <floors>' line may mention apk or APK_: $line"
+    if ! [[ $keyword == RUN && ${words[0]:-} == apk && ${words[1]:-} == "$verb" ]]; then
+      fail "$dockerfile: only the one 'RUN apk $verb --no-cache …' line may mention apk or APK_: $line"
       continue
     fi
-    floor_lines=$((floor_lines + 1))
+    apk_lines=$((apk_lines + 1))
     for word in "${words[@]:2}"; do
       if [[ $word == --no-cache ]]; then continue; fi
       if [[ $word == -* ]]; then
-        fail "$dockerfile: apk add option $word is not allowed (only --no-cache)"
-      elif [[ $word =~ $APK_FLOOR ]]; then
+        fail "$dockerfile: apk $verb option $word is not allowed (only --no-cache)"
+      elif [[ $mode == floors && $word =~ $APK_FLOOR ]]; then
         floors+=("$word")
-      else
+      elif [[ $mode == removed && $word =~ $APK_NAME ]]; then
+        removed+=("$word")
+      elif [[ $mode == floors ]]; then
         fail "$dockerfile: apk add argument $word is not a '<package>>=<apk version>' floor"
+      else
+        fail "$dockerfile: apk del argument $word is not a package name"
       fi
     done
   done < <(instructions "$dockerfile" | grep -iE '(^|[^a-z0-9_])apk([^a-z0-9]|$)|APK_' || true)
-  ((floor_lines <= 1)) || fail "$dockerfile: $floor_lines apk add lines; the floors must be one list on one line"
-  ((${#floors[@]} > 0)) ||
-    fail "$dockerfile: no apk add '<package>>=<version>' floors found; if the base image now has the fixes, remove this check with the step"
-  if ((${#floors[@]} > 0)); then
-    if ! versions=$(docker run --rm --network none --entrypoint sh "$image" -c '
-      for floor in "$@"; do
-        name=${floor%%>=*}; want=${floor#*>=}
-        have=$(awk -v p="P:$name" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed)
-        op=""
-        [ -z "$have" ] || op=$(apk version -t "$have" "$want" 2>&1)
-        printf "%s\t%s\t%s\t%s\n" "$name" "${have:-<not installed>}" "$(echo $op)" "$want"
-      done' sh "${floors[@]}" 2>&1); then
-      fail "$image: could not read its OS package versions: $versions"
-    else
-      local confirmed=0 name have op want
-      while IFS=$'\t' read -r name have op want; do
-        if [[ $op == '>' || $op == '=' ]]; then
-          confirmed=$((confirmed + 1))
-        else
-          fail "$image: $name $have is not shown at or above $want (apk version -t printed '$op')"
-        fi
-      done <<< "$versions"
-      ((confirmed == ${#floors[@]})) ||
-        fail "$image: $confirmed of ${#floors[@]} OS package floors confirmed: $(tr '\t\n' ' ;' <<< "$versions")"
+  ((apk_lines <= 1)) || fail "$dockerfile: $apk_lines apk $verb lines; there must be one list on one line"
+  local summary=''
+  if [[ $mode == floors ]]; then
+    ((${#floors[@]} > 0)) ||
+      fail "$dockerfile: no apk add '<package>>=<version>' floors found; if the base image now has the fixes, remove this check with the step"
+    if ((${#floors[@]} > 0)); then
+      if ! versions=$(docker run --rm --network none --entrypoint sh "$image" -c '
+        for floor in "$@"; do
+          name=${floor%%>=*}; want=${floor#*>=}
+          have=$(awk -v p="P:$name" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed)
+          op=""
+          [ -z "$have" ] || op=$(apk version -t "$have" "$want" 2>&1)
+          printf "%s\t%s\t%s\t%s\n" "$name" "${have:-<not installed>}" "$(echo $op)" "$want"
+        done' sh "${floors[@]}" 2>&1); then
+        fail "$image: could not read its OS package versions: $versions"
+      else
+        local confirmed=0 name have op want
+        while IFS=$'\t' read -r name have op want; do
+          if [[ $op == '>' || $op == '=' ]]; then
+            confirmed=$((confirmed + 1))
+          else
+            fail "$image: $name $have is not shown at or above $want (apk version -t printed '$op')"
+          fi
+        done <<< "$versions"
+        ((confirmed == ${#floors[@]})) ||
+          fail "$image: $confirmed of ${#floors[@]} OS package floors confirmed: $(tr '\t\n' ' ;' <<< "$versions")"
+      fi
     fi
+    summary="OS packages at or above their floors: $(tr '\t\n' ' ;' <<< "$versions")"
+  else
+    ((${#removed[@]} > 0)) || fail "$dockerfile: no 'apk del --no-cache <package> …' line found"
+    local installed pkg file present
+    if ! installed=$(docker run --rm --network none --entrypoint cat "$image" /lib/apk/db/installed 2>&1); then
+      fail "$image: could not read apk's installed database: $installed"
+    elif ! grep -qx 'P:busybox' <<< "$installed" || ! grep -qx 'P:musl' <<< "$installed"; then
+      fail "$image: apk's installed database does not list busybox and musl, so it cannot show what is absent"
+    else
+      for pkg in "${API_REMOVED[@]}"; do
+        ! grep -qxF "P:$pkg" <<< "$installed" || fail "$image: $pkg is installed; it must be removed (Q-p5-image-scan-1 (a))"
+      done
+    fi
+    if ! present=$(docker run --rm --network none --entrypoint sh "$image" -c \
+      'for f in "$@"; do if [ -e "$f" ] || [ -L "$f" ]; then echo "$f"; fi; done; echo end' sh "${API_REMOVED_FILES[@]}" 2>&1) ||
+      [[ $(tail -1 <<< "$present") != end ]]; then
+      fail "$image: could not look for the removed packages' files: $present"
+    else
+      for file in $(sed '$d' <<< "$present"); do fail "$image: $file is in the image; its package must be removed"; done
+    fi
+    summary="absent: ${API_REMOVED[*]} (installed database and files)"
   fi
   # The package sources in the image itself, against its runtime base (pinned and pulled above).
   base=${runtime_base[$dockerfile]}
@@ -347,25 +395,37 @@ check_apk() {
     ! grep -q '^file [0-9a-f]\{64\} \./keys/' <<< "$base_state"; then
     fail "$base: /etc/apk has no repositories file or no keys, so the comparison would prove nothing: $base_state"
   else
-    if ! diff <(sed '/^world:$/,$d' <<< "$base_state") <(sed '/^world:$/,$d' <<< "$image_state") > "$work/apk-diff.txt"; then
+    diff <(sed '/^world:$/,$d' <<< "$base_state") <(sed '/^world:$/,$d' <<< "$image_state") > "$work/apk-diff.txt" || true
+    # web: identical. API: nothing added or changed; a path may only be gone (`apk del apk-tools` takes
+    # its /etc/apk/protected_paths.d with it, and with apk gone nothing reads /etc/apk any more).
+    if [[ $mode == floors ]] && grep -q '^[<>]' "$work/apk-diff.txt"; then
       fail "$image: /etc/apk (repositories, keys, config) differs from its base $base: $(grep '^[<>]' "$work/apk-diff.txt" | tr '\n' ' ')(< base, > image)"
+    elif [[ $mode == removed ]] && grep -q '^>' "$work/apk-diff.txt"; then
+      fail "$image: /etc/apk (repositories, keys, config) has paths its base $base does not: $(grep '^[<>]' "$work/apk-diff.txt" | tr '\n' ' ')(< base, > image)"
     fi
-    # A floor replaces the base's entry for the same package (the nginx base names libcrypto3 in world).
-    local floor_names actual
-    floor_names=$(printf '%s\n' "${floors[@]%%>=*}")
-    expected=$( (sed '1,/^world:$/d' <<< "$base_state" | awk -v names="$floor_names" 'BEGIN { n = split(names, a, "\n"); for (i = 1; i <= n; i++) skip[a[i]] = 1 }
-        { name = $0; sub(/[<>=~].*/, "", name); if (!(name in skip)) print }' && printf '%s\n' "${floors[@]}") | LC_ALL=C sort)
+    local gone
+    gone=$(grep '^<' "$work/apk-diff.txt" | sed 's/^< //' | tr '\n' ' ' || true)
+    # web: a floor replaces the base's entry for the same package (the nginx base names libcrypto3 in world).
+    # API: the removed packages leave world, and nothing else changes.
+    local skip_names actual
+    if [[ $mode == floors ]]; then skip_names=$(printf '%s\n' "${floors[@]%%>=*}"); else skip_names=$(printf '%s\n' "${removed[@]}"); fi
+    expected=$( (sed '1,/^world:$/d' <<< "$base_state" | awk -v names="$skip_names" 'BEGIN { n = split(names, a, "\n"); for (i = 1; i <= n; i++) skip[a[i]] = 1 }
+        { name = $0; sub(/[<>=~].*/, "", name); if (!(name in skip)) print }' && if [[ $mode == floors ]]; then printf '%s\n' "${floors[@]}"; fi) | LC_ALL=C sort)
     actual=$(sed '1,/^world:$/d' <<< "$image_state" | LC_ALL=C sort)
     if [[ $actual != "$expected" ]]; then
-      fail "$image: /etc/apk/world is not its base's plus exactly the floors: $(diff <(echo "$expected") <(echo "$actual") | grep '^[<>]' | tr '\n' ' ')(< expected, > image)"
+      fail "$image: /etc/apk/world is not its base's $([[ $mode == floors ]] && echo 'plus exactly the floors' || echo 'minus exactly the removed packages'): $(diff <(echo "$expected") <(echo "$actual") | grep '^[<>]' | tr '\n' ' ')(< expected, > image)"
     fi
   fi
   local apk_env
   apk_env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | cut -d= -f1 | grep -i '^APK_' || true)
   [[ -z $apk_env ]] || fail "$image: ENV sets apk's own variables: $(tr '\n' ' ' <<< "$apk_env")"
   if ((findings == before)); then
-    echo "$image: OS packages at or above their floors: $(tr '\t\n' ' ;' <<< "$versions")"
-    echo "$image: /etc/apk repositories, keys and config identical to $base; world is the base's plus the ${#floors[@]} floors"
+    echo "$image: $summary"
+    if [[ $mode == floors ]]; then
+      echo "$image: /etc/apk repositories, keys and config identical to $base; world is the base's plus the ${#floors[@]} floors"
+    else
+      echo "$image: /etc/apk adds or changes nothing against $base (gone with apk: ${gone:-nothing}); world is the base's minus the removed packages"
+    fi
   fi
 }
 
@@ -437,8 +497,8 @@ check_startup() {
 }
 check_startup "$api_image"
 
-# OS package floors and package sources (the section above).
-check_apk "$api_image" docker/api.Dockerfile
+# Alpine's OpenSSL, zlib and apk are gone, and the package sources are the base's (the section above).
+check_apk "$api_image" docker/api.Dockerfile removed
 
 # Dev dependencies: none of api/package.json's devDependencies is installed (pnpm keeps every installed
 # package as node_modules/.pnpm/<name>@<version>, scoped names with + for /).
@@ -461,10 +521,10 @@ hits=$(grep -E '(^|/)node_modules/' "$work/web.txt" | head -5 || true)
 # The site root holds only build output: no sources, source maps, or the MSW worker (dev only).
 hits=$(grep -E '^srv/ascrum/.*(\.tsx?|\.map|\.less|mockServiceWorker\.js)$' "$work/web.txt" || true)
 [[ -z $hits ]] || fail "$web_image: sources or dev files in the site root: $hits"
-check_apk "$web_image" docker/web.Dockerfile
+check_apk "$web_image" docker/web.Dockerfile floors
 
 if [[ $findings -gt 0 ]]; then
   echo "check-images: $findings finding(s)" >&2
   exit 1
 fi
-echo "check-images: AC-CTR-02 (non-root, no dev dependencies, test files or .env), pins, no secrets in layers or config, the API loads and starts, OS package floors and package sources in both images"
+echo "check-images: AC-CTR-02 (non-root, no dev dependencies, test files or .env), pins, no secrets in layers or config, the API loads and starts, web OS package floors, API without apk/OpenSSL/zlib, package sources in both images"

@@ -46,22 +46,32 @@ FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24@sha256:f5116ed4606f3eb015dd4a
 ENV API_UPSTREAM=http://api:3000 \
     ROUTE_STUB_CONTROL=off \
     NGINX_ENVSUBST_FILTER=^(API_UPSTREAM|ROUTE_STUB_CONTROL)$
-# Alpine's security fixes that the pinned nginx base (Alpine 3.24.2) does not carry yet: the same step and
-# the same floors as docker/api.Dockerfile (owner's answer to Q-p5-image-cves-3 (a); spec/worklogs/
-# p5-image-scan.md has the sources). Fixed versions from Alpine's secdb, v3.24 main
-# (secdb.alpinelinux.org/v3.24/main.json), checked against aports 3.24-stable and the v3.24 main index:
-#   libcrypto3, libssl3 >= 3.5.9-r1 (openssl): CVE-2026-95691, CVE-2026-95692, CVE-2026-88823,
-#     CVE-2026-107496, CVE-2026-88822 (the base has 3.5.9-r0).
-#   zlib >= 1.4-r0: CVE-2026-85091 (fixed in 1.3.2-r1) and CVE-2026-4738 (fixed in 1.4-r0); the base has
-#     1.3.2-r0, one release older than the node base's.
-# Unlike the API, nginx itself links these (libssl.so.3, libcrypto.so.3, libz.so.1), for TLS and gzip, both
-# of which this config leaves off (plain HTTP on 8080, base nginx.conf's `#gzip on;`). The floors are apk version constraints, so apk's solver fails
-# the build on a floor no package satisfies or one that is not a valid version (sec-01, fail closed).
-# docker/check-images.sh reads this line as the one list of floors, checks the built image against it, and
-# refuses any other apk instruction, option, repository or key. apk needs root; USER goes back to the
-# base's 101 at once. Remove the step once Dependabot moves the FROM line to a base that has these versions.
+# Alpine's security fixes that the pinned nginx base (Alpine 3.24.2) does not carry yet (owner's answers to
+# Q-p5-image-cves-3 (a) and Q-p5-image-scan-2 (a); spec/worklogs/p5-image-scan.md has the sources). Fixed
+# versions from Alpine's secdb, v3.24 main (secdb.alpinelinux.org/v3.24/main.json), each checked against
+# the aports 3.24-stable APKBUILD's secfixes and the v3.24 main index:
+#   libcrypto3, libssl3 >= 3.5.9-r1 (openssl): CVE-2026-95691, -95692, -88823, -107496, -88822.
+#   zlib >= 1.4-r0: CVE-2026-85091 (fixed in 1.3.2-r1) and CVE-2026-4738 (1.4-r0).
+#   brotli-libs >= 1.2.1-r0 (brotli): CVE-2026-111497.
+#   libexpat >= 2.10.0-r0 (expat): CVE-2026-113351, -115506, -117610, -118370.
+#   libxslt >= 1.1.43-r4: CVE-2026-9947, -87636, -125350 (and CVE-2025-10911).
+#   libxml2 >= 2.13.9-r3: CVE-2026-86144.
+#   curl, libcurl >= 8.23.0-r0 (curl): CVE-2026-92392 among the 24 CVEs secdb lists for 8.23.0-r0.
+#   musl, musl-utils >= 1.2.6-r3 (musl): CVE-2026-107891.
+# nginx itself (1.30.6-r1, six HIGH/CRITICAL CVEs fixed in 1.30.7) comes from nginx.org's repository, not
+# Alpine's, so no floor here can raise it; docker/scan-images.sh reports it in a dated, nginx-only window
+# until the base image has nginx >= 1.30.7 (Q-p5-image-scan-2 (c)).
+# Unlike the API, nginx links Alpine's OpenSSL and zlib (libssl.so.3, libcrypto.so.3, libz.so.1), for TLS
+# and gzip, both of which this config leaves off (plain HTTP on 8080, base nginx.conf's `#gzip on;`). The
+# floors are apk version constraints, so apk's solver fails the build on a floor no package satisfies or
+# one that is not a valid version (sec-01, fail closed). docker/check-images.sh reads this instruction as
+# the one list of floors, checks the built image against it, and refuses any other apk instruction, option,
+# repository or key. apk needs root; USER goes back to the base's 101 at once. Remove a floor once
+# Dependabot moves the FROM line to a base that has that version.
 USER root
-RUN apk add --no-cache 'libcrypto3>=3.5.9-r1' 'libssl3>=3.5.9-r1' 'zlib>=1.4-r0'
+RUN apk add --no-cache 'libcrypto3>=3.5.9-r1' 'libssl3>=3.5.9-r1' 'zlib>=1.4-r0' \
+      'brotli-libs>=1.2.1-r0' 'libexpat>=2.10.0-r0' 'libxslt>=1.1.43-r4' 'libxml2>=2.13.9-r3' \
+      'curl>=8.23.0-r0' 'libcurl>=8.23.0-r0' 'musl>=1.2.6-r3' 'musl-utils>=1.2.6-r3'
 USER 101
 # Owned by root, read-only for nginx (uid 101).
 COPY --from=build /build/web/dist /srv/ascrum
