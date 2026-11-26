@@ -63,6 +63,13 @@ for tool in docker jq; do
   }
 done
 while read -r name; do unset "$name"; done < <(compgen -e | grep '^TRIVY_' || true)
+# Exactly the release .github/actions/setup-trivy pins (DEV-p5-image-scan-04 (a)): move both together.
+PINNED_TRIVY_VERSION=0.76.2
+trivy_version=$("$trivy" --version 2>&1 | sed -n 's/^Version: //p' | head -1)
+if [[ $trivy_version != "$PINNED_TRIVY_VERSION" ]]; then
+  echo "scan-images: $trivy is Trivy '${trivy_version:-unknown}', not the pinned $PINNED_TRIVY_VERSION" >&2
+  exit 2
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -114,7 +121,7 @@ window_state() {
     window_reason="expired: today ($today) is after $WINDOW_EXPIRES"
     return
   fi
-  if ! have=$(docker run --rm --network none --entrypoint sh "$image" -c \
+  if ! have=$(docker run --pull never --rm --network none --entrypoint sh "$image" -c \
     'awk -v p="P:$1" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed' \
     sh "$WINDOW_PACKAGE" 2>&1); then
     window_reason="closed: could not read the installed $WINDOW_PACKAGE version ($have)"
@@ -124,7 +131,7 @@ window_state() {
     window_reason="closed: $WINDOW_PACKAGE is not installed in $image"
     return
   fi
-  op=$(docker run --rm --network none --entrypoint apk "$image" version -t "$have" "$WINDOW_CLOSES_AT_NGINX" 2>&1 || true)
+  op=$(docker run --pull never --rm --network none --entrypoint apk "$image" version -t "$have" "$WINDOW_CLOSES_AT_NGINX" 2>&1 || true)
   if [[ $op == '<' ]]; then
     window_open=yes
     window_reason="open: installed $WINDOW_PACKAGE $have is below $WINDOW_CLOSES_AT_NGINX, and today ($today) is not after $WINDOW_EXPIRES"
@@ -161,7 +168,7 @@ check_report() {
 }
 scan() {
   local image=$1 label=$2 apk_pkgs in_window=no
-  if ! apk_pkgs=$(docker run --rm --network none --entrypoint sh "$image" -c "grep -c '^P:' /lib/apk/db/installed"); then
+  if ! apk_pkgs=$(docker run --pull never --rm --network none --entrypoint sh "$image" -c "grep -c '^P:' /lib/apk/db/installed"); then
     fail "$image: could not count the packages in /lib/apk/db/installed"
     return
   fi
@@ -203,8 +210,19 @@ scan "$2" web
   fi
   echo "=============================================================================================="
 } >&2
+# A workflow command's data, escaped as the Actions toolkit's escapeData does (`%` first, then CR and LF),
+# after dropping everything but printable ASCII, CR and LF: window_reason can carry docker or apk output
+# (DEV-p5-image-scan-07 note A), which must not end the command or start another.
+gha_data() {
+  local s
+  s=$(printf '%s' "$1" | LC_ALL=C tr -cd '\r\n -~')
+  s=${s//'%'/%25}
+  s=${s//$'\r'/%0D}
+  s=${s//$'\n'/%0A}
+  printf '%s' "$s"
+}
 if [[ -n ${GITHUB_ACTIONS:-} ]]; then
-  echo "::warning title=nginx window (Q-p5-image-scan-2)::${#windowed[@]} nginx finding(s) in the web image reported, not failed; ${window_reason:-not evaluated}. Closes at nginx >= $WINDOW_CLOSES_AT_NGINX or after $WINDOW_EXPIRES."
+  echo "::warning title=nginx window (Q-p5-image-scan-2)::$(gha_data "${#windowed[@]} nginx finding(s) in the web image reported, not failed; ${window_reason:-not evaluated}. Closes at nginx >= $WINDOW_CLOSES_AT_NGINX or after $WINDOW_EXPIRES.")"
 fi
 
 if ((findings > 0)); then

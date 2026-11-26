@@ -9,7 +9,8 @@
 # Trivy's advisories (the newest, GHSA-8rc5-4fr6-64pw, is fixed in 0.72.0). spec/worklogs/p5-image-scan.md
 # records how this pin was checked: the release's checksums file, its Sigstore bundle and GitHub's build
 # attestation, all tied to the v0.76.2 tag of aquasecurity/trivy.
-# To move Trivy, change both values below together, from trivy_<v>_checksums.txt in the new release, and
+# To move Trivy, change both values below together, from trivy_<v>_checksums.txt in the new release, plus
+# PINNED_TRIVY_VERSION in docker/scan-images.sh (which refuses any other version), and
 # check that release the same way first (spec/worklogs/p5-image-scan.md, "How the pin was checked").
 # Sets TRIVY (the binary's path) for later steps, which docker/scan-images.sh reads.
 name: Set up Trivy

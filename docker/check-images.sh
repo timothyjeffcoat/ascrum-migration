@@ -59,7 +59,7 @@ check_user() {
   case "$user" in
     '' | root | 0 | root:* | 0:*) fail "$image: USER is '${user:-<unset>}', which runs as root" ;;
   esac
-  uid=$(docker run --rm --entrypoint id "$image" -u)
+  uid=$(docker run --pull never --rm --entrypoint id "$image" -u)
   [[ $uid != 0 ]] || fail "$image: a container runs as uid 0"
   echo "$image: USER=$user, runs as uid $uid"
 }
@@ -281,6 +281,72 @@ find . ! -path ./world | sort | while IFS= read -r f; do
 done
 echo "world:"
 tr " " "\n" < world | sed "/^$/d" | sort'
+# The runtime stage's RUN instructions, by allowlist (DEV-p5-image-scan-05, the security review's C1:
+# `RUN ap''k --allow-untrusted -X … add …` built and passed, because the shell joins `ap''k` into `apk`
+# after the text check had already looked for the word `apk`). A text check cannot list every way a shell
+# can spell a command, so the runtime stage (everything after the last FROM, which is what ships) may hold
+# only these RUN instructions, compared after joining continuation lines and collapsing whitespace:
+#   - web: the one floor line, `RUN apk add --no-cache` followed only by single-quoted '<package>>=<version>'
+#     floors (APK_FLOOR);
+#   - API: the one `RUN apk del --no-cache` line followed only by bare package names (APK_NAME), and the
+#     two fixed lines in API_RUNTIME_RUN_LITERALS, which must match byte for byte.
+# Any other RUN in the runtime stage fails. Before the form is compared, a RUN that is not one of those
+# exact literals fails if it holds `$(`, a backtick, `${`, any backslash (continuations are already
+# joined) or a quote that splits a word (only a whole word may be quoted, as in 'zlib>=1.4-r0'). The printf
+# literal holds `\n` and quoted words with spaces; it is exempt only because its whole text is fixed.
+# A Dependabot bump changes only the FROM line, which this does not compare, so it needs no edit here.
+API_RUNTIME_RUN_LITERALS=(
+  'RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*'
+  "RUN printf '{ \"type\": \"module\" }\\n' > web/package.json"
+)
+check_runtime_runs() {
+  local dockerfile=$1 verb=$2 line norm runs=0 lit literal w inner ok bad before=$findings
+  local -a words literals=()
+  [[ $dockerfile != docker/api.Dockerfile ]] || literals=("${API_RUNTIME_RUN_LITERALS[@]}")
+  while IFS= read -r line; do
+    read -ra words <<< "$line"
+    [[ ${words[0]^^} == RUN ]] || continue
+    runs=$((runs + 1))
+    norm="${words[*]}"
+    literal=no
+    for lit in "${literals[@]}"; do
+      if [[ $norm == "$lit" ]]; then literal=yes; fi
+    done
+    [[ $literal == no ]] || continue
+    if [[ $norm == *'$('* || $norm == *'`'* || $norm == *'${'* || $norm == *\\* ]]; then
+      fail "$dockerfile: a runtime-stage RUN uses \$(, a backtick, \${ or a backslash: $norm"
+      continue
+    fi
+    bad=''
+    for w in "${words[@]}"; do
+      if [[ $w == *[\'\"]* ]] && ! [[ $w =~ ^\'[^\'\"]*\'$ || $w =~ ^\"[^\'\"]*\"$ ]]; then
+        bad=$w
+        break
+      fi
+    done
+    if [[ -n $bad ]]; then
+      fail "$dockerfile: a runtime-stage RUN has quotes that split the word $bad: $norm"
+      continue
+    fi
+    ok=no
+    if [[ ${words[0]^^} == RUN && ${words[1]:-} == apk && ${words[2]:-} == "$verb" && ${words[3]:-} == --no-cache && ${#words[@]} -gt 4 ]]; then
+      ok=yes
+      for w in "${words[@]:4}"; do
+        inner=${w#\'}
+        inner=${inner%\'}
+        if [[ $verb == add ]]; then
+          [[ $w == "'$inner'" && $inner =~ $APK_FLOOR ]] || ok=no
+        else
+          [[ $w =~ $APK_NAME ]] || ok=no
+        fi
+      done
+    fi
+    [[ $ok == yes ]] || fail "$dockerfile: a runtime-stage RUN that is not one of its permitted forms: $norm"
+  done < <(instructions "$dockerfile" | awk 'toupper($1) == "FROM" { n = 0 } { l[++n] = $0 } END { for (i = 1; i <= n; i++) print l[i] }')
+  if ((findings == before)); then
+    echo "$dockerfile: the runtime stage's $runs RUN instruction(s) are all permitted forms"
+  fi
+}
 check_apk() {
   local image=$1 dockerfile=$2 mode=$3 before=$findings line keyword rest word words apk_lines=0 versions='' base verb
   local -a floors=() removed=()
@@ -292,6 +358,7 @@ check_apk() {
       return
       ;;
   esac
+  check_runtime_runs "$dockerfile" "$verb"
   while read -r line; do
     read -r keyword rest <<< "$line"
     keyword=${keyword^^}
@@ -333,14 +400,16 @@ check_apk() {
         fail "$dockerfile: apk del argument $word is not a package name"
       fi
     done
-  done < <(instructions "$dockerfile" | grep -iE '(^|[^a-z0-9_])apk([^a-z0-9]|$)|APK_' || true)
+  # Quotes and backslashes removed first, in every stage, so `ap''k`, `"ap"k` and `a\pk` read as apk here
+  # too (DEV-p5-image-scan-05); spellings through `$(…)` or `${…}` are for the runtime allowlist above.
+  done < <(instructions "$dockerfile" | tr -d "'\"\\\\" | grep -iE '(^|[^a-z0-9_])apk([^a-z0-9]|$)|APK_' || true)
   ((apk_lines <= 1)) || fail "$dockerfile: $apk_lines apk $verb lines; there must be one list on one line"
   local summary=''
   if [[ $mode == floors ]]; then
     ((${#floors[@]} > 0)) ||
       fail "$dockerfile: no apk add '<package>>=<version>' floors found; if the base image now has the fixes, remove this check with the step"
     if ((${#floors[@]} > 0)); then
-      if ! versions=$(docker run --rm --network none --entrypoint sh "$image" -c '
+      if ! versions=$(docker run --pull never --rm --network none --entrypoint sh "$image" -c '
         for floor in "$@"; do
           name=${floor%%>=*}; want=${floor#*>=}
           have=$(awk -v p="P:$name" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed)
@@ -366,7 +435,7 @@ check_apk() {
   else
     ((${#removed[@]} > 0)) || fail "$dockerfile: no 'apk del --no-cache <package> …' line found"
     local installed pkg file present
-    if ! installed=$(docker run --rm --network none --entrypoint cat "$image" /lib/apk/db/installed 2>&1); then
+    if ! installed=$(docker run --pull never --rm --network none --entrypoint cat "$image" /lib/apk/db/installed 2>&1); then
       fail "$image: could not read apk's installed database: $installed"
     elif ! grep -qx 'P:busybox' <<< "$installed" || ! grep -qx 'P:musl' <<< "$installed"; then
       fail "$image: apk's installed database does not list busybox and musl, so it cannot show what is absent"
@@ -375,7 +444,7 @@ check_apk() {
         ! grep -qxF "P:$pkg" <<< "$installed" || fail "$image: $pkg is installed; it must be removed (Q-p5-image-scan-1 (a))"
       done
     fi
-    if ! present=$(docker run --rm --network none --entrypoint sh "$image" -c \
+    if ! present=$(docker run --pull never --rm --network none --entrypoint sh "$image" -c \
       'for f in "$@"; do if [ -e "$f" ] || [ -L "$f" ]; then echo "$f"; fi; done; echo end' sh "${API_REMOVED_FILES[@]}" 2>&1) ||
       [[ $(tail -1 <<< "$present") != end ]]; then
       fail "$image: could not look for the removed packages' files: $present"
@@ -387,9 +456,9 @@ check_apk() {
   # The package sources in the image itself, against its runtime base (pinned and pulled above).
   base=${runtime_base[$dockerfile]}
   local image_state base_state expected
-  if ! image_state=$(docker run --rm --network none --user 0 --entrypoint sh "$image" -c "$APK_STATE" 2>&1); then
+  if ! image_state=$(docker run --pull never --rm --network none --user 0 --entrypoint sh "$image" -c "$APK_STATE" 2>&1); then
     fail "$image: could not read /etc/apk: $image_state"
-  elif ! base_state=$(docker run --rm --network none --user 0 --entrypoint sh "$base" -c "$APK_STATE" 2>&1); then
+  elif ! base_state=$(docker run --pull never --rm --network none --user 0 --entrypoint sh "$base" -c "$APK_STATE" 2>&1); then
     fail "$base: could not read /etc/apk: $base_state"
   elif ! grep -q '^file [0-9a-f]\{64\} \./repositories$' <<< "$base_state" ||
     ! grep -q '^file [0-9a-f]\{64\} \./keys/' <<< "$base_state"; then
@@ -448,7 +517,7 @@ hits=$(grep -E '^app/.' "$work/api.txt" | grep -v '^app/api/node_modules/' | gre
 # files in /app: none missing, none extra (a test helper or the MSW adapter would be extra).
 # A module loaded with import() inside a function is never resolved here; the lint gate forbids import()
 # in api/src and web/stub for that reason (DEV-p5-containers-11, web/eslint.config.js SERVER_SOURCE_RULES).
-if graph=$(docker run --rm --network none --entrypoint node \
+if graph=$(docker run --pull never --rm --network none --entrypoint node \
   --mount "type=bind,source=$PWD/docker/api/import-graph.ts,target=/tmp/import-graph.ts,readonly" \
   "$api_image" /tmp/import-graph.ts /app /app/api/src/main.ts 2> "$work/graph.err"); then
   present=$(grep -E '^app/(api/src|web/stub)/[^/]+\.ts$' "$work/api.txt" | sed 's|^app/||' | sort)
@@ -466,9 +535,11 @@ fi
 check_startup() {
   local image=$1 db_image net="$startup_run-net" db="$startup_run-db" api="$startup_run-api" status deadline
   db_image=$(jq -r '.services.db.image' <<< "$compose_json")
+  # Pulled here, by its pinned digest, because every `docker run` below uses --pull never.
+  docker image inspect "$db_image" > /dev/null 2>&1 || docker pull -q "$db_image" > /dev/null
   docker network create --internal "$net" > /dev/null
   # Throwaway values for a database that lives for this check only, on a network with no way out.
-  docker run -d --name "$db" --network "$net" -e POSTGRES_USER=check -e POSTGRES_PASSWORD=check \
+  docker run --pull never -d --name "$db" --network "$net" -e POSTGRES_USER=check -e POSTGRES_PASSWORD=check \
     -e POSTGRES_DB=check "$db_image" > /dev/null
   # Like compose's service_healthy: wait for the real server on TCP (the image's first-start server
   # listens on its socket only).
@@ -477,7 +548,7 @@ check_startup() {
     ((SECONDS < deadline)) || { fail "$db_image: PostgreSQL did not start for the start-up check"; return; }
     sleep 1
   done
-  docker run -d --name "$api" --network "$net" -e "DATABASE_URL=postgres://check:check@$db:5432/check" \
+  docker run --pull never -d --name "$api" --network "$net" -e "DATABASE_URL=postgres://check:check@$db:5432/check" \
     "$image" > /dev/null
   deadline=$((SECONDS + 90))
   status=starting
