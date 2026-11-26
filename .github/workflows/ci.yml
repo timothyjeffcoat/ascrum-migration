@@ -116,6 +116,25 @@ jobs:
       - name: AC-CTR-02 images (non-root, no dev deps, tests or .env), pins, no secrets in layers, the API loads and starts
         working-directory: .
         run: docker/check-images.sh ascrum-api:ci ascrum-web:ci
+      # spec §6 image-scan, owner's answer to Q-p5-image-cves-2 (a): Trivy on both images, failing on HIGH or
+      # CRITICAL, fixed or not. A pinned, checksum-verified release binary from the one action that holds
+      # the pin (never trivy-action, a floating tag or `latest`: GHSA-69fq-xp46-6x23). Its vulnerability DB
+      # is downloaded on every run; a failed download, a stale DB or a failed scan fails this step
+      # (docker/scan-images.sh). No ignore list. ECR's gate stays the final check on the deployed image.
+      - name: Install Trivy (pinned, checksum-verified)
+        uses: ./.github/actions/setup-trivy
+      - name: Image scan (Trivy), both images, HIGH and CRITICAL fail
+        working-directory: .
+        env:
+          SCAN_REPORT_DIR: ${{ runner.temp }}/trivy-reports
+        run: docker/scan-images.sh ascrum-api:ci ascrum-web:ci
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: trivy-reports
+          path: ${{ runner.temp }}/trivy-reports
+          if-no-files-found: ignore
+          retention-days: 14
       - name: AC-CTR-01 docker compose up, wait until every service is healthy
         working-directory: .
         run: docker compose --profile prod-check up --wait --wait-timeout 180
