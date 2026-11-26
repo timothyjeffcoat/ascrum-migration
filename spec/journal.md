@@ -1178,3 +1178,47 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Run 6 was the first time the whole thing worked: 46 resources, a signed-in smoke test over HTTPS, and a clean teardown in under six minutes. It still went red, because the last check, the one that proves nothing is left running, was too strict. AWS's tag index remembers deleted things. The fix needed one more read permission on the deploy role. That was the owner's call, so the worker stopped and asked instead of granting it."
+
+## 2026-11-26: Live runs 7 to 9: a fix that worked, a bootstrap that came late, the first green run, and a cancel (orchestrator)
+- **Run 7 (45744570258, on `67c8ad3`, #84 merged).** The owner started it before updating the bootstrap for #84.
+  - **Deploy:** all 46 resources ("Deployment time: 407.48s"). **Smoke test:** "5 passed (14.2s)". **Destroy:** no demo stacks left.
+  - **Leftover check:** it cleared both ECS services and both task definitions. One of the services was run 6's purged one, reported MISSING, so Q-p5-infra-13 already paid off. Then it failed on one entry, run 7's own task.
+  - **Why.** The owner checked the task: `STOPPED`. The bootstrap stack's last update was 23:58 UTC, which was #83's. #84's `ecs:DescribeTasks` was not live yet, so the task lookup was refused, and a refused lookup is a leftover by design. The services cleared because the old policy already allowed `ecs:DescribeServices` on `*`.
+  - **What it shows.** The code was right, and the order of the steps was wrong: a bootstrap change must be deployed before the run that needs it. The gate cannot see whether the bootstrap matches `migration`. The check failed closed, so the gap cost one run and nothing else.
+  - **What made it slow to diagnose.** The script prints LEFTOVER without saying why (refused, a state that is not final, or no answer). It took two owner commands to tell the cases apart. Printing the reason is queued as a small follow-up.
+- **Run 8 (45748917958, on `67c8ad3`).** The owner first updated the bootstrap; the diff showed only the deploy role's default policy, as expected.
+  - **Gate:** 6 s.
+  - **Deploy:** all 46 resources ("Deployment time: 408.15s").
+  - **Smoke test** over HTTPS through CloudFront: "5 passed (16.1s)".
+  - **Destroy and leftover check:** about 5.5 min in total (03:35:48 to 03:41:25 UTC). The leftover check took 7 s: "Remaining: 0", "OK: nothing from the demo remains."
+    - It recognised 9 deleted ECS entries from runs 6, 7 and 8 as gone: one cluster, three services, two tasks and three task definitions.
+    - It kept only the OIDC provider and the budget, by design.
+  - **Whole run:** 15 min 10 s, from 03:26:28 to 03:41:38 UTC. Every job was green.
+- **The road to green.** Eight live runs, 2026-11-24 to 2026-11-26.
+  - **Every red run stopped closed.** No run left anything running: each destroy and leftover check either passed or flagged only things already deleted.
+  - **The causes, in order:**
+    1. an image-scan permission;
+    2. an evidence download;
+    3. an OCI image index the scanner cannot read;
+    4. image CVEs (Alpine's OpenSSL and zlib);
+    5. an EC2 tag condition with the wrong action-name format;
+    6. a read that the load balancer makes with the caller's credentials and that no CloudFormation schema lists;
+    7. a leftover check too strict about ECS;
+    8. a bootstrap deployed after the run that needed it.
+- **Run 9 (45750808738, on `67c8ad3`): the cancel test (owner breakage O4).** The owner started the run, and the orchestrator cancelled it at 03:48:14 UTC, 2.5 min after AscrumDemo began creating, so the database was mid-create.
+  - **Deploy job:** `cancelled` (03:44:32 to 03:48:33).
+  - **Destroy job:** it ran anyway, as designed (`if: always() && needs.gate.result == 'success'`), from 03:48:37 to 03:59:41.
+  - **What it did:**
+    - It found "AscrumDemo: CREATE_IN_PROGRESS". Cancelling the run stops the CDK process, but CloudFormation goes on creating the stack.
+    - `destroy.ts` waited until the stack "settled: CREATE_COMPLETE".
+    - It emptied the web bucket, then deleted AscrumDemo and AscrumDemoRegistry, each on the first attempt.
+    - The destroy step took 647 s. That is about twice a normal teardown, because the stack had to finish creating first.
+  - **Leftover check:** 10 s. "Remaining: 0", "OK: nothing from the demo remains." It recognised 11 deleted ECS entries as gone.
+  - **Run conclusion:** `cancelled`. Every job after the cancel was green.
+  - **What it shows.** A cancel leaves nothing running: the teardown is a separate job that does not depend on the deploy finishing. It is also the reason the workflow never cancels a running deploy for the next one (`cancel-in-progress: false`).
+- **Still to prove live (owner breakage O4).**
+  - A standalone run of `destroy-demo.yml`.
+  - The bill the next day.
+
+**Moment (article candidate)**
+- "Run 7 failed on a fix that was correct. The new permission was merged but not yet deployed, so the check could not ask AWS about one task, and it refused to call the task gone. That is exactly what it should do. Run 8, with the permission deployed, was the first all-green run: up, tested over HTTPS and torn down in fifteen minutes, with the last check reporting 'nothing from the demo remains'."
