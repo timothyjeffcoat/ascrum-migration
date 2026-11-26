@@ -1153,3 +1153,28 @@ These come from how the first post's comments went: every question was about tru
 
 **Moment (article candidate)**
 - "Each live run gets further: the first runs failed at the image scan, run 4 at the first network resources, and run 5 at resource 36 of 46. Run 5's failure came from a permission no CloudFormation schema lists, because the load balancer service makes the call itself. The documentation we had built our coverage table from couldn't have predicted it, and the worker wrote that down before anyone asked. Every run so far has stopped cleanly and left nothing running."
+
+## 2026-11-26: Live run 6: the first full deploy, and a check that was too strict (p5-infra, PR #84)
+- **What happened.** The owner updated the bootstrap with #83 and started run 6 (45725657601, on `c9fac38`).
+  - **Deploy:** AscrumDemo created all 46 resources ("Deployment time: 408.18s", 420.59 s in total).
+  - **Smoke test over HTTPS:** "5 passed (15.5s)". It signed in as a seed user, loaded the projects list, checked the security headers, got 404 from the stub's reset route, and confirmed that the load balancer serves only CloudFront.
+  - **Destroy:** about 326 s. AscrumDemo was deleted in 300 s (00:10:45 to 00:15:45 UTC), and AscrumDemoRegistry in 17 s.
+  - **Leftover check:** it failed after its six attempts (about 2 min 50 s). The cluster and the task definition were correctly "gone", but an ECS service and an ECS task were reported as LEFTOVER. The owner checked both: the service was INACTIVE and the task STOPPED. The tagging index keeps listing deleted ECS resources, and the check had no permission to ask ECS about tasks.
+- **The question, then the fix.** The worker stopped at the deploy role, which is the owner's call, and asked Q-p5-infra-12. The owner chose (b): add `ecs:DescribeTasks`, and also move `ecs:DescribeServices` off `*`. Both now apply only to the `ascrum-demo` cluster. The script asks ECS in batches. An INACTIVE service, or a STOPPED or MISSING task, is gone; everything else, including any failed call, is still a LEFTOVER.
+- **Review.**
+  - **The changed test.** The worker had edited an existing test, S14: an ECS service came off its list of resources that are "leftovers without asking". That is not a weakened gate. The service is now asked about, every billable type is still pinned as never asked, and the service's running states are pinned as leftovers (DEV-p5-infra-32). The security review agreed.
+  - **IAM.** The ECS service reference lists the single resource types `service` and `task` and the `ecs:cluster` key, whose type is ARN, so `ArnEquals` is right. The synth diff shows only the deploy role's policy changing.
+  - **Breakages.** The reviewer planted 11; 8 were red and 3 survived. The code handles all three paths correctly, but no test pins them: an answer that isn't JSON, a ClusterNotFound error, and a task failure that is not MISSING. The security review found two more such gaps, one overlapping. All of them are test-only and open (DEV-33, -34). The owner decides whether they go in before merge.
+  - **The run-7 risk.** Run 7 recreates the `ascrum-demo` cluster. AWS documents that tasks of a deleted cluster vanish from answers once a cluster with the same name exists, and that INACTIVE services may be purged. If the tagging index still lists run 6's service when run 7's check runs, run 7 will fail on a run-6 ghost. It fails closed and costs a re-run. Recommendation: before run 7, the owner checks the index (DEV-35).
+- **Gate results (reviewer, `eb87b91`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 172 passed (172)", synth OK. The `rg` gate check found only the 4 known import-alias false positives in `web/src/app/router.tsx`, and nothing in `infra/`.
+- **Counts.** 135 deviation rows, 15 blocking. Eight of the blocking rows were found by live runs after #69 merged. All eight failed closed, and no run left anything running.
+- **For the owner.** `cdk diff AscrumBootstrap` should show one change, in `ascrum-github-deploy`'s default policy (`DeployRoleDefaultPolicy…`):
+  - `ReadOnlyChecks` loses `ecs:DescribeServices`;
+  - `LeftoverEcsServices` (`ecs:DescribeServices` on `service/ascrum-demo/*`) is added;
+  - `LeftoverEcsTasks` (`ecs:DescribeTasks` on `task/ascrum-demo/*`) is added.
+
+  Both new statements have the condition `ArnEquals ecs:cluster = …:cluster/ascrum-demo`. Nothing else changes: no managed policy, trust policy, boundary or execution role. Then run 7.
+- **Decision.** No blocking findings. Not merged; the owner merges.
+
+**Moment (article candidate)**
+- "Run 6 was the first time the whole thing worked: 46 resources, a signed-in smoke test over HTTPS, and a clean teardown in under six minutes. It still went red, because the last check, the one that proves nothing is left running, was too strict. AWS's tag index remembers deleted things. The fix needed one more read permission on the deploy role. That was the owner's call, so the worker stopped and asked instead of granting it."
