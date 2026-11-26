@@ -1281,3 +1281,10 @@ These come from how the first post's comments went: every question was about tru
   - **What remains.** A 1.30.7 nginx base will still be red, because one more CVE is fixed only in 1.30.8 (-03).
 - **Gate results (reviewer, `f987dfb`, no AWS credentials).** CI was green on the head, including both scans in e2e-compose. Locally, `check-images.sh` and `scan-images.sh` exited 0, and infra `pnpm verify` exited 0 ("Tests 236 passed (236)", synth OK). The `rg` check found only the 4 known false positives.
 - **Decision.** No blocking findings. Whether -05 and -07 go back to the worker in this PR is the owner's call. Not merged; the owner merges.
+- **Round 2.** The owner sent sec-01 and the two hygiene notes back to the worker.
+  - **The fix.** It changed approach: a list of what may be said, not of what is forbidden. The runtime stage may hold only the permitted RUN lines. Any `$(`, backtick, `${`, backslash or split quote fails.
+  - **What it caught.** The reviewer's thirteen spellings were all red, in both Dockerfiles. Round 1's 23 cases were re-run with no regression, and C10, round 1's surviving hidden upgrade, is now red.
+  - **The moment.** The allowlist only read RUN lines, so both reviews went looking for an instruction that is not a RUN. They found the same answers independently. A SHELL instruction runs the hidden `apk` before the permitted line (DEV-08). A heredoc whose body has a line starting with FROM makes the checker think the runtime stage starts after it (DEV-09). Both built and passed. Separately, an `apk` wrapper copied in from an earlier stage shadowed the real one on the PATH, and the permitted line installed musl from Alpine's edge branch with unsigned packages allowed (DEV-10).
+  - **The lesson.** The built image's own history records what actually ran, heredoc included; the Dockerfile's text can only describe it. That makes the history the better thing to check.
+  - **The owner's decision.** -08 and -09 go back for a round 3: an allowlist of instruction keywords, SHELL and ONBUILD refused, and no heredocs. -10 is accepted as a logged residual.
+  - **Gates.** CI green on `9fe1fae`. Not merged.
