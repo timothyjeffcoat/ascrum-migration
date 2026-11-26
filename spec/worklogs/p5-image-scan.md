@@ -702,3 +702,148 @@ all ten exit 1, all restored. **Green:** the real Dockerfiles pass, with
 - **infra and web `pnpm verify`:** not run; neither ci.yml nor anything under `web/` or `infra/` changed.
 - **Gitleaks 8.30.1:** staged session 4 change (~9 KB), exit 0, `no leaks found`; the branch's 10 commits
   (~134 KB), exit 0, `no leaks found`.
+
+## 2026-11-26, session 5 (worker): PR #88 round 4 (DEV-p5-image-scan-11, -12, -13)
+
+I ran `git pull --ff-only` first, which brought in the reviewer's 4894cb4. This session changed only
+`docker/check-images.sh`, plus this entry. It is the last round of text-check fixes in #88; the sturdier
+`docker history` check (DEV-p5-image-scan-10) is a later follow-up and was not started.
+
+### DEV-p5-image-scan-11 (sec-06): continuation lines joined as BuildKit joins them
+
+I checked how BuildKit joins lines in two ways:
+
+- **The source.** `frontend/dockerfile/parser/parser.go` and `directives.go` on moby/buildkit's default
+  branch, read through `gh api`:
+  - the continuation regex is `([^\\])\\[ \t]*$|^\\[ \t]*$`, so spaces and tabs may follow the backslash
+    and a doubled `\\` is not a continuation;
+  - the backslash is replaced by the character before it, with nothing inserted;
+  - continuation lines keep their leading whitespace;
+  - comment lines (`#` after Unicode whitespace) and whitespace-only lines inside a continuation are
+    skipped;
+  - trailing CR/LF are trimmed.
+- **The engine here** (Docker 29.6.2), with a throwaway image whose labels show the joins:
+  - a plain continuation gives `ab`;
+  - spaces and a tab after the backslash give `ab`;
+  - an indented comment line inside gives `ab`;
+  - a whitespace-only line inside gives `ab`;
+  - an indented continuation gives `a   b`;
+  - CRLF after the backslash gives `ab`;
+  - `ENV T7=a\\` followed by `LABEL t8="x"` gives `T7=a\` and a separate `t8`.
+
+The engine matched the source in every case.
+
+`instructions()` now does the same, under `LC_ALL=C`:
+- it trims trailing CR/LF;
+- it drops comment and blank lines everywhere;
+- it continues only on `(^|[^\\])\\[ \t]*$`, removing the backslash and the blanks after it with
+  nothing inserted.
+
+Two backstops in `check_dockerfile_shape` make any remaining reader mismatch fail closed:
+
+- **The raw-file `<<` test.**
+  - It drops comment lines, deletes every backslash, space, tab, CR, LF, VT and FF, and fails on any
+    `<<`. BuildKit's join only ever removes backslash-newlines, the blanks after them, comment lines and
+    blank lines. So anything it could join into `<<` is still `<<` here, plus more (fail-closed).
+  - This is the brief's "every backslash-newline removed", made stricter. With only backslash-newlines
+    removed, a comment line between `COPY <\` and `<USER` (case D4) would still hide the `<<`.
+  - The real files pass it: neither has `<<` anywhere once stripped.
+- **No line may start with a non-ASCII byte.**
+  - BuildKit trims Unicode whitespace (such as U+00A0) before `#`, and a byte-order mark before line 1.
+    awk under `LC_ALL=C` trims ASCII only.
+  - Case D5 shows this route is real. BuildKit **built** a file in which a U+00A0-indented comment sat
+    between `COPY <\` and `<USER`, so it dropped that line as a comment and saw the heredoc.
+
+### DEV-p5-image-scan-12 (sec-07): no setuid or setgid file
+
+The new `check_setuid` runs for each image (`--pull never --network none --user 0`):
+`find / -xdev -type f ( -perm -4000 -o -perm -2000 )`.
+- Anything found fails.
+- Any error or stderr output from find fails too: stderr is captured with the output, and a non-zero
+  exit is a finding.
+
+Both clean images print `no setuid or setgid file`.
+
+### DEV-p5-image-scan-13 (sec-08): what compose builds, and no `# syntax=`
+
+**Compose.** From `docker compose --profile prod-check config --format json` (the profile CI builds):
+- the services with a build section must be exactly `api` and `web`;
+- each build must have exactly the keys `context` and `dockerfile`;
+- `context` must resolve to the repo root (`realpath -m` against `pwd -P`);
+- `dockerfile` must be exactly `docker/api.Dockerfile` or `docker/web.Dockerfile`.
+
+Checking exact keys rules out `args` (and with it `BUILDKIT_SYNTAX`), `additional_contexts`, `target`,
+`dockerfile_inline`, `ssh`, `secrets` and anything compose adds later.
+
+**`# syntax=`.** Any syntax parser directive now fails, pinned or not. Directives are looked for on every
+line, after leading whitespace, as `#` or `//`. BuildKit reads them only at the top, so this is stricter.
+The old rule allowed a pinned frontend.
+
+### Red/green
+
+"Before" means the check as committed at b2507e2 (round 3). Each Dockerfile case was planted, run, and
+the Dockerfile restored with `cmp` confirming it (`restored yes` for all). Each compose case wrote a
+`compose.override.yaml`, which compose reads by default, then deleted it and confirmed it was gone.
+`git status` afterwards showed only `docker/check-images.sh`.
+
+| id | planted | built | before | after | failed on |
+|---|---|---|---|---|---|
+| D1 | sec-06 web: `RUN a=ap; ${a}k … add --no-cache zlib`, `COPY <\`, `<USER /tmp/note`, `FROM <pinned nginx>`, `USER` | exit 0 | **exit 0** | exit 1 | raw `<<`; `COPY <<USER /tmp/note` read as a heredoc |
+| D2 | the same in the API runtime stage, body `FROM <pinned node>` | exit 0 | **exit 0** | exit 1 | the same |
+| D3 | D1 with spaces and a tab after the backslash | – | **exit 0** | exit 1 | the same |
+| D4 | D1 with an indented comment line between the halves | – | **exit 0** | exit 1 | the same |
+| D5 | D1 with a U+00A0-indented comment between the halves | exit 0 | exit 1 | exit 1 | non-ASCII line start (before: only because the old reader saw `<USER` as an instruction) |
+| D6 | API: `COPY --chmod=4755 --from=deps /usr/local/bin/node /usr/local/bin/n2` | exit 0 | **exit 0** | exit 1 | `setuid or setgid files: /usr/local/bin/n2` |
+| D7 | API: the same with `--chmod=2755` (setgid) to `n3` | exit 0 | **exit 0** | exit 1 | `… /usr/local/bin/n3` |
+| D8 | web: `# syntax=docker/dockerfile:1.18.0@sha256:<64 hex>` as line 1 | – | **exit 0** | exit 1 | syntax directive |
+| D9 | API: `   #  SYNTAX = …` (indented, upper case) as line 1 | – | **exit 0** | exit 1 | syntax directive |
+| E1 | compose: api builds `docker/api.copy.Dockerfile` (a copy) | – | **exit 0** | exit 1 | the dockerfile path |
+| E2 | compose: web `args: {BUILDKIT_SYNTAX: …}` | – | **exit 0** | exit 1 | keys `args,context,dockerfile` |
+| E3 | compose: api `context: ./docker` | – | **exit 0** | exit 1 | context not the repo root |
+| E4 | compose: web `target: build` | – | **exit 0** | exit 1 | keys `context,dockerfile,target` |
+| E5 | compose: api `dockerfile_inline` | – | exit 1 | exit 1 | compose itself refused it (both `dockerfile` and `dockerfile_inline` after the merge), so retried as E5b |
+| E5b | compose: api `dockerfile: !reset null` + `dockerfile_inline` | – | **exit 0** | exit 1 | keys `context,dockerfile_inline` |
+| E6 | compose: web `additional_contexts` | – | **exit 0** | exit 1 | keys `additional_contexts,context,dockerfile` |
+| E7 | compose: a third built service in the prod-check profile | – | **exit 0** | exit 1 | built services `api extra web` |
+
+**Earlier rounds re-run** against the new check:
+- round 3, R1–R10 (R1 and R2 built): all exit 1, all restored;
+- rounds 1–2, C1–C10 (C1 built): all exit 1, all restored;
+- no `PLANT NOT FOUND` in any set.
+
+**Green:** the real setup passes check-images with exit 0, printing:
+- `compose: api and web build exactly docker/api.Dockerfile and docker/web.Dockerfile from the repo root, with no build options`;
+- `no setuid or setgid file` for each image;
+- `all permitted forms` for both Dockerfiles.
+
+### Mistakes and wrong turns, session 5
+
+- **E5 did not test the check.** Compose merges the override into `compose.yaml`, so the API build had
+  both `dockerfile` and `dockerfile_inline`, and `docker compose config` refused it. Both checks then
+  exited 1 for that reason, not because of the check. I re-ran it as E5b with `!reset`, which is red for
+  the right reason. I am keeping E5 in the table because a red result for the wrong reason is easy to
+  misread.
+- **The plant harness ignored an empty anchor.** `${6:-…}` treats an empty sixth argument as unset, so
+  "insert before line 1" would have inserted before the apk line. I changed it to `${6-…}` before the D8
+  and D9 runs.
+- **Guard refusals.** Two one-line shell tests of the raw `<<` backstop were refused by the worktree
+  guard; it could not verify a command containing the quoted backslash. I ran the same test from a
+  scratch script, not in another inline form.
+- **The brief's backstop alone would have missed D4.** Removing only backslash-newlines leaves the
+  comment line between `<` and `<`. I made the backstop drop comment lines and all whitespace too, and
+  recorded the difference here rather than doing it silently.
+
+### Gates (session 5, unpiped, exit codes from the commands)
+
+- **The e2e-compose job's steps, locally** (project `ascrum-p5scan`, `IMAGE_TAG=p5scan`):
+  - compose build: exit 0.
+  - `docker/check-images.sh ascrum-api:p5scan ascrum-web:p5scan`: exit 0, ending `… pins, compose
+    builds, no setuid or setgid files, no secrets in layers or config, …`.
+  - `docker/scan-images.sh …`: exit 0. It printed `Trivy 0.76.2, vulnerability DB built 2026-11-26T19:04:08Z,
+    downloaded 2026-11-26T21:56:43Z`, then `scan-images: no failing finding in either image` (the nginx
+    window is still open).
+  - up: exit 0. `pnpm e2e:compose`: exit 0, `48 passed (42.7s)`.
+  - `check-client-address.sh`: exit 0. `check-health.sh`: exit 0. down: exit 0.
+- **infra and web `pnpm verify`:** not run. Neither ci.yml nor anything under `web/` or `infra/` changed.
+- **Gitleaks 8.30.1:** on the staged session 5 change (~16 KB), exit 0, `no leaks found`. On the branch's
+  14 commits (~189 KB), exit 0, `no leaks found`.
