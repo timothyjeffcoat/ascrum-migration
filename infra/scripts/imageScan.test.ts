@@ -1,6 +1,6 @@
 // spec §6 image-scan, after live run 1 (ScanNotFoundException right after the push): the gate waits for a
 // scan, starts one if none appears, and passes only a completed scan with no HIGH or CRITICAL finding.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Aws, AwsResult } from './aws.ts'
 import { blockingCount, scanImage, verdict } from './imageScan.ts'
 
@@ -289,5 +289,31 @@ describe('spec §6 image-scan: the scan gate', () => {
       expect(scans.length).toBeGreaterThan(0)
       for (const call of scans) expect(call).toContain(`--image-id imageDigest=${DIGEST} `)
     }
+  })
+})
+
+// DEV-p5-infra-44 (sec-09): the default log prints AWS-supplied text, so it goes through printable().
+describe('DEV-p5-infra-44: the image-scan default log', () => {
+  it('DEV-p5-infra-44: the default log prints the scan status through printable(): one line, no account id', async () => {
+    const esc = String.fromCodePoint(0x1b)
+    const lines: unknown[][] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      lines.push(args)
+    })
+    try {
+      await scanImage({
+        aws: scripted([findings(`FAILED\n::add-mask::x 123456789012${esc}[2J`, { HIGH: 1 })]).aws,
+        repository: 'ascrum-demo-api',
+        imageTag: 'abc',
+        region: 'eu-west-1',
+        sleep: async () => {},
+        pollMs: 10,
+        appearMs: 30,
+        completeMs: 50,
+      })
+    } finally {
+      spy.mockRestore()
+    }
+    expect(lines).toEqual([['scan FAILED ::add-mask::x *** [2J (on push): {"HIGH":1}']])
   })
 })

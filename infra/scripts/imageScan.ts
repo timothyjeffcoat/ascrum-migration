@@ -24,7 +24,7 @@
 // documents no fixed-in attribute (fixedInVersion exists only in enhancedFindings, Inspector's), so none
 // is recorded. The pass/fail verdict still reads only the severity counts.
 import { writeFileSync } from 'node:fs'
-import { awsCli, awsErrorLine, commandData, realSleep, runMain, type Aws, type Sleep } from './aws.ts'
+import { awsCli, awsErrorLine, commandData, printable, realSleep, runMain, type Aws, type Sleep } from './aws.ts'
 
 export type ScanSummary = {
   status: string
@@ -106,7 +106,9 @@ export const blockingCount = (summary: ScanSummary): number =>
 export async function scanImage(options: ScanOptions): Promise<ScanSummary> {
   const { aws, repository, imageTag, region } = options
   const sleep = options.sleep ?? realSleep
-  const log = options.log ?? ((line: string) => console.log(line))
+  // The default log prints AWS-supplied text (the scan status, the severity counts) through printable(), as
+  // destroy.ts does (DEV-p5-infra-44, sec-09).
+  const log = options.log ?? ((line: string) => console.log(printable(line)))
   const pollMs = options.pollMs ?? 10_000
   const empty = { completedAt: null, startedByThisRun: false, counts: {}, findings: [] }
 

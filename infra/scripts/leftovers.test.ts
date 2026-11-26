@@ -448,6 +448,63 @@ describe('AC-AWS-04: the final leftover check', () => {
       expect(lineFor(report, TASK_DEF)).toContain('(asked: not reported deleted)')
     })
 
+    // DEV-p5-infra-37: isGhost's failed or refused describe calls had printed "asked: not reported deleted",
+    // like an answer saying the resource is still there. They now say how the call failed; the decision is
+    // unchanged (LEFTOVER, fail-closed).
+    const failingOne = (world: FakeWorld, command: string, stderr: string) => {
+      const fake = fakeAws(world)
+      const aws: Aws = async (args) => (args[1] === command ? { code: 254, stdout: '', stderr } : fake.aws(args))
+      return findLeftovers({ aws, region: REGION, attempts: 1 })
+    }
+
+    it('DEV-p5-infra-37: a refused DescribeClusters says "describe refused" and the cluster is still LEFTOVER', async () => {
+      const report = await failingOne(
+        { stacks: {}, tagged: tagged(CLUSTER) },
+        'describe-clusters',
+        `An error occurred (AccessDeniedException) when calling the DescribeClusters operation: User: arn:aws:sts::${ACCOUNT}:assumed-role/x is not authorized`,
+      )
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([CLUSTER])
+      expect(lineFor(report, CLUSTER)).toContain('(describe refused: AccessDeniedException)')
+      expect(lineFor(report, CLUSTER)).not.toContain(ACCOUNT)
+    })
+
+    it('DEV-p5-infra-37: a failed DescribeTaskDefinition says "describe failed" and the task definition is still LEFTOVER', async () => {
+      const report = await failingOne(
+        { stacks: {}, tagged: tagged(TASK_DEF) },
+        'describe-task-definition',
+        'An error occurred (ThrottlingException) when calling the DescribeTaskDefinition operation: Rate exceeded',
+      )
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([TASK_DEF])
+      expect(lineFor(report, TASK_DEF)).toContain('(describe failed: ThrottlingException)')
+    })
+
+    it('DEV-p5-infra-37: a DescribeSecret error other than not-found says "describe failed" and the secret is still LEFTOVER', async () => {
+      const report = await failingOne(
+        { stacks: {}, tagged: tagged(SECRET) },
+        'describe-secret',
+        `Could not connect to the endpoint for account ${ACCOUNT}\nsecond line`,
+      )
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([SECRET])
+      expect(lineFor(report, SECRET)).toContain('(describe failed: Could not connect to the endpoint for account ***)')
+    })
+
+    it('DEV-p5-infra-37: a not-found answer is still gone, and an answered "still there" still says "asked: not reported deleted"', async () => {
+      const gone = await failingOne(
+        { stacks: {}, tagged: tagged(SECRET) },
+        'describe-secret',
+        'An error occurred (ResourceNotFoundException) when calling the DescribeSecret operation: not found',
+      )
+      expect(gone.ok).toBe(true)
+      expect(gone.gone).toEqual([SECRET])
+      const { report } = await check({ stacks: {}, tagged: tagged(TASK_DEF, CLUSTER, SECRET) })
+      for (const arn of [TASK_DEF, CLUSTER, SECRET]) {
+        expect(lineFor(report, arn), arn).toContain('(asked: not reported deleted)')
+      }
+    })
+
     // sec-04: AWS-supplied text must not forge lines, hide text or inject workflow commands.
     const physicalLines = (lines: string[]) => lines.join('\n').split(/\r\n|\r|\n/)
     const hasControl = (line: string) =>

@@ -119,13 +119,37 @@ describe('Q-p5-infra-14 (a): printable() keeps only printable ASCII, U+0020-U+00
     expect(printable(ascii)).toBe(ascii)
   })
 
-  it('Q-p5-infra-14: the 12-digit scrub runs after the replacement', () => {
-    // A plain account id is still scrubbed, and one next to a removed character too.
+  it('Q-p5-infra-14: an account id is scrubbed, also next to a removed character', () => {
     expect(printable('id 123456789012 x')).toBe('id *** x')
     expect(printable(`arn:aws:sts::123456789012${ch(0x200b)}:x`)).toBe('arn:aws:sts::*** :x')
-    // A removed character between digits becomes a space, and a space separates numbers for redact(), as an
-    // ASCII space always has: these digits do not join up into 12, so neither half is scrubbed.
-    expect(printable(`id 123456${ch(0x00ad)}789012 x`)).toBe('id 123456 789012 x')
+  })
+})
+
+describe('DEV-p5-infra-44 (sec-09): an account id split by a removed code point is scrubbed as one', () => {
+  const ch = (code: number) => String.fromCodePoint(code)
+
+  it('DEV-p5-infra-44: U+00AD or U+200B inside a 12-digit run is deleted, and the run is scrubbed', () => {
+    for (const code of [0x00ad, 0x200b]) {
+      const hex = `U+${code.toString(16).toUpperCase()}`
+      expect(printable(`id 123456${ch(code)}789012 x`), hex).toBe('id *** x')
+      expect(printable(`arn:aws:sts::1${ch(code)}2345678901${ch(code)}2:assumed-role`), hex).toBe(
+        'arn:aws:sts::***:assumed-role',
+      )
+    }
+    // Several removed code points in a row, a surrogate pair among them, are deleted together.
+    expect(printable(`id 1234${ch(0x00ad)}${ch(0xe0041)}${ch(0x200b)}56789012 x`)).toBe('id *** x')
+  })
+
+  it('DEV-p5-infra-44: a removed code point next to only one digit still becomes a space', () => {
+    expect(printable(`a${ch(0x00ad)}1 2${ch(0x200b)}b`)).toBe('a 1 2 b')
+  })
+
+  it('DEV-p5-infra-44: an id that is already whole stays scrubbed when the deletion glues a digit to it', () => {
+    // Without the first redact() on the raw text, this would print 13 digits and nothing would be scrubbed.
+    expect(printable(`id 123456789012${ch(0x00ad)}3 x`)).toBe('id *** 3 x')
+  })
+
+  it('DEV-p5-infra-44: a plain-space split is not an account id and stays as it is today', () => {
     expect(printable('id 123456 789012 x')).toBe('id 123456 789012 x')
   })
 })

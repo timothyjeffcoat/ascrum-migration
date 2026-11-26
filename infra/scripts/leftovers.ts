@@ -21,6 +21,7 @@ import {
   runMain,
   stackStatus,
   type Aws,
+  type AwsResult,
   type Sleep,
 } from './aws.ts'
 
@@ -53,25 +54,34 @@ function regionOf(arn: string): string {
   return arn.split(':')[3] || 'us-east-1'
 }
 
-/** True when the service says the resource is gone or only a record of something deleted. */
-export async function isGhost(aws: Aws, arn: string): Promise<boolean> {
+/**
+ * True when the service says the resource is gone or only a record of something deleted. A describe call
+ * that fails without saying "not found" is never read as gone (fail-closed). When `reasons` is given, that
+ * failure is recorded as the leftover's reason, so it does not print like an answer saying the resource is
+ * still there (DEV-p5-infra-37). The decision is the same with or without `reasons`.
+ */
+export async function isGhost(aws: Aws, arn: string, reasons?: Map<string, string>): Promise<boolean> {
   const [, , service, region = '', , resource = ''] = arn.split(':')
   const where = ['--region', region || 'us-east-1']
+  const failed = (result: AwsResult, gone: boolean): boolean => {
+    if (!gone) reasons?.set(arn, describeFailure(result))
+    return gone
+  }
   if (service === 'ecs' && resource.startsWith('task-definition/')) {
     const result = await aws(['ecs', 'describe-task-definition', '--task-definition', arn, ...where])
-    if (result.code !== 0) return /not found|does not exist|Unable to describe/i.test(result.stderr)
+    if (result.code !== 0) return failed(result, /not found|does not exist|Unable to describe/i.test(result.stderr))
     const status = (JSON.parse(result.stdout) as { taskDefinition?: { status?: string } }).taskDefinition?.status
     return status === 'INACTIVE' || status === 'DELETE_IN_PROGRESS'
   }
   if (service === 'ecs' && resource.startsWith('cluster/')) {
     const result = await aws(['ecs', 'describe-clusters', '--clusters', arn, ...where])
-    if (result.code !== 0) return false
+    if (result.code !== 0) return failed(result, false)
     const clusters = (JSON.parse(result.stdout) as { clusters?: { status?: string }[] }).clusters ?? []
     return clusters.every((cluster) => cluster.status === 'INACTIVE')
   }
   if (service === 'secretsmanager') {
     const result = await aws(['secretsmanager', 'describe-secret', '--secret-id', arn, ...where])
-    if (result.code !== 0) return /ResourceNotFoundException/.test(result.stderr)
+    if (result.code !== 0) return failed(result, /ResourceNotFoundException/.test(result.stderr))
     return Boolean((JSON.parse(result.stdout) as { DeletedDate?: unknown }).DeletedDate)
   }
   return false
@@ -236,11 +246,12 @@ export async function findLeftovers(options: {
     }
     const ecsGone = await ecsGhosts(aws, candidates, reasons)
     for (const arn of candidates) {
-      if (ecsGone.has(arn) || (ecsResource(arn) === null && (await isGhost(aws, arn)))) gone.push(arn)
+      if (ecsGone.has(arn) || (ecsResource(arn) === null && (await isGhost(aws, arn, reasons)))) gone.push(arn)
       else remaining.push(arn)
     }
     for (const arn of remaining) {
       if (ecsResource(arn) !== null) continue // the ECS batches above gave the reason
+      if (reasons.has(arn)) continue // isGhost's describe call failed and said how (DEV-p5-infra-37)
       reasons.set(arn, asksAbout(arn) ? 'asked: not reported deleted' : 'not checked: billable type')
     }
     report = {
