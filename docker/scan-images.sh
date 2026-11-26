@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# The OS-package and dependency scan of the built images (spec §6 image-scan; owner's answer to
-# Q-p5-image-cves-2 (a)): Trivy, on both images, fails on any HIGH or CRITICAL finding, fixed or not.
+# The OS-package and dependency scan of the built images (spec §6 image-scan; owner's answers to
+# Q-p5-image-cves-2 (a), Q-p5-image-scan-2 (a)+(c) and Q-p5-image-scan-3 (a)). Trivy, two passes per image:
+#   1. OS and language packages, HIGH and CRITICAL, fixed or not;
+#   2. OS packages, every severity, only findings that have a fix (`--ignore-unfixed`): an Alpine package
+#      left below a version Alpine has fixed fails whatever anyone's severity says (Trivy rates
+#      CVE-2026-4738 MEDIUM, ECR rated it CRITICAL: DEV-p5-image-cves-02 / D03).
+# Any finding of either pass fails the scan, except inside the nginx window below.
 #
 #   docker/scan-images.sh <api image> <web image>        (from the repo root; the images must be local)
 #
@@ -11,18 +16,35 @@
 # deployed. This scan runs on the PR, one AWS run earlier, and also covers the web image, which ECR never
 # sees. The two use different data and can disagree in either direction (spec/worklogs/p5-image-scan.md).
 #
+# The nginx window (owner's answer to Q-p5-image-scan-2 (c)). The web image's nginx package comes from
+# nginx.org through the pinned nginx-unprivileged base, and its fixes (1.30.7) are in no such image yet. So,
+# for the web image only, findings in the package named exactly `nginx` are reported but do not fail, while
+# the window is open. It closes by itself, with no edit to this file:
+#   - when the web image's installed nginx is at or above WINDOW_CLOSES_AT_NGINX (apk's own comparison, in
+#     the image; anything but a clean `<` closes it), or
+#   - after WINDOW_EXPIRES (UTC), whatever nginx is installed.
+# Once closed, nginx findings fail like any other. Every other package in the web image, and everything in
+# the API image, is gated in full all the time. Each run prints the window's state, the nginx CVEs it
+# reported and both exit conditions. This is not an ignore list: nothing is hidden, and nothing outside
+# that one package in that one image is affected.
+#
 # Fails closed. Every one of these fails the scan, never passes it:
 #   - the vulnerability DB cannot be downloaded (it is fetched on every run, into an empty cache, so there
 #     is no older copy to fall back on), or the downloaded DB is more than 3 days old;
 #   - Trivy exits non-zero on either image (an image it cannot read, a crash, a timeout);
-#   - the report does not show an Alpine OS with every package apk lists in the image;
-#   - any HIGH or CRITICAL finding.
+#   - a report does not show an Alpine OS with every package apk lists in the image;
+#   - any finding of either pass outside the open nginx window.
 # No ignore list without an owner answer: every TRIVY_* variable is dropped, Trivy runs in an empty folder
 # with --config '' and --ignorefile '' (so no trivy.yaml or .trivyignore is read), and no VEX source,
-# ignore policy, --ignore-unfixed or --ignore-status is passed.
+# ignore policy or --ignore-status is passed (pass 1 has no --ignore-unfixed either).
 #
-# Writes each image's JSON report to $SCAN_REPORT_DIR (default: a temporary folder) for CI to upload.
+# Writes each image's JSON reports to $SCAN_REPORT_DIR (default: a temporary folder) for CI to upload.
 set -euo pipefail
+
+WINDOW_PACKAGE=nginx
+WINDOW_CLOSES_AT_NGINX=1.30.7-r0
+WINDOW_EXPIRES=2026-12-31
+DB_MAX_AGE_SECONDS=$((3 * 24 * 3600))
 
 if [[ $# -ne 2 ]]; then
   echo "usage: $0 <api image> <web image>" >&2
@@ -76,44 +98,117 @@ if ((downloaded_s < started - 5)); then
   echo "scan-images FAIL: the DB in the cache was not downloaded by this run (DownloadedAt $downloaded)" >&2
   exit 1
 fi
-if ((started - updated_s > 3 * 24 * 3600)); then
-  echo "scan-images FAIL: the downloaded DB was built at $updated, more than 3 days ago" >&2
+if ((started - updated_s > DB_MAX_AGE_SECONDS)); then
+  echo "scan-images FAIL: the downloaded DB was built at $updated, more than $((DB_MAX_AGE_SECONDS / 3600)) hours ago" >&2
   exit 1
 fi
 echo "Trivy $(jq -r .Version <<< "$db"), vulnerability DB built $updated, downloaded $downloaded"
 
-# --- Each image ------------------------------------------------------------------------------------
-scan() {
-  local image=$1 label=$2 report="$reports/$2.json" os pkgs apk_pkgs count
-  if ! "$trivy" image --cache-dir "$cache" --config '' --ignorefile '' --no-progress --disable-telemetry \
-    --skip-version-check --skip-db-update --image-src docker --scanners vuln --pkg-types os,library \
-    --severity HIGH,CRITICAL --list-all-pkgs --format json --output "$report" --exit-code 0 "$image"; then
-    fail "$image: Trivy could not scan it (its log is above)"
+# --- The nginx window: open or closed, decided from the web image and the date ----------------------
+window_open=no
+window_reason=''
+window_state() {
+  local image=$1 today have op
+  today=$(date -u +%F)
+  if [[ $today > $WINDOW_EXPIRES ]]; then
+    window_reason="expired: today ($today) is after $WINDOW_EXPIRES"
     return
   fi
+  if ! have=$(docker run --rm --network none --entrypoint sh "$image" -c \
+    'awk -v p="P:$1" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed' \
+    sh "$WINDOW_PACKAGE" 2>&1); then
+    window_reason="closed: could not read the installed $WINDOW_PACKAGE version ($have)"
+    return
+  fi
+  if [[ -z $have ]]; then
+    window_reason="closed: $WINDOW_PACKAGE is not installed in $image"
+    return
+  fi
+  op=$(docker run --rm --network none --entrypoint apk "$image" version -t "$have" "$WINDOW_CLOSES_AT_NGINX" 2>&1 || true)
+  if [[ $op == '<' ]]; then
+    window_open=yes
+    window_reason="open: installed $WINDOW_PACKAGE $have is below $WINDOW_CLOSES_AT_NGINX, and today ($today) is not after $WINDOW_EXPIRES"
+  else
+    window_reason="closed: installed $WINDOW_PACKAGE $have compared with $WINDOW_CLOSES_AT_NGINX gives '$op' (only '<' keeps it open)"
+  fi
+}
+
+# --- Each image, two passes --------------------------------------------------------------------------
+windowed=() # "<pass>\t<severity>\t<CVE>\t<package> <version> (fixed: …)" lines reported inside the window
+check_report() {
+  local image=$1 label=$2 pass=$3 report=$4 os pkgs apk_pkgs=$5 in_window=$6 all blocking
   os=$(jq -r '.Metadata.OS | "\(.Family // "") \(.Name // "")"' "$report")
-  [[ $os == alpine\ * ]] || fail "$image: Trivy did not detect Alpine (OS: '$os'), so its OS packages were not scanned"
+  [[ $os == alpine\ * ]] || fail "$image ($pass): Trivy did not detect Alpine (OS: '$os'), so its OS packages were not scanned"
   pkgs=$(jq '[.Results[]? | select(.Class == "os-pkgs") | .Packages[]?] | length' "$report")
+  [[ $pkgs == "$apk_pkgs" ]] || fail "$image ($pass): Trivy read $pkgs OS packages, apk lists $apk_pkgs"
+  # Every finding, then the ones the window may hold: Class os-pkgs and PkgName exactly $WINDOW_PACKAGE.
+  all=$(jq -r '.Results[]? | .Class as $c | .Target as $t | .Vulnerabilities[]? |
+    [$c, .PkgName, .Severity, .VulnerabilityID, "\(.PkgName) \(.InstalledVersion) (fixed: \(.FixedVersion // "none"))", $t] | @tsv' "$report")
+  if [[ $in_window == yes ]]; then
+    blocking=$(awk -F'\t' -v p="$WINDOW_PACKAGE" '!($1 == "os-pkgs" && $2 == p)' <<< "$all")
+    while IFS=$'\t' read -r _ _ sev id what _; do
+      [[ -n $id ]] && windowed+=("$pass	$sev	$id	$what")
+    done < <(awk -F'\t' -v p="$WINDOW_PACKAGE" '$1 == "os-pkgs" && $2 == p' <<< "$all")
+  else
+    blocking=$all
+  fi
+  blocking=$(sed '/^$/d' <<< "$blocking")
+  if [[ -n $blocking ]]; then
+    fail "$image ($pass): $(wc -l <<< "$blocking") finding(s) that fail the scan:"
+    awk -F'\t' '{ printf "  %s\t%s\t%s\t%s\n", $3, $4, $5, $6 }' <<< "$blocking" | sort >&2
+  fi
+  echo "$image ($pass): $os, $pkgs OS packages (as apk lists them), $(jq '[.Results[]? | select(.Class == "lang-pkgs") | .Packages[]?] | length' "$report") language packages; $(sed '/^$/d' <<< "$all" | wc -l) finding(s), $( [[ -n $blocking ]] && wc -l <<< "$blocking" || echo 0) failing"
+}
+scan() {
+  local image=$1 label=$2 apk_pkgs in_window=no
   if ! apk_pkgs=$(docker run --rm --network none --entrypoint sh "$image" -c "grep -c '^P:' /lib/apk/db/installed"); then
     fail "$image: could not count the packages in /lib/apk/db/installed"
-  elif [[ $pkgs != "$apk_pkgs" ]]; then
-    fail "$image: Trivy read $pkgs OS packages, apk lists $apk_pkgs"
+    return
   fi
-  count=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$report")
-  if ((count > 0)); then
-    fail "$image: $count HIGH or CRITICAL finding(s):"
-    jq -r '.Results[]? | .Target as $t | .Vulnerabilities[]? |
-      "  \(.Severity)\t\(.VulnerabilityID)\t\(.PkgName) \(.InstalledVersion) (fixed: \(.FixedVersion // "none"))\t\($t)"' \
-      "$report" | sort >&2
+  if [[ $label == web ]]; then
+    window_state "$image"
+    in_window=$window_open
+  fi
+  local common=(--cache-dir "$cache" --config '' --ignorefile '' --no-progress --disable-telemetry
+    --skip-version-check --skip-db-update --image-src docker --scanners vuln --list-all-pkgs --format json
+    --exit-code 0)
+  if ! "$trivy" image "${common[@]}" --pkg-types os,library --severity HIGH,CRITICAL \
+    --output "$reports/$label.json" "$image"; then
+    fail "$image (HIGH/CRITICAL pass): Trivy could not scan it (its log is above)"
   else
-    echo "$image: $os, $pkgs OS packages (as apk lists them) and $(jq '[.Results[]? | select(.Class == "lang-pkgs") | .Packages[]?] | length' "$report") language packages scanned; no HIGH or CRITICAL finding"
+    check_report "$image" "$label" 'HIGH/CRITICAL pass' "$reports/$label.json" "$apk_pkgs" "$in_window"
+  fi
+  if ! "$trivy" image "${common[@]}" --pkg-types os --ignore-unfixed \
+    --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --output "$reports/$label-os-fixed.json" "$image"; then
+    fail "$image (fixed OS pass): Trivy could not scan it (its log is above)"
+  else
+    check_report "$image" "$label" 'fixed OS pass' "$reports/$label-os-fixed.json" "$apk_pkgs" "$in_window"
   fi
 }
 scan "$1" api
 scan "$2" web
 
+# --- The window's notice, every run ------------------------------------------------------------------
+{
+  echo "=============================================================================================="
+  echo "NGINX WINDOW (owner's answer to Q-p5-image-scan-2 (c)), web image only, package '$WINDOW_PACKAGE' only:"
+  echo "  state: ${window_reason:-not evaluated (the web image could not be read)}"
+  echo "  closes when the web image's installed nginx >= $WINDOW_CLOSES_AT_NGINX, or after $WINDOW_EXPIRES (UTC)."
+  echo "  Every other finding, in either image, fails the scan now."
+  if ((${#windowed[@]} > 0)); then
+    echo "  Reported inside the window (NOT failing, NOT fixed):"
+    printf '    %s\n' "${windowed[@]}" | sort
+  else
+    echo "  Nothing reported inside the window."
+  fi
+  echo "=============================================================================================="
+} >&2
+if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+  echo "::warning title=nginx window (Q-p5-image-scan-2)::${#windowed[@]} nginx finding(s) in the web image reported, not failed; ${window_reason:-not evaluated}. Closes at nginx >= $WINDOW_CLOSES_AT_NGINX or after $WINDOW_EXPIRES."
+fi
+
 if ((findings > 0)); then
-  echo "scan-images: $findings finding(s); JSON reports in $reports" >&2
+  echo "scan-images: $findings failure(s); JSON reports in $reports" >&2
   exit 1
 fi
-echo "scan-images: no HIGH or CRITICAL finding in either image (Trivy; ECR's gate stays the final check on the deployed image)"
+echo "scan-images: no failing finding in either image (Trivy, two passes; ECR's gate stays the final check on the deployed image)"

@@ -116,14 +116,17 @@ jobs:
       - name: AC-CTR-02 images (non-root, no dev deps, tests or .env), pins, no secrets in layers, the API loads and starts
         working-directory: .
         run: docker/check-images.sh ascrum-api:ci ascrum-web:ci
-      # spec §6 image-scan, owner's answer to Q-p5-image-cves-2 (a): Trivy on both images, failing on HIGH or
-      # CRITICAL, fixed or not. A pinned, checksum-verified release binary from the one action that holds
-      # the pin (never trivy-action, a floating tag or `latest`: GHSA-69fq-xp46-6x23). Its vulnerability DB
-      # is downloaded on every run; a failed download, a stale DB or a failed scan fails this step
-      # (docker/scan-images.sh). No ignore list. ECR's gate stays the final check on the deployed image.
+      # spec §6 image-scan, owner's answers to Q-p5-image-cves-2 (a), Q-p5-image-scan-2 (a)+(c) and -3 (a):
+      # Trivy on both images, two passes (HIGH/CRITICAL fixed or not; OS packages at every severity with a
+      # fix). A pinned, checksum-verified release binary from the one action that holds the pin (never
+      # trivy-action, a floating tag or `latest`: GHSA-69fq-xp46-6x23). Its vulnerability DB is downloaded
+      # on every run; a failed download, a stale DB or a failed scan fails this step (docker/scan-images.sh).
+      # No ignore list. The only exception is the dated nginx window for the web image's `nginx` package,
+      # which closes by itself at nginx >= 1.30.7 or after 2026-12-31 and is announced on every run. ECR's
+      # gate stays the final check on the deployed image.
       - name: Install Trivy (pinned, checksum-verified)
         uses: ./.github/actions/setup-trivy
-      - name: Image scan (Trivy), both images, HIGH and CRITICAL fail
+      - name: Image scan (Trivy), both images, HIGH/CRITICAL and fixable OS findings fail
         working-directory: .
         env:
           SCAN_REPORT_DIR: ${{ runner.temp }}/trivy-reports
