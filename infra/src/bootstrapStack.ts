@@ -699,11 +699,26 @@ export class BootstrapStack extends Stack {
           'ec2:DescribeManagedPrefixLists',
           'tag:GetResources',
           'ecs:DescribeClusters',
-          'ecs:DescribeServices',
           'ecs:DescribeTaskDefinition',
           'secretsmanager:DescribeSecret',
         ],
         resources: ['*'],
+      }),
+      // The leftover check asks ECS whether the demo's service is INACTIVE and its tasks STOPPED, because
+      // the tagging index keeps listing both after they are deleted (live run 6). Both actions take a
+      // resource ARN and the `ecs:cluster` key (Service Authorization Reference, Amazon ECS: `service*` and
+      // `task*`), so they are bound to the demo cluster instead of `*` (Q-p5-infra-12, owner answer (b)).
+      new iam.PolicyStatement({
+        sid: 'LeftoverEcsServices',
+        actions: ['ecs:DescribeServices'],
+        resources: [arn('ecs', `service/${NAMES.cluster}/*`)],
+        conditions: { ArnEquals: { 'ecs:cluster': arn('ecs', `cluster/${NAMES.cluster}`) } },
+      }),
+      new iam.PolicyStatement({
+        sid: 'LeftoverEcsTasks',
+        actions: ['ecs:DescribeTasks'],
+        resources: [arn('ecs', `task/${NAMES.cluster}/*`)],
+        conditions: { ArnEquals: { 'ecs:cluster': arn('ecs', `cluster/${NAMES.cluster}`) } },
       }),
       new iam.PolicyStatement({
         // The API's logs, kept in the evidence when the smoke test fails. Both ARN forms: the log group

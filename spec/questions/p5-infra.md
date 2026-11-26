@@ -160,3 +160,78 @@ else, with the same environment and workflow paths, could assume the role); GitH
 removed and renames and transfers move a repository to the immutable form, so the fallback could only
 ever help an attacker. If GitHub ever emitted the name form again, the role fails closed and the fix is a
 bootstrap redeploy. Owner: confirm, or ask for the fallback explicitly.
+
+**Q-p5-infra-12. Live run 6: the leftover check needs `ecs:DescribeTasks` on the deploy role.** *(answered)*
+Context: run 45725657601 deployed, passed the smoke test and destroyed cleanly. Then AC-AWS-04
+(`infra/scripts/leftovers.ts`) failed on two false positives that the tagging index still listed: the
+ECS service (`INACTIVE`, per the owner) and its task (`STOPPED`). The fix is to ask ECS about both, the
+way the script already asks about clusters and task definitions. The destroy job runs as
+`ascrum-github-deploy`. Its `ReadOnlyChecks` statement already grants `ecs:DescribeServices` (on `*`)
+but not `ecs:DescribeTasks`. Only the CloudFormation execution role has `ecs:Describe*`, and the script
+does not run as that role. Without the grant, every task lookup is refused, and the check must then
+fail (a refused describe never counts as gone). The deploy role is the owner's call, so I stopped
+before editing it.
+
+Service Authorization Reference, Amazon ECS: `DescribeTasks` (Read) takes resource type `task*`
+(`arn:${Partition}:ecs:${Region}:${Account}:task/${ClusterName}/${TaskId}`), with condition keys
+`aws:ResourceTag/${TagKey}`, `ecs:cluster` and `ecs:ResourceTag/${TagKey}`. `DescribeServices` is the
+same on `service*`.
+
+Proposed statement, added to the deploy role's default policy in `bootstrapStack.ts`:
+```ts
+new iam.PolicyStatement({
+  // AC-AWS-04: the leftover check asks ECS whether a task the tagging index still lists is STOPPED.
+  sid: 'LeftoverEcsTasks',
+  actions: ['ecs:DescribeTasks'],
+  resources: [arn('ecs', `task/${NAMES.cluster}/*`)],
+  conditions: { ArnEquals: { 'ecs:cluster': arn('ecs', `cluster/${NAMES.cluster}`) } },
+}),
+```
+That is: tasks of the `ascrum-demo` cluster only, in our account and the deploy region. `arn()` binds
+both.
+- I scoped by cluster, not by the `project` tag. A tag condition could deny a describe of a task whose
+  tags have gone, and the check would fail closed for no real reason.
+- The ARN and the `ecs:cluster` key say the same thing. I kept both on purpose, as belt and braces.
+
+Size: the deploy role's inline policy goes from 3,036 to **3,299** characters worst case (12 → 13
+statements). I measured this with a temporary local edit, reverted before anything was committed. The
+limit for a role's inline policies is 10,240 characters in total.
+
+Options:
+- (a) Add the statement above. This needs a bootstrap redeploy by the owner before the next live run.
+- (b) As (a), and also move `ecs:DescribeServices` off `*` into the same cluster-scoped form
+  (`service/ascrum-demo/*`). That tightens the role. The size grows by about the same amount again.
+- (c) No new permission: treat a task as gone when its cluster is INACTIVE. **Not recommended.** That
+  infers the task's state instead of reading it, and it is the kind of shortcut by type the brief rules
+  out.
+
+Recommendation: (a), or (b) if the owner wants the tightening in the same redeploy. The script and test
+changes (services: `INACTIVE` = gone; tasks: `STOPPED` or reported MISSING = gone; everything else,
+and every failed or refused describe, = LEFTOVER) don't depend on the answer except for this grant. I'll
+write them, with the grant, once this is answered.
+
+Owner answer (2026-11-26): (b).
+
+**Q-p5-infra-13. May the leftover check count an ECS service that ECS reports as MISSING as gone?** *(answered)*
+Context (review of #84, DEV-p5-infra-35):
+- The #84 leftover check counts a service as gone only when it is `INACTIVE`. A service in
+  DescribeServices' `failures` with reason `MISSING` stays a LEFTOVER.
+- The DeleteService reference says an INACTIVE service may be cleaned up and purged after a while; ECS
+  then no longer knows it.
+- Run 7 recreates the `ascrum-demo` cluster. Run 6's service ARN carries a random suffix, so if the
+  tagging index still lists it during run 7's check, ECS can only answer MISSING for it. Run 7 would
+  then fail on a run-6 ghost.
+
+Options:
+- (a) Keep MISSING as a leftover. That is safe, but it can fail a clean run until the tagging index
+  drops the entry.
+- (b) Count a service that `failures` names with reason exactly `MISSING` as gone. Only that ARN, only
+  if it was asked about, and only that reason. Any other failure reason, a failed call, or an ARN the
+  answer doesn't mention stays a LEFTOVER.
+
+Recommendation: (b).
+- An ECS service itself is not billed; only its tasks are. Tasks are still checked one by one: STOPPED
+  or MISSING is gone, anything else is a leftover.
+- A MISSING service therefore cannot hide running cost.
+
+Owner answer (2026-11-26): count a MISSING service as gone

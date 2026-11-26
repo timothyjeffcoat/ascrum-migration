@@ -17,6 +17,12 @@ export type FakeWorld = {
   tagged?: Record<string, Record<string, Record<string, string>>>
   taskDefinitionStatus?: Record<string, string>
   clusterStatus?: Record<string, string>
+  /** ECS service status by ARN (default ACTIVE); 'MISSING' or 'failure:<reason>' answers with a failure. */
+  serviceStatus?: Record<string, string>
+  /** ECS task lastStatus by ARN (default RUNNING); 'MISSING' or 'failure:<reason>' answers with a failure. */
+  taskStatus?: Record<string, string>
+  /** stderr of a failing ECS describe call, by command (describe-services, describe-tasks). */
+  ecsError?: Record<string, string>
   secretDeleted?: Record<string, boolean>
   /** stderr of a failing describe-stacks per stack (an AccessDenied, an expired token, …). */
   describeStacksError?: Record<string, string>
@@ -122,6 +128,27 @@ export function fakeAws(world: FakeWorld): { aws: Aws; calls: string[][] } {
     }
     if (service === 'ecs' && command === 'describe-clusters') {
       return ok({ clusters: [{ status: world.clusterStatus?.[arg(args, '--clusters')] ?? 'ACTIVE' }] })
+    }
+    if (service === 'ecs' && (command === 'describe-services' || command === 'describe-tasks')) {
+      const error = world.ecsError?.[command]
+      if (error !== undefined) return fail(error)
+      const listFlag = command === 'describe-services' ? '--services' : '--tasks'
+      const start = args.indexOf(listFlag) + 1
+      const end = args.findIndex((a, i) => i >= start && a.startsWith('--'))
+      const asked = args.slice(start, end === -1 ? undefined : end)
+      const states = (command === 'describe-services' ? world.serviceStatus : world.taskStatus) ?? {}
+      const fallback = command === 'describe-services' ? 'ACTIVE' : 'RUNNING'
+      const reason = (arn: string) => {
+        const state = states[arn]
+        return state === 'MISSING' ? 'MISSING' : state?.startsWith('failure:') ? state.slice('failure:'.length) : null
+      }
+      const found = asked.filter((arn) => reason(arn) === null)
+      const failures = asked.filter((arn) => reason(arn) !== null).map((arn) => ({ arn, reason: reason(arn) }))
+      return ok(
+        command === 'describe-services'
+          ? { services: found.map((arn) => ({ serviceArn: arn, status: states[arn] ?? fallback })), failures }
+          : { tasks: found.map((arn) => ({ taskArn: arn, lastStatus: states[arn] ?? fallback })), failures },
+      )
     }
     if (service === 'secretsmanager' && command === 'describe-secret') {
       return ok(world.secretDeleted?.[arg(args, '--secret-id')] ? { DeletedDate: '2026-11-24T00:00:00Z' } : {})

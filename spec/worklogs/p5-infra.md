@@ -1274,3 +1274,190 @@ network 2,729 → **3,113** (8 statements); compute 2,367, data 1,926, cdn 1,103
   - typecheck clean;
   - "Test Files 12 passed (12)", "Tests 158 passed (158)";
   - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-25, live run 6 (worker): leftover false positives; blocked on Q-p5-infra-12
+
+- Run 45725657601: the deploy, the HTTPS smoke test and the destroy all passed. AC-AWS-04
+  (`leftovers.ts`) then failed on an ECS service and an ECS task that the Resource Groups Tagging API
+  still listed after deletion. The owner confirmed that the service is `INACTIVE` and the task is
+  `STOPPED`, so both are false positives.
+- Planned fix: classify services through `DescribeServices` (`INACTIVE` = gone) and tasks through
+  `DescribeTasks` (`STOPPED` or reported MISSING = gone), batched by cluster. Every other state, and
+  every failed or refused describe, stays a LEFTOVER.
+- Permission check, step 3 of the brief: the destroy job runs as `ascrum-github-deploy`. Its
+  `ReadOnlyChecks` grants `ecs:DescribeServices` but **not** `ecs:DescribeTasks`. The `ecs:Describe*`
+  in the `ReadOnly` statement belongs to the CloudFormation execution role.
+- **Blocked**, as the brief says: no edit to the deploy role, no script change, no PR. I wrote
+  **Q-p5-infra-12** with the exact statement and its SAR scoping. The statement covers `task/ascrum-demo/*`
+  plus the `ecs:cluster` key, in our account and region. The inline policy grows from 3,036 to 3,299
+  characters worst case. I measured that with a temporary edit and reverted it with `git checkout`;
+  `git status` was clean afterwards.
+- Gates: none run. Only the questions file and this worklog changed. gitleaks on the staged question:
+  "no leaks found".
+
+## 2026-11-26, live run 6, round 2 (worker): Q-p5-infra-12 answered (b); the leftover check asks ECS
+
+The owner answered Q-p5-infra-12 with **(b)**, recorded under the question (commit 72a44dd).
+
+### Deploy role (`ascrum-github-deploy`)
+- `ecs:DescribeServices` is removed from `ReadOnlyChecks`, which stays on `*` for its other reads.
+- New `LeftoverEcsServices`: `ecs:DescribeServices` on `service/ascrum-demo/*`.
+- New `LeftoverEcsTasks`: `ecs:DescribeTasks` on `task/ascrum-demo/*`.
+- Both carry the condition `ArnEquals ecs:cluster = …:cluster/ascrum-demo`, in our account and region.
+- SAR check (Amazon ECS page, and the service reference JSON): DescribeServices takes resource `service*`
+  and DescribeTasks takes `task*`. Both list `aws:ResourceTag/${TagKey}`, `ecs:cluster` and
+  `ecs:ResourceTag/${TagKey}`. So (b) is possible as asked; no fallback to (a).
+- Nothing else depended on DescribeServices on `*`. The only `describe-services` call in `infra/scripts`
+  and `.github/workflows` is the new one in `leftovers.ts`. `destroy.ts` uses CloudFormation only.
+
+### `leftovers.ts`
+- ECS services and tasks the tagging index still lists are described in batches per cluster and kind:
+  - `describe-services --cluster <arn> --services …`, 10 at most (the API limit);
+  - `describe-tasks --cluster <arn> --tasks …`, 100 at most.
+- **Gone:** a service whose `status` is `INACTIVE`; a task whose `lastStatus` is `STOPPED`, or one the
+  answer lists as a failure with reason `MISSING`.
+- **LEFTOVER:** everything else. That includes ACTIVE and DRAINING services, a service reported MISSING,
+  and tasks in any other state. It also includes an ARN the answer doesn't mention, and every call that
+  fails (refused, cluster not found, or throttled past the CLI's own retries).
+- An answer only clears the ARNs that were asked about.
+- Sources, cited in the code comment:
+  - Amazon ECS API Reference, DescribeServices: up to 10 services; Service `status` is ACTIVE, DRAINING
+    or INACTIVE.
+  - API Reference, DescribeTasks: up to 100 tasks; "stopped tasks appear in the returned results for at
+    least one hour".
+  - Developer Guide, "Amazon ECS task lifecycle": PROVISIONING, PENDING, ACTIVATING, RUNNING,
+    DEACTIVATING, STOPPING, DEPROVISIONING, STOPPED, plus DELETED, "a transition state when a task stops".
+- `isGhost` is unchanged, so task definitions, clusters and secrets are classified as before. It is not
+  called for services or tasks.
+- **Changed existing test (S14):** it listed an ECS service among the "leftovers without asking". A
+  service is now asked about, so I took it out of that list and added services and tasks to the test
+  name. The remaining billable types (RDS, EC2, ELB, CloudFront, S3, logs, ECR) are still never asked,
+  and the test still checks that.
+
+### Residual risks (not changed; following the brief)
+- **A service reported MISSING stays a LEFTOVER.** If the tagging index outlives ECS's INACTIVE record,
+  the check fails until the index drops the service. That costs a re-run, never a missed resource.
+- **A task in the DELETED transition state is a LEFTOVER** until it shows STOPPED or MISSING. The six
+  attempts, 30 s apart, give it time.
+- **If ECS answers ClusterNotFoundException** after the cluster is gone, the tasks stay LEFTOVER (fail
+  closed). The API reference says tagged tasks of a deleted cluster are still returned.
+
+### Tests and evidence
+- New tests in `leftovers.test.ts`, block "live run 6":
+  - INACTIVE service plus STOPPED and MISSING tasks are gone, asked in exactly one call per kind;
+  - 12 services are asked in batches of 10 and 2;
+  - ACTIVE, DRAINING and MISSING services are leftovers;
+  - RUNNING, PENDING, PROVISIONING, DEPROVISIONING and STOPPING tasks are leftovers;
+  - a throttled DescribeServices and a refused DescribeTasks both fail the check;
+  - an answer about another ARN doesn't clear the one asked;
+  - task definitions and clusters are still described one by one.
+- `bootstrapStack.test.ts`: the allow-list test has the two new sids, and `ReadOnlyChecks` no longer has
+  DescribeServices. New pin test: "live run 6 / Q-p5-infra-12: ecs:DescribeServices and
+  ecs:DescribeTasks only on the ascrum-demo cluster, never on "*"". It checks that exactly one statement
+  grants each action (wildcards matched), the resource, and the condition.
+- **Red against the pre-fix script and role** (HEAD versions of `leftovers.ts` and `bootstrapStack.ts`):
+  "Tests 4 failed | 11 passed | 47 skipped". The failures were:
+  - the INACTIVE/STOPPED/MISSING test;
+  - the batching test;
+  - the deploy-role allow-list;
+  - the new pin test.
+- The ACTIVE/DRAINING/RUNNING/PENDING and error tests already passed against the old script, which
+  reported every service and task as a leftover. They guard against an over-eager fix.
+- **Green with the fix:** 26 of 26 leftover tests pass.
+- **Breakages, one at a time, all red** (scratch script, files restored after):
+  - B1, DRAINING counted as gone: red on the DRAINING test.
+  - B2, a failed describe counted as gone: red on the refused/throttled test.
+  - B3, MISSING not recognised: red on the INACTIVE/STOPPED/MISSING test.
+  - B4, any answered ARN accepted: red on the "another ARN" test.
+  - B5, every task except PENDING counted as gone: red on RUNNING, PROVISIONING, DEPROVISIONING and
+    STOPPING.
+  - B6, no batch limit: red on the batching test.
+  - B7, DescribeServices back on `*`: red on the allow-list and the pin test.
+  - B8, DescribeTasks on `*`: red on the allow-list and the pin test.
+  - B9, the `ecs:cluster` condition dropped: red on the pin test.
+
+### Policy sizes (worst case, minified)
+- Deploy role's inline policy: 3,036 → **3,548** characters (12 → 14 statements). The limit is 10,240
+  for all of a role's inline policies together.
+- Execution parts are unchanged: network 3,113, compute 2,367, data 1,926, cdn 1,103, iam 1,309.
+- Boundary 872.
+
+### Bootstrap diff to expect (owner redeploys the bootstrap before the next live run)
+- `ascrum-github-deploy`'s default policy (AWS::IAM::Policy `DeployRoleDefaultPolicy…`), updated in
+  place:
+  - `ReadOnlyChecks` loses `ecs:DescribeServices`;
+  - `LeftoverEcsServices` is added;
+  - `LeftoverEcsTasks` is added.
+- No managed policy, trust policy, boundary or execution-role change.
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck clean;
+  - "Test Files 12 passed (12)", "Tests 172 passed (172)";
+  - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-26, live run 6, round 3 (worker): #84 back for Q-p5-infra-13 and the test gaps (DEV-p5-infra-33/-34/-35)
+
+This round builds on the reviewer's commit 1d9c8fb, fast-forwarded, no force-push. No IAM change, so the
+expected bootstrap diff is unchanged from round 2.
+
+### A. Q-p5-infra-13: a MISSING ECS service is gone
+- I wrote up Q-p5-infra-13 in `spec/questions/p5-infra.md`: context from DEV-p5-infra-35, options (a)
+  and (b), recommendation (b). It carries the owner's answer, "Owner answer (2026-11-26): count a
+  MISSING service as gone".
+- `leftovers.ts` now treats each answer the same way for services and tasks. It builds a list of
+  [ARN, says gone] entries:
+  - service: `status === 'INACTIVE'`;
+  - task: `lastStatus === 'STOPPED'`;
+  - any `failures` entry: `reason === 'MISSING'`, exactly.
+- An entry clears an ARN only when all three hold:
+  - the entry says gone;
+  - this batch asked about that ARN;
+  - the answer names that ARN exactly once.
+- Any other failure reason stays a LEFTOVER, and so do a failed call and an answer that isn't JSON.
+- The comment cites DeleteService: an INACTIVE service may be cleaned up and purged.
+- **Optional hardening, done.** An ARN named twice, or as both found and failed, stays a LEFTOVER. It
+  was small once the classification was a single entries list.
+- The fake can now return `failure:<reason>` for any reason.
+
+### B. Tests (`leftovers.test.ts`)
+Renamed and changed:
+- "a MISSING service is a leftover" is now "AC-AWS-04 / Q-p5-infra-13: a MISSING service is gone".
+
+New:
+- Service failure: "… a service failure with any other reason is a leftover" (reason ACCESS_DENIED).
+- **E4 and W04:** "AC-AWS-04 / sec-03 (E4, W04): a task failure with reason … is a leftover", for
+  ACCESS_DENIED and lowercase `missing`. W04 is the same mutation as E4, so one test, looped over two
+  reasons, covers both. The lowercase case pins "exactly MISSING".
+- **E2:** "… a stray ARN in one cluster's answer does not clear a candidate of another cluster whose
+  call failed".
+  - OTHER_TASK, in `other-cluster`, is a candidate.
+  - The `ascrum-demo` call answers STOPPED for both TASK and OTHER_TASK.
+  - The `other-cluster` call is refused.
+  - Expected: gone `[TASK]`, remaining `[OTHER_TASK]`.
+- **W01:** "an answer that is not JSON leaves the whole batch as leftovers".
+- **W03:** "a ClusterNotFoundException leaves the whole batch as leftovers". The fake would have answered
+  STOPPED and MISSING for those tasks if the call had worked.
+- **Hardening:** "an ARN the answer names twice, or as found and as a failure, is a leftover".
+
+### Red/green evidence
+- **New tests against the round-1 script** (`leftovers.ts` from 1d9c8fb): "Tests 2 failed | 31 passed
+  (33)". The two failures are the MISSING-service test and the hardening test; both are new behaviour.
+  The E2, E4/W04, W01, W03 and service-reason tests pass on the round-1 code too. That matches the
+  reviewers' finding: the code already failed closed there, and only the tests were missing.
+- **Breakages, one at a time, each red, then restored green** ("Tests 33 passed (33)"):
+  - E2, `asked.has` removed: red on the E2 test (1 failed).
+  - E4/W04, any task failure reason counted as gone: red on both E4/W04 cases (2 failed).
+  - Any service failure reason counted as gone: red on the service-reason test (1 failed).
+  - Q-13, a MISSING service not counted as gone: red on the MISSING-service test (1 failed).
+  - W01, non-JSON counted as gone: red on the W01 test (1 failed).
+  - W03, ClusterNotFound counted as gone: red on the W03 test (1 failed).
+  - Hardening, duplicate mentions ignored: red on the hardening test (1 failed).
+
+### Gates (this session; every AWS credential source at `/dev/null`, `AWS_PROFILE` unset; no AWS command)
+- infra `pnpm verify` exit 0:
+  - "All matched files use Prettier code style!";
+  - typecheck clean;
+  - "Test Files 12 passed (12)", "Tests 179 passed (179)";
+  - "Successfully synthesized to …/infra/cdk.out".
