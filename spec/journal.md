@@ -1264,3 +1264,20 @@ These come from how the first post's comments went: every question was about tru
   - The security review closed sec-09; its 13 breakages were all red. By reading the regex, it found one join that still escapes the scrub: `1<U+00AD>123456<U+00AD>789012` becomes 13 digits. That is not a regression, because the previous version printed it unscrubbed too (DEV-45, logged).
 - **Gate results (reviewer, `1cb62b5`, no AWS credentials).** infra `pnpm verify` exit 0, "Tests 236 passed (236)", synth OK. The `rg` check found only the 4 known false positives. Only `infra/scripts` and the worklog changed. No IAM change, so no bootstrap update.
 - **Decision.** No blocking findings. Not merged; the owner merges.
+
+## 2026-11-26: A scanner in CI, and the disagreement it was meant to log (p5-image-scan, PR #88, review)
+- **What.** This is the follow-up the owner chose after #78. It has five parts.
+  - **Trivy in CI.** Trivy scans both images in the e2e-compose job: a release binary pinned by SHA-256, and a vulnerability DB downloaded fresh on every run, with no ignore list.
+  - **The second pass.** A second pass fails on any Alpine package left below a version Alpine has already fixed, whatever its severity.
+  - **The API image.** It drops apk, Alpine's OpenSSL and zlib instead of upgrading them (Q-p5-image-scan-1 (a)).
+  - **The web image.** It gets eleven package floors.
+  - **The nginx window.** Six nginx CVEs have no fixed `nginx-unprivileged` image yet. They are reported, not failed, until the installed nginx reaches 1.30.7 or until 2026-12-31, whichever comes first (Q-p5-image-scan-2 (c)).
+- **The moment.** The owner's answer expected the scan to catch D03, a zlib package dropped from the list. On the API image it did not: Trivy rates CVE-2026-4738 MEDIUM, where ECR had rated it CRITICAL. The worker did not lower the threshold on its own. It stopped and asked the owner (Q-p5-image-scan-3). The owner chose the second pass, which ignores severity for anything that has a fix. The reviewer's run of the original D03 is now red on `MEDIUM CVE-2026-4738`. That disagreement is the first Trivy/ECR entry in `deviations.md` (DEV-p5-image-scan-01). It also records that Trivy does not see the OpenSSL bundled inside Node.
+- **Review.**
+  - **The pin.** The reviewer re-checked the Trivy pin from primary sources. The release is immutable, its asset digest matches the pin, `gh attestation verify` passes, and a wrong SHA stops the install step.
+  - **The CA bundle.** Removing Alpine's CA bundle with apk was checked in the image: Node's HTTPS works without `/etc/ssl`, and the database URL's `sslmode=no-verify` never reads a CA file.
+  - **Breakages.** The reviewer ran 26 breakages. 20 were red as expected, two controls were green by design, two survived (logged), and two turned out to hide nothing from Trivy. The two survivors: an `apk` call spelled through shell quoting, which fetched a package from another repository with unsigned packages allowed, and a floor line that adds a new package.
+  - **The security review.** It found the first survivor independently, by reading (sec-01, DEV-05, open, low). It also raised SHA-pinning `actions/*` as an owner question (-06) and two hygiene notes (-07). It found nothing blocking.
+  - **What remains.** A 1.30.7 nginx base will still be red, because one more CVE is fixed only in 1.30.8 (-03).
+- **Gate results (reviewer, `f987dfb`, no AWS credentials).** CI was green on the head, including both scans in e2e-compose. Locally, `check-images.sh` and `scan-images.sh` exited 0, and infra `pnpm verify` exited 0 ("Tests 236 passed (236)", synth OK). The `rg` check found only the 4 known false positives.
+- **Decision.** No blocking findings. Whether -05 and -07 go back to the worker in this PR is the owner's call. Not merged; the owner merges.
