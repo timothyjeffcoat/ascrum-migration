@@ -1274,3 +1274,23 @@ network 2,729 → **3,113** (8 statements); compute 2,367, data 1,926, cdn 1,103
   - typecheck clean;
   - "Test Files 12 passed (12)", "Tests 158 passed (158)";
   - "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-25, live run 6 (worker): leftover false positives; blocked on Q-p5-infra-12
+
+- Run 45725657601: the deploy, the HTTPS smoke test and the destroy all passed. AC-AWS-04
+  (`leftovers.ts`) then failed on an ECS service and an ECS task that the Resource Groups Tagging API
+  still listed after deletion. The owner confirmed that the service is `INACTIVE` and the task is
+  `STOPPED`, so both are false positives.
+- Planned fix: classify services through `DescribeServices` (`INACTIVE` = gone) and tasks through
+  `DescribeTasks` (`STOPPED` or reported MISSING = gone), batched by cluster. Every other state, and
+  every failed or refused describe, stays a LEFTOVER.
+- Permission check, step 3 of the brief: the destroy job runs as `ascrum-github-deploy`. Its
+  `ReadOnlyChecks` grants `ecs:DescribeServices` but **not** `ecs:DescribeTasks`. The `ecs:Describe*`
+  in the `ReadOnly` statement belongs to the CloudFormation execution role.
+- **Blocked**, as the brief says: no edit to the deploy role, no script change, no PR. I wrote
+  **Q-p5-infra-12** with the exact statement and its SAR scoping. The statement covers `task/ascrum-demo/*`
+  plus the `ecs:cluster` key, in our account and region. The inline policy grows from 3,036 to 3,299
+  characters worst case. I measured that with a temporary edit and reverted it with `git checkout`;
+  `git status` was clean afterwards.
+- Gates: none run. Only the questions file and this worklog changed. gitleaks on the staged question:
+  "no leaks found".
