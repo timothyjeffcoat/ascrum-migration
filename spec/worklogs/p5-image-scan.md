@@ -612,3 +612,93 @@ the Node package count) was not in the brief and was not done.
   exit 0, `no leaks found`. A first run scanned **0 bytes** staged, because my combined `git add … &&
   git status … && grep …` had been refused by the worktree guard and nothing was staged; caught by
   reading the byte count, staged with separate commands, and re-run.
+
+## 2026-11-26, session 4 (worker): PR #88 round 3 (DEV-p5-image-scan-sec-03, -sec-04)
+
+`git pull --ff-only` first (already up to date). Only `docker/check-images.sh` changed, plus this entry.
+sec-05 (earlier-stage output shipping through `COPY --from`) is the owner's logged residual and was not
+worked on.
+
+### What the security re-check found
+
+The round-2 allowlist read only RUN instructions, and its stage split trusted every line the reader gave
+it. Two routes around it, both built and ran an untrusted apk with check-images exit 0:
+
+- **sec-03 (SHELL).** `SHELL ["/bin/sh", "-c", "a=ap; ${a}k … add --no-cache zlib && eval \"$1\"", "sh"]`
+  in the web runtime stage: every later RUN runs through it, and the allowlisted floor line looks the same.
+- **sec-04 (heredoc).** `instructions()` does not parse heredocs, so a `COPY <<EOF` whose body has a line
+  `FROM <pinned image>` started a new "stage" for the reader, and a `RUN a=ap; ${a}k …` above it in the
+  real runtime stage was read as an earlier stage.
+
+### The fix: `check_dockerfile_shape`, run before the runtime RUNs are read
+
+- **No heredoc anywhere:** `<<` in any logical instruction, in any stage, fails. Neither Dockerfile uses
+  one, so the reader never has to parse a body. A heredoc needs `<<` on its instruction line, so this
+  catches every heredoc, whatever its body says.
+- **Every logical instruction starts with a Dockerfile instruction keyword** (the 18 Docker documents).
+  FROM is therefore counted only as the keyword of an instruction. With heredocs refused, nothing else
+  can put a free-standing line into the file, so a body line can no longer move the stage boundary
+  without failing the check first. The stage split itself still reads `toupper($1) == "FROM"` on logical
+  instructions, which is this rule.
+- **No SHELL or ONBUILD in any stage.**
+- **Runtime-stage keywords by allowlist**, per file, exactly the ones used today:
+  - API: `FROM ENV RUN WORKDIR COPY USER EXPOSE HEALTHCHECK CMD`;
+  - web: `FROM ENV USER RUN COPY EXPOSE HEALTHCHECK`.
+
+  Anything else in the runtime stage fails (ADD, VOLUME, ENTRYPOINT, ARG, LABEL, STOPSIGNAL, …). Adding
+  one is a reviewed edit of `RUNTIME_KEYWORDS`. A Dependabot FROM bump changes none of this.
+
+### Red/green
+
+Each case was planted in the real Dockerfile, run, and restored, with `cmp` confirming the restore
+(`restored yes` for all). "Before" is the check as committed at 9fe1fae (round 2). R1 and R2 were built
+first (exit 0), as the security reviewer did. "Earlier stage" means inserted before `WORKDIR /build/web`
+in web's build stage; the others go into the runtime stage, just before the floor line (after `USER root`).
+
+| id | planted | before | after | failed on |
+|---|---|---|---|---|
+| R1 | sec-03's SHELL repro, web runtime, **built** | **exit 0** | exit 1 | SHELL in any stage; SHELL not a runtime keyword |
+| R2 | sec-04's `RUN a=ap; ${a}k … add --no-cache zlib` + `COPY <<EOF` / `FROM <pinned nginx>` / `EOF`, web runtime, **built** | **exit 0** | exit 1 | heredoc; `EOF` not an instruction |
+| R3 | `SHELL ["/bin/sh", "-c"]`, web **earlier stage** | **exit 0** | exit 1 | SHELL in any stage |
+| R4 | `ONBUILD RUN true`, web runtime | **exit 0** | exit 1 | ONBUILD in any stage; not a runtime keyword |
+| R5 | `ADD docker/web/default.conf.template /tmp/r5`, web runtime | **exit 0** | exit 1 | not a runtime keyword |
+| R6 | `VOLUME /tmp/r6`, web runtime | **exit 0** | exit 1 | not a runtime keyword |
+| R7 | `COPY <<EOF /tmp/r7` / `hello` / `EOF`, web **earlier stage** | **exit 0** | exit 1 | heredoc; body lines not instructions |
+| R8 | `RUN <<EOF` / `true` / `EOF`, web **earlier stage** | **exit 0** | exit 1 | heredoc; body lines not instructions |
+| R9 | `ENTRYPOINT ["/bin/sh"]`, web runtime | **exit 0** | exit 1 | not a runtime keyword |
+| R10 | `SHELL ["/bin/sh", "-c"]`, API runtime | **exit 0** | exit 1 | SHELL in any stage; not a runtime keyword |
+
+In R2 the `RUN a=ap; ${a}k …` line is not named on its own: the planted body `FROM` still marks a stage
+boundary for the RUN reader, but the shape check fails the file on the heredoc first, so it cannot pass.
+
+**Round 1 and 2 cases re-run** against the new check (the same `plant3-all.sh` set, C1–C10, C1 built):
+all ten exit 1, all restored. **Green:** the real Dockerfiles pass, with
+`docker/api.Dockerfile: the runtime stage's 3 RUN instruction(s) are all permitted forms` and
+`docker/web.Dockerfile: … 1 RUN instruction(s) …`, and check-images exit 0.
+
+### Mistakes and wrong turns, session 4
+
+- **Blank lines.** The first run of the new check failed both real Dockerfiles seven times: "a line that
+  does not start with a Dockerfile instruction keyword", with an empty line. `instructions()` prints the
+  blank lines between instructions, and Docker ignores them. The check now skips empty logical lines.
+  Caught by running it on the real files before any plant.
+- **The plant harness passed text through `awk -v`**, which processes backslash escapes. R1's
+  `\"$1\"` would have been changed on its way into the Dockerfile. Switched to `ENVIRON` (byte for byte)
+  before running round 3. The harness also now checks that the planted text really is in the file
+  (no `PLANT NOT FOUND` in either set). The round-2 set was re-run under the corrected harness. Its
+  session-3 results were made with `-v`, but its only backslash case (C2, `a\pk`) shows the backslash
+  intact in the session-3 failure message, so those results stand.
+
+### Gates (session 4, unpiped, exit codes from the commands)
+
+- **The e2e-compose job's steps, locally** (project `ascrum-p5scan`, `IMAGE_TAG=p5scan`):
+  - compose build: exit 0.
+  - `docker/check-images.sh ascrum-api:p5scan ascrum-web:p5scan`: exit 0.
+  - `docker/scan-images.sh …`: exit 0, `Trivy 0.76.2, vulnerability DB built 2026-11-26T13:14:47Z,
+    downloaded 2026-11-26T19:14:42Z`, `scan-images: no failing finding in either image` (nginx window
+    still open).
+  - up: exit 0. `pnpm e2e:compose`: exit 0, `48 passed (41.8s)`.
+  - `check-client-address.sh`: exit 0. `check-health.sh`: exit 0. down: exit 0.
+- **infra and web `pnpm verify`:** not run; neither ci.yml nor anything under `web/` or `infra/` changed.
+- **Gitleaks 8.30.1:** staged session 4 change (~9 KB), exit 0, `no leaks found`; the branch's 10 commits
+  (~134 KB), exit 0, `no leaks found`.
