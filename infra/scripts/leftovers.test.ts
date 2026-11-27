@@ -22,22 +22,8 @@ const DEMO_CLUSTER = `arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/ascrum-demo`
 // A task of a second cluster (sec-03 / E2).
 const OTHER_TASK = `arn:aws:ecs:${REGION}:${ACCOUNT}:task/other-cluster/fedcba9876543210fedcba9876543210`
 
-// fakeAws answers DescribeClusters without `clusterArn` (fakeAws.ts is outside the DEV-p5-infra-50 follow-up's
-// owned paths). A real answer names each cluster's ARN, and isGhost now requires it, so the tests that use
-// the fake's clusterStatus add it here. The fake still records the call.
-function withClusterArns(aws: Aws): Aws {
-  return async (args) => {
-    const result = await aws(args)
-    if (args[0] !== 'ecs' || args[1] !== 'describe-clusters' || result.code !== 0) return result
-    const asked = args[args.indexOf('--clusters') + 1]
-    const answer = JSON.parse(result.stdout) as { clusters?: { status?: string }[] }
-    const clusters = (answer.clusters ?? []).map((cluster) => ({ clusterArn: asked, ...cluster }))
-    return { ...result, stdout: JSON.stringify({ clusters, failures: [] }) }
-  }
-}
-
 async function check(world: FakeWorld, sleep: () => Promise<void> = async () => {}) {
-  const aws = withClusterArns(fakeAws(world).aws)
+  const { aws } = fakeAws(world)
   let sleeps = 0
   const report = await findLeftovers({
     aws,
@@ -227,6 +213,32 @@ describe('AC-AWS-04: the final leftover check', () => {
         }),
       ).toBe(false)
       expect(await isGhost(answering('not json'), CLUSTER)).toBe(false)
+    })
+
+    // DEV-p5-infra-54: only INACTIVE is gone. A plant of `status !== 'ACTIVE'` had passed every test.
+    it('DEV-p5-infra-54: the asked cluster in any status but INACTIVE, or with no status, is not gone', async () => {
+      for (const status of ['PROVISIONING', 'DEPROVISIONING', 'FAILED', 'DRAINING', 'SOMETHING_NEW']) {
+        expect(await ghost({ clusters: [{ clusterArn: CLUSTER, status }], failures: [] }), status).toBe(false)
+      }
+      expect(await ghost({ clusters: [{ clusterArn: CLUSTER }], failures: [] })).toBe(false)
+    })
+
+    // DEV-p5-infra-55: the fake answers DescribeClusters with `clusterArn` and `failures`, as the API does.
+    it('DEV-p5-infra-55: through the fake, an INACTIVE or MISSING cluster is gone and an ACTIVE one is a leftover', async () => {
+      for (const [status, gone] of [
+        ['INACTIVE', true],
+        ['MISSING', true],
+        ['ACTIVE', false],
+        ['failure:SOMETHING_ELSE', false],
+      ] as const) {
+        const { report } = await check({
+          stacks: {},
+          tagged: { [REGION]: { [CLUSTER]: demo } },
+          clusterStatus: { [CLUSTER]: status },
+        })
+        expect(report.gone, status).toEqual(gone ? [CLUSTER] : [])
+        expect(report.remaining, status).toEqual(gone ? [] : [CLUSTER])
+      }
     })
 
     it('DEV-p5-infra-50: an empty answer keeps the cluster a LEFTOVER in the final check', async () => {
@@ -422,13 +434,13 @@ describe('AC-AWS-04: the final leftover check', () => {
     })
 
     it('AC-AWS-04 / live run 6: task definitions and clusters are still asked one by one, as before', async () => {
-      const { aws: fake, calls } = fakeAws({
+      const { aws, calls } = fakeAws({
         stacks: {},
         tagged: tagged(TASK_DEF, CLUSTER),
         taskDefinitionStatus: { [TASK_DEF]: 'INACTIVE' },
         clusterStatus: { [CLUSTER]: 'INACTIVE' },
       })
-      const report = await findLeftovers({ aws: withClusterArns(fake), region: REGION, attempts: 1 })
+      const report = await findLeftovers({ aws, region: REGION, attempts: 1 })
       expect(report.gone).toEqual([TASK_DEF, CLUSTER])
       expect(calls.filter(([service]) => service === 'ecs').map(([, command]) => command)).toEqual([
         'describe-task-definition',

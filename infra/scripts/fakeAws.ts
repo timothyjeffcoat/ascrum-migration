@@ -16,6 +16,11 @@ export type FakeWorld = {
   /** Tagging index per region: ARN → tags. */
   tagged?: Record<string, Record<string, Record<string, string>>>
   taskDefinitionStatus?: Record<string, string>
+  /**
+   * ECS cluster status by ARN (default ACTIVE), answered as the real DescribeClusters does: the cluster with its
+   * `clusterArn`, and `failures: []`. 'MISSING' or 'failure:<reason>' answers with a failure for that ARN
+   * instead (DEV-p5-infra-55).
+   */
   clusterStatus?: Record<string, string>
   /** ECS service status by ARN (default ACTIVE); 'MISSING' or 'failure:<reason>' answers with a failure. */
   serviceStatus?: Record<string, string>
@@ -127,7 +132,14 @@ export function fakeAws(world: FakeWorld): { aws: Aws; calls: string[][] } {
       })
     }
     if (service === 'ecs' && command === 'describe-clusters') {
-      return ok({ clusters: [{ status: world.clusterStatus?.[arg(args, '--clusters')] ?? 'ACTIVE' }] })
+      const asked = arg(args, '--clusters')
+      const state = world.clusterStatus?.[asked] ?? 'ACTIVE'
+      if (state === 'MISSING' || state.startsWith('failure:'))
+        return ok({
+          clusters: [],
+          failures: [{ arn: asked, reason: state === 'MISSING' ? 'MISSING' : state.slice(8) }],
+        })
+      return ok({ clusters: [{ clusterArn: asked, status: state }], failures: [] })
     }
     if (service === 'ecs' && (command === 'describe-services' || command === 'describe-tasks')) {
       const error = world.ecsError?.[command]
