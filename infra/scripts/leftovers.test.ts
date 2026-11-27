@@ -160,6 +160,99 @@ describe('AC-AWS-04: the final leftover check', () => {
     expect(report.remaining).toEqual([CLUSTER])
   })
 
+  // DEV-p5-infra-50 (sec-02): the cluster branch had read `clusters.every(INACTIVE)`, true for an empty list
+  // and blind to which cluster the answer named. Gone now only when the answer names the asked ARN exactly
+  // once, as INACTIVE or as a MISSING failure (owner decision, 2026-11-27).
+  describe('DEV-p5-infra-50: a DescribeClusters answer clears only the asked cluster', () => {
+    const OTHER_CLUSTER = `arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/other-cluster`
+    const answering =
+      (stdout: string): Aws =>
+      async (args) => {
+        expect(args.slice(0, 4)).toEqual(['ecs', 'describe-clusters', '--clusters', CLUSTER])
+        return { code: 0, stdout, stderr: '' }
+      }
+    const ghost = (answer: unknown) => isGhost(answering(JSON.stringify(answer)), CLUSTER)
+
+    it('DEV-p5-infra-50: an empty answer ({clusters:[],failures:[]}) is not gone', async () => {
+      expect(await ghost({ clusters: [], failures: [] })).toBe(false)
+      expect(await ghost({})).toBe(false)
+    })
+
+    it('DEV-p5-infra-50: a failure for the asked ARN with a reason other than MISSING is not gone', async () => {
+      expect(await ghost({ clusters: [], failures: [{ arn: CLUSTER, reason: 'SOMETHING_ELSE' }] })).toBe(false)
+    })
+
+    it('DEV-p5-infra-50: an INACTIVE entry or a MISSING failure for another cluster is not gone', async () => {
+      expect(await ghost({ clusters: [{ clusterArn: OTHER_CLUSTER, status: 'INACTIVE' }], failures: [] })).toBe(false)
+      expect(await ghost({ clusters: [], failures: [{ arn: OTHER_CLUSTER, reason: 'MISSING' }] })).toBe(false)
+      expect(await ghost({ clusters: [{ status: 'INACTIVE' }], failures: [] })).toBe(false)
+    })
+
+    it('DEV-p5-infra-50: the INACTIVE entry for the asked ARN is gone', async () => {
+      expect(await ghost({ clusters: [{ clusterArn: CLUSTER, status: 'INACTIVE' }], failures: [] })).toBe(true)
+    })
+
+    it('DEV-p5-infra-50: a MISSING failure for the asked ARN is gone', async () => {
+      expect(await ghost({ clusters: [], failures: [{ arn: CLUSTER, reason: 'MISSING' }] })).toBe(true)
+    })
+
+    it('DEV-p5-infra-50: an ACTIVE asked cluster, a contradictory answer or one that is not JSON is not gone', async () => {
+      expect(await ghost({ clusters: [{ clusterArn: CLUSTER, status: 'ACTIVE' }], failures: [] })).toBe(false)
+      expect(
+        await ghost({
+          clusters: [{ clusterArn: CLUSTER, status: 'INACTIVE' }],
+          failures: [{ arn: CLUSTER, reason: 'MISSING' }],
+        }),
+      ).toBe(false)
+      expect(
+        await ghost({
+          clusters: [
+            { clusterArn: CLUSTER, status: 'INACTIVE' },
+            { clusterArn: CLUSTER, status: 'ACTIVE' },
+          ],
+        }),
+      ).toBe(false)
+      expect(await isGhost(answering('not json'), CLUSTER)).toBe(false)
+    })
+
+    // DEV-p5-infra-54: only INACTIVE is gone. A plant of `status !== 'ACTIVE'` had passed every test.
+    it('DEV-p5-infra-54: the asked cluster in any status but INACTIVE, or with no status, is not gone', async () => {
+      for (const status of ['PROVISIONING', 'DEPROVISIONING', 'FAILED', 'DRAINING', 'SOMETHING_NEW']) {
+        expect(await ghost({ clusters: [{ clusterArn: CLUSTER, status }], failures: [] }), status).toBe(false)
+      }
+      expect(await ghost({ clusters: [{ clusterArn: CLUSTER }], failures: [] })).toBe(false)
+    })
+
+    // DEV-p5-infra-55: the fake answers DescribeClusters with `clusterArn` and `failures`, as the API does.
+    it('DEV-p5-infra-55: through the fake, an INACTIVE or MISSING cluster is gone and an ACTIVE one is a leftover', async () => {
+      for (const [status, gone] of [
+        ['INACTIVE', true],
+        ['MISSING', true],
+        ['ACTIVE', false],
+        ['failure:SOMETHING_ELSE', false],
+      ] as const) {
+        const { report } = await check({
+          stacks: {},
+          tagged: { [REGION]: { [CLUSTER]: demo } },
+          clusterStatus: { [CLUSTER]: status },
+        })
+        expect(report.gone, status).toEqual(gone ? [CLUSTER] : [])
+        expect(report.remaining, status).toEqual(gone ? [] : [CLUSTER])
+      }
+    })
+
+    it('DEV-p5-infra-50: an empty answer keeps the cluster a LEFTOVER in the final check', async () => {
+      const fake = fakeAws({ stacks: {}, tagged: { [REGION]: { [CLUSTER]: demo } } })
+      const aws: Aws = async (args) =>
+        args[1] === 'describe-clusters'
+          ? { code: 0, stdout: JSON.stringify({ clusters: [], failures: [] }), stderr: '' }
+          : fake.aws(args)
+      const report = await findLeftovers({ aws, region: REGION, attempts: 1 })
+      expect(report.ok).toBe(false)
+      expect(report.remaining).toEqual([CLUSTER])
+    })
+  })
+
   describe('live run 6: ECS services and tasks the tagging index still lists', () => {
     const tagged = (...arns: string[]) => ({ [REGION]: Object.fromEntries(arns.map((a) => [a, demo])) })
 

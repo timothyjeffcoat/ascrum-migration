@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # AC-CTR-02 and the image checks around it. Checks the built images themselves (their config, history and
 # every file in them), plus the static pins they are built from:
-#   - non-root; no dev dependencies, test files or .env files (AC-CTR-02);
+#   - non-root; no dev dependencies, test files or .env files (AC-CTR-02); the API's installed packages are
+#     exactly api/pnpm-lock.yaml's production tree, as pnpm lists it from the lockfile, in pnpm's layout and
+#     nothing else under node_modules (DEV-p5-image-host-10, -17);
 #   - every image docker/*.Dockerfile uses (FROM, COPY --from, RUN --mount from; any keyword case) and
 #     every pulled compose image pinned by version and digest (DEV-p5-containers-09, -12); no `# syntax=`
 #     frontend; compose builds exactly these two Dockerfiles from the repo root, with no build options
@@ -35,9 +37,9 @@
 # running it is what they test: the import smoke test (main.ts must load in the image) and the start-up
 # check (it must start and answer /healthz). Neither is trusted for a fact the host can read.
 #
-# Needs docker, jq, GNU tar, Node 24 (the same `node` the job's setup-web installs) and Gitleaks: $GITLEAKS,
-# or `gitleaks` on the PATH, at the version pinned in .github/actions/setup-gitleaks (which the e2e-compose
-# and secrets jobs both use). A missing tool fails the check; it is never skipped. The start-up check runs
+# Needs docker, jq, GNU tar, Node 24 and pnpm (the same `node` and `pnpm` the job's setup-web installs) and
+# Gitleaks: $GITLEAKS, or `gitleaks` on the PATH, at the version pinned in .github/actions/setup-gitleaks
+# (which the e2e-compose and secrets jobs both use). A missing tool fails the check; it is never skipped. The start-up check runs
 # its own throwaway PostgreSQL on a private network, publishes no port, and removes everything it started.
 #
 # Exits non-zero and names every finding when a check fails.
@@ -65,7 +67,7 @@ fail() {
   findings=$((findings + 1))
 }
 
-for tool in docker jq tar node; do
+for tool in docker jq tar node pnpm; do
   command -v "$tool" > /dev/null || {
     echo "check-images: $tool not found" >&2
     exit 2
@@ -356,7 +358,7 @@ check_secrets() {
   # password. A value with no name and no shape to go by (a bare random ENV or ARG) is beyond any pattern
   # check; that is for the image scan and review (wave C).
   urls=$(grep -ohE "$URL_WITH_PASSWORD" "$dir/history.txt" "$dir/inspect.json" |
-    sed -E 's#^([^:]+://[^:@]*):[^@]*@#\1:<redacted>@#' | sort -u || true)
+    sed -E 's#^([^:]+://[^:@]*):[^@]*@#\1:<redacted>@#' | LC_ALL=C sort -u || true)
   [[ -z $urls ]] || fail "$image: URLs with a password in the image's own layers or its config: $(tr '\n' ' ' <<< "$urls")"
   # The summary only when this image passed every check above.
   if ((findings == before)); then
@@ -757,9 +759,11 @@ check_runtime_changes() {
   local image_env base_env extra
   image_env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | sed '/^$/d' | LC_ALL=C sort)
   base_env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$base" | sed '/^$/d' | LC_ALL=C sort)
-  extra=$(comm -13 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | LC_ALL=C sort)
-  if [[ -n $(comm -23 <(echo "$base_env") <(echo "$image_env")) ]]; then
-    fail "$image: ENV changes or drops the base's entries: $(comm -23 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | tr '\n' ' ')"
+  # comm compares in the C locale, the order `LC_ALL=C sort` produced; in the caller's locale (en_US.UTF-8)
+  # it misreads C-sorted input, e.g. `B=1` before `a=1` (DEV-p5-image-host-22).
+  extra=$(LC_ALL=C comm -13 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | LC_ALL=C sort)
+  if [[ -n $(LC_ALL=C comm -23 <(echo "$base_env") <(echo "$image_env")) ]]; then
+    fail "$image: ENV changes or drops the base's entries: $(LC_ALL=C comm -23 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | tr '\n' ' ')"
   fi
   if [[ $extra != "$(tr ' ' '\n' <<< "${RUNTIME_ENV_NAMES[$dockerfile]:-}" | sed '/^$/d' | LC_ALL=C sort)" ]]; then
     fail "$image: ENV adds $(tr '\n' ' ' <<< "$extra")but the runtime stage may add only ${RUNTIME_ENV_NAMES[$dockerfile]:-nothing}"
@@ -806,7 +810,9 @@ hits=$(grep -E '^app/.' "$work/api.txt" | grep -v '^app/api/node_modules/' | gre
 if graph=$(docker run --pull never --rm --network none --entrypoint node \
   --mount "type=bind,source=$PWD/docker/api/import-graph.ts,target=/tmp/import-graph.ts,readonly" \
   "$api_image" /tmp/import-graph.ts /app /app/api/src/main.ts 2> "$work/graph.err"); then
-  present=$(grep -E '^app/(api/src|web/stub)/[^/]+\.ts$' "$work/api.txt" | sed 's|^app/||' | sort)
+  # Sorted as import-graph.ts sorts (JS code-unit order, which is C order for these ASCII names), not in the
+  # caller's locale, where `Zeta.ts` would sort after `alpha.ts` and the comparison fail (-22 class).
+  present=$(grep -E '^app/(api/src|web/stub)/[^/]+\.ts$' "$work/api.txt" | sed 's|^app/||' | LC_ALL=C sort)
   if [[ $graph != "$present" ]]; then
     fail "$api_image: the .ts files in /app differ from what main.ts loads: $(diff <(echo "$graph") <(echo "$present") | grep '^[<>]' | tr '\n' ' ')(< loaded but missing, > present but never loaded)"
   fi
@@ -864,8 +870,27 @@ while read -r dev; do
   pattern="^app/api/node_modules/(\.pnpm/${dev//\//\\+}@|${dev}/)"
   ! grep -qE "$pattern" "$work/api.txt" || fail "$api_image: dev dependency $dev is installed"
 done < <(jq -r '.devDependencies // {} | keys[]' api/package.json)
-# And what is installed is exactly the production tree: pg and the packages pg depends on.
-echo "$api_image: installed packages: $(log_safe "$(grep -oE '^app/api/node_modules/\.pnpm/[^/]+/$' "$work/api.txt" | sed -E 's|.*/\.pnpm/||; s|/$||' | grep -v '^node_modules$' | sort | tr '\n' ' ')")"
+# And what is installed is exactly the production tree, in pnpm's layout (DEV-p5-image-host-10, -17). The
+# expected tree comes from api/pnpm-lock.yaml alone, through pnpm itself: `pnpm list --lockfile-only --prod`
+# reads the lockfile without node_modules and gives each package's path in the virtual store, so its
+# `.pnpm/<dir>` names (peer suffixes included, e.g. pg-pool@3.14.0_pg@8.23.1) are the ones the Dockerfile's
+# `pnpm install --prod --frozen-lockfile` creates. It is the pnpm packageManager pins (setup-web in CI, the
+# Dockerfile through corepack), and nothing from the image takes part. The image's side is read on the host
+# from the layers (`image-fs.ts pnpm-store`, which states the layout rules): the store directories are
+# exactly the lockfile's, each holds only its own package and symlinks, `.pnpm/node_modules/` holds only
+# symlinks, and the top level holds only pnpm's three dot entries and a symlink per production dependency.
+# Every one of those symlinks, resolved in the image, must land on the own directory of a store package of
+# the link's own name, and a link beside a package or at the top level must be an edge the tree lists, into
+# the directory it names; a scope is always a real directory (-24: links out of the store, into a package's
+# subdirectory or under a new name had passed). So a package Node could load from anywhere under
+# node_modules must be one the lockfile names (-17: real directories in `.pnpm/node_modules/` or beside a
+# store package, a non-directory store name, a non-directory scope and a dot-named directory had passed the
+# earlier name comparison). An empty or unreadable expected list fails; it never passes as "nothing expected".
+if ! pnpm --dir api list --lockfile-only --prod --depth Infinity --json > "$work/prod-tree.json" 2> "$work/prod-tree.err"; then
+  fail "$api_image: pnpm could not list api/pnpm-lock.yaml's production tree: $(tail -5 "$work/prod-tree.err")"
+else
+  findings_of "$api_image" pnpm-store "$work/api.model.json" app/api/node_modules "$work/prod-tree.json" || true
+fi
 
 # --- web ---------------------------------------------------------------------------------------
 check_user "$web_image" "$work/web.model.json"
