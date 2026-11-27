@@ -1348,6 +1348,142 @@ These come from how the first post's comments went: every question was about tru
 - **Gate results (reviewer, `f5df283`, AWS credential files at `/dev/null`).** infra `pnpm verify` exit 0, "Tests 243 passed (243)", synth OK. The `rg` check found only two existing config comments in `infra/`. CI 12/12 green on `f5df283` (`gh pr checks 92`).
 - **Decision.** No blocking findings. The owner approved round 2 and said "yes, set it to verified". Not merged: the owner merges.
 
+## 2026-11-27: Phase 5 by the numbers (as of 2026-11-27)
+Counted, not estimated, against `migration` at `6f6afaf` (after #93) and read-only `gh` calls on 2026-11-27 at about 19:30 UTC. Each number names its source. #94 (the follow-ups, in review today) is left out everywhere unless a line says otherwise.
+
+- **Pull requests.** Source: `gh pr list --state all --base migration --limit 200 --json number,title,state,mergedAt,isDraft,headRefName`, numbers #37 to #94 (58 PRs; every PR in that range targets `migration`). Classified by branch prefix and draft flag:
+  - **42 merged**, from #37 (2026-11-24 01:04 UTC) to #93 (2026-11-27 18:03 UTC):
+    - 20 feature or fix PRs (`convert/*`): the five cluster PRs #41, #48, #59, #60, #69; the hardening PR #65; the live-run and review follow-ups #72-#75, #78, #82-#84, #86-#88, #90, #92; and #77, the slow sign-in test (P7).
+    - 11 status or gate PRs (`chore/status-*`, `chore/*-gate`): #40, #56, #57, #62, #63, #66, #67, #70, #89, #91, #93.
+    - 3 spec PRs (#37-#39), 5 journal PRs (#64, #68, #76, #81, #85), 3 process PRs (#58 Dependabot config, #79 the security-reviewer agent, #80 the CLAUDE.md split).
+  - **10 plants**, draft PRs closed unmerged: #42-#46 and #49-#53. **Correction:** the entry "Wave A closed" says 12 plants for these same two ranges. The ranges hold 10 PRs, and `gh` lists 10.
+  - 3 Dependabot PRs closed unmerged (#47, #54, #55). 3 open: Dependabot #61 (base images) and #71 (CDK), both open since 2026-11-24, and #94.
+- **Deviations.** Source: the 144 rows of `spec/deviations.md` whose id starts `DEV-p5-` (183 rows in all). #94's rows are not on `migration`, so they are not counted.
+  - **Severity column:** 15 blocking, 129 non-blocking. 7 of the 15 were found in review before their PR merged (DEV-p5-security-08, DEV-p5-containers-05, DEV-p5-infra-01, -02, -10, DEV-p5-image-cves-04, DEV-p5-image-host-12). 8 were found by the live AWS setup and runs after #69 merged.
+  - **Caught by**, in the summary's categories, with every row placed once:
+
+    | Caught by | Phase 5 rows |
+    |---|---|
+    | security-reviewer (from #79, 2026-11-25) | 46 |
+    | reviewer, by reading or a probe | 32 |
+    | reviewer, by a planted breakage | 22 |
+    | worker, by design or its own checks | 18 |
+    | reviewer, by mutation | 9 |
+    | owner, by the live AWS setup and runs | 9 |
+    | worker, by raising a question | 5 |
+    | owner's chosen breakage, run by the reviewer | 3 |
+
+  - **Resolution, read from each row's whole cell:** 93 fixed, 26 accepted, 13 logged, 12 open (all 12 non-blocking, 11 of them marked low). #94 targets four of the 12 (DEV-p5-infra-50, DEV-p5-image-host-07, -10, -14); the counts here do not assume it lands.
+  - **Cross-check against the summary tables:** no mismatch. The rows give the same counts as the tallies (16 blocking in the file, 15 of them Phase 5; 93/26/13/12), and a script found every id in each tally list exactly once. Two traps for anyone re-counting. DEV-p5-store-03, -10 and -11 begin "Accepted" or "Open" and say "Fixed in #59" later in the same cell, so counting first words gives 90/27/14. And DEV-p5-image-scan-15 has an unescaped `|` inside inline code, so the rendered table splits that row into one cell too many.
+- **Breakages.**
+  - **The owner's sealed O1-O3** (entries "Wave A review, the store" and "The sealed breakages, unsealed"). O1 was caught in its plain form and survived per collection. O2 survived every variant: 35 of 35 tests stayed green. O3 was caught. After the test-only fix, all three are caught.
+  - **The owner's O4** (chosen 2026-11-24, "a failed deploy leaves something running"). Offline: 14 variants, 7 survived, then 15 of 15 red after the fix. Live: failed deploys with a real stack were torn down (runs 4 to 7), and so was a cancel during the create (run 9). A standalone destroy ran too: run 45753370925 on 2026-11-26 printed "already absent: AscrumDemo, AscrumDemoRegistry", "Remaining: 0" (`gh run view --log`; the p5-infra worklog records it, though the journal's 2026-11-26 entry still lists it as to do). The one O4 item not done is the next day's bill.
+  - **Reviewer and security-reviewer breakages, as each entry states them** (not re-derived):
+
+    | PR | Breakages, as stated |
+    |---|---|
+    | #41 | 3 reviewer plants (#44-#46); 2 got through, #44 with every check green |
+    | #48 | 11 (6 caught, 5 survived); re-review, 10 aimed at the new tests (8 red, 2 survived); the worker's own 9 mutations (8 caught, 1 equivalent) |
+    | #59 | 24 (16 red, 8 survived); re-review 7 + 7 + 8, all red except 1 of the 8 |
+    | #60 | 20 (12 red, 8 survived); re-review 21, red and survived not totalled in the entry |
+    | #65 | 45 (41 red, 4 survived) |
+    | #69 | 154 over three rounds (72, 56, 26); 19 survived round 1, none after |
+    | #72-#75 | 13 (all red), 15 (13 red), 22 (21 red), 18 (13 red) |
+    | #78 | 17 (12 red); re-review 16 (10 red) |
+    | #82 | 13, all red; after the security fix 11, all red; security re-check 9, all red |
+    | #83 | 10, all red; security review 5, all red |
+    | #84 | 11 (8 red); round 2, 10 (all red but 1) |
+    | #86 | 7 + 5 (security) on decisions, all red, and 11 on the reasons (9 red); round 2, 11 (6 red); round 3, 14 (9 red); final round, 15 (14 red) |
+    | #87 | 18 (16 red); security review 13, all red |
+    | #88 | 26 (20 red as expected, 2 controls, 2 survived, 2 hid nothing); round 2, 13 new (all red) and 23 re-run; round 3, 12 new (11 red); round 4, 30 new cases |
+    | #90 | 17, 31 and 31 cases over three rounds |
+    | #92 | 11 (10 red); round 2, 16 (15 red); security review 20 (15 red), round 2 all red but 1 |
+
+    No grand total: the rounds count different things (some "cases" include controls and re-runs, and #60's re-review gives no red/survived split), so a sum would be a new number, not a count.
+- **Tests on `migration`** (gate results quoted in the entries above). Unit 406 → 443. Integration against PostgreSQL 0 → 87. Playwright 37 → 42 (#78 review). Playwright against the compose stack 48 (#78 review). infra tests 0 → 243 (#92 review). Required checks on `migration` 5 → 12 (#75 entry).
+- **Live AWS runs.** Source: `gh run list --workflow deploy-demo.yml --limit 100 --json databaseId,status,conclusion,createdAt,headSha,event,headBranch`, and the same for `destroy-demo.yml`.
+  - **9 deploy runs**, all started by hand (`workflow_dispatch`) on `migration`, from 2026-11-25 05:20 to 2026-11-26 03:44 UTC: 7 `failure`, 1 `success`, 1 `cancelled` (on purpose). **1 standalone destroy run**, `success`.
+  - **Why each red run failed** (journal):
+    1. ECR never scanned the image (a manual-scan default, and an image index), and the combined evidence download failed;
+    2. ECR refused to scan an OCI image index;
+    3. the gate stopped the deploy on 1 CRITICAL, 4 HIGH and 1 MEDIUM OS-package CVEs in the base image;
+    4. an EC2 tag-on-create condition that could never match;
+    5. a call the load balancer makes with the caller's permissions, at resource 36 of 46;
+    6. the first full deploy and smoke test passed, then the leftover check flagged an ECS service and task that were already deleted;
+    7. a correct permission that was merged but not yet deployed in the bootstrap stack.
+  - **Fully green: 1** (run 8, 15 min 10 s end to end). Every run ended with nothing from the demo left; runs 6 and 7 flagged only things already deleted.
+  - Not counted as runs: the owner's bootstrap deploys from their own machine. The first of them failed on IAM's policy-size quota (DEV-p5-infra-12).
+- **Gate runs.** Source: `spec/metrics.jsonl`, written by the hook.
+  - **Schema.** One JSON row per hook event: `ts`, `event` (PostToolUse, PostToolUseFailure, SessionStart, SessionEnd), `session`, `branch`, `commit`, `worktree`. Tool rows add `tool`, `category`, `status` (pass or fail, from the exit code) and the first part of `command`; agent launches add `subagent_type` and `description`.
+  - **What a row means.** `category` comes from keywords in the command text. So a `test` row is a command that mentions a test tool, not always a full suite, and a piped or mutation command counts as whatever its exit code was.
+  - **Window.** 2026-11-24 00:57 UTC (the first Phase 5 spec commit) to 2026-11-27 19:29 UTC (before this entry's own commands): 650 rows.
+
+    | Category | pass | fail |
+    |---|---|---|
+    | verify | 100 | 6 |
+    | test | 75 | 7 |
+    | e2e | 44 | 2 |
+    | lint | 46 | 1 |
+    | typecheck | 15 | 0 |
+    | ci (reading CI runs with `gh`) | 92 | 3 |
+
+  - **Limits.** Only rows up to 2026-11-24 21:18 UTC are committed on `migration` (713 rows in the file). The later ones sit in the main checkout's ledger, not yet committed. One row was lost on 2026-11-24 (entry "A metrics row lost in a ledger conflict"). Agent launches: 35 recorded in the window before this one. That is a lower bound, because a continued agent is not logged and several reviewed PRs (#72-#75, #86-#88) have no launch row.
+- **Owner interventions** (spec §12, "every human intervention"; the question table at the start of Phase 5 cites §10, which is the exit criteria).
+  - **Method.** I counted the questions in `spec/questions/p5-*.md`: 37 raised. 24 have an answer written in the file: p5-store 1, p5-devsecops 6, p5-security 2, p5-containers 4, p5-image-cves 2, p5-image-scan 3, p5-image-host 3, p5-infra 3. Of the other 13, p5-infra Q-1 to Q-11 were implemented as recommended with no owner answer written, Q-p5-image-cves-1 was withdrawn as not needed, and Q-p5-devsecops-7 has no answer in its file, though the journal records the owner's choice (merge #41 before `secrets` became required).
+  - **Not counted one by one**, though the journal records each: approving the spec (12 recommendations), rev 2 ("nothing stays running"), the four breakages O1-O4, the dedicated AWS member account, the shared-account bar for #69, the merge go-aheads ("merge 65", "merge 69", ...), the extra review rounds on #84, #86, #88, #90 and #92, and every bootstrap deploy and live run. So **25 recorded answers is a lower bound.**
+- **Cost: pending the owner's bill check for 2026-11-25/26.** No number is given here until the bill is read.
+- **Not yet proven live.**
+  - On Fargate: dropping all capabilities, together with `initProcessEnabled` and user `1000:1000` (#92), and the live error text for a refused or throttled DescribeSecret.
+  - The last deploy ran on `67c8ad3` (2026-11-26). #86, #87, #88, #90 and #92 merged after it, so the API image without apk, OpenSSL and zlib (#88) has had no ECR scan or Fargate start.
+  - Whether IAM checks the default VPC for a security group created without one (DEV-p5-infra-25).
+  - The budget alarm exists (the leftover check keeps it), but nothing has shown it firing.
+- **Exit criteria (spec §10).** The deploy, smoke test and destroy are proven (run 8 and the standalone destroy). One criterion is not met yet: the README has no Phase 5 section with measured numbers.
+
+**Moment (article candidate)**
+- "The security-only reviewer joined on day three and found 46 of the phase's 144 deviation rows, about a third. The live AWS setup and runs found 8 of the 15 blocking rows, and none of the nine deploy runs left anything running."
+
+## 2026-11-27: Would I put this in production?
+- **Short answer.** No, and it was not built for that. What exists is a demo environment: a person starts a run that deploys it, smoke-tests it over HTTPS and destroys it, all in one workflow run (spec rev 2, AC-AWS-04). It holds only seed data and has no real users. One run has been fully green (run 8, 15 min 10 s).
+- **What production would still need**, each with where the repo shows the gap:
+  - **Data that survives.** `backupRetention: Duration.days(0)`, `deletionProtection: false`, `multiAz: false`, `RemovalPolicy.DESTROY`, one `db.t4g.micro` (`infra/src/demoStack.ts`). Right for an environment that lives fifteen minutes, wrong for data anyone needs.
+  - **Availability.** One Fargate task (`desiredCount: 1`, `minHealthyPercent: 0`), no auto scaling, one region (the `aws-demo` environment's `AWS_REGION`), two availability zones, and the task in a public subnet with a public IP (no NAT).
+  - **Encryption on every hop.** CloudFront to the load balancer is plain HTTP, guarded by CloudFront's prefix list and a per-run secret header. Q-p5-infra-2 says: "(c) is the right answer for anything with real users" (a domain and certificates). The API reaches RDS over TLS without checking the certificate (`sslmode=no-verify`, Q-p5-infra-3), and the recommended fix (b), Amazon's CA bundle in the image, is not done.
+  - **Observability.** Container Insights is off. API logs are kept one week. The only alarm is the account-wide budget (Q-p5-infra-4 (a)). `infra/` has no metrics alarms, tracing or uptime checks.
+  - **On-call, runbooks, incident response, SLOs:** not assessed. Nothing in the repo addresses them.
+  - **Secrets.** There are no long-lived AWS keys to rotate (OIDC), and the header secret is new on every run. RDS generates and owns the database password (`manageMasterUserPassword`); its rotation schedule is not assessed.
+  - **Supply chain.** In `.github/`, 31 `actions/*`, 2 `github/codeql-action` and 2 `pnpm/action-setup` references are pinned by tag. Only `aws-actions/configure-aws-credentials` is pinned by commit SHA. SHA-pinning is an open owner question (DEV-p5-image-scan-06). Two Dependabot PRs have been open since 2026-11-24 (#61 base images, #71 CDK).
+  - **Residuals accepted for a demo** that production would revisit:
+    - the content of files inside the images' COPY roots is trusted as far as the lockfile (Q-p5-image-host-2, DEV-p5-image-scan-10);
+    - a security group created without a VPC would land in the default VPC (DEV-p5-infra-25);
+    - a KMS permission risk, real but unproven (DEV-p5-infra-29);
+    - a sixth simultaneous correct sign-in for one account gets `429` (DEV-p5-security-18);
+    - 12 rows still open, all non-blocking (previous entry).
+  - **Image scanning.** The web image's nginx findings are report-only until nginx 1.30.7 or 2026-12-31 (Q-p5-image-scan-2 (c)). AWS does not use that image (S3 serves the static files), but anyone running the compose stack would. Mutation testing was deferred (Q-p5-12 (b)).
+  - **Proof of the current code.** Five code PRs merged after the last live run (previous entry), and the AWS cost is not measured yet.
+- **What is already production-grade**, with evidence:
+  - **Deploy access.**
+    - No AWS keys in the repo or in agents' hands (§11, AC-AWS-02).
+    - The deploy role trusts exactly two id-based OIDC subjects, the deploy and destroy workflows on `migration` in `aws-demo`, and run 1 proved this live.
+    - The role can only run change sets on `AscrumDemo*` stacks, with explicit denies. Its execution policies are tag-scoped and were reviewed against a shared-account bar (DEV-p5-infra-01, -10, -23).
+  - **The merge and deploy gates.**
+    - 12 required checks on `migration`, strict and with admins included: lint, typecheck, unit, build, e2e, integration against PostgreSQL, e2e against the compose stack, CodeQL (twice, one pinned to its app), dependency audit, Gitleaks and infra.
+    - The deploy refuses a commit that any required check did not pass (DEV-p5-infra-02).
+  - **Teardown that fails closed.** Each of the 9 deploy runs ended with nothing from the demo left, the deliberate cancel included. The leftover check counts a refused or unclear answer as a leftover, which is why runs 6 and 7 went red on things already deleted.
+  - **Sign-in and sessions.**
+    - Passwords are hashed with scrypt and a salt per user.
+    - Cookies are `Secure`, `HttpOnly` and `SameSite`, sessions expire after 8 idle hours, and the session id changes at sign-in.
+    - Headers and a CSP are set (AC-SEC-01..05).
+    - The throttle was measured under load: 100 simultaneous wrong passwords got 5 checks, on one server or two (wave B re-review).
+  - **Containers.**
+    - Images run as non-root, on bases pinned by digest, with no dev dependencies.
+    - They are scanned twice in CI (Trivy, two passes) and again by ECR before a deploy. The image checks read layers on the host instead of trusting the image's own tools (#90).
+    - On ECS the API drops every capability and runs as `1000:1000` (offline only so far, previous entry).
+  - **The database** is in isolated subnets, not publicly accessible, with encrypted storage (AC-AWS-05, `publiclyAccessible: false`, `storageEncrypted: true`).
+- **The honest summary.** The parts that are close to production are the ones that control change: who can deploy, what must pass first, and what happens when a run fails. The parts that are not are the ones that keep data and uptime, because an environment that lives for fifteen minutes needs neither.
+
+**Moment (article candidate)**
+- "Would I put this in production? No. The deploy role, the twelve required checks and the teardown that fails closed would carry over. The database with zero days of backups, the single task and the plain-HTTP hop behind CloudFront would not. They are right for an environment that exists for fifteen minutes, and that is all this one was asked to be."
+
 ## 2026-11-27: Closing the follow-ups, and a test count that can still be balanced (p5-followups, PR #94, review)
 - **What.** One follow-up closed the four rows that #90 and #92 had left open.
   - **DEV-p5-infra-50.** The leftover check now ties AWS's DescribeClusters answer to the cluster it asked about, and an empty answer no longer counts as gone. The fake AWS used by the tests now reports `clusterArn` as the real API does (-55).
