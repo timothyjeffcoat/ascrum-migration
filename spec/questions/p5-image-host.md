@@ -123,3 +123,56 @@ writes. That is `add_header <name> "<value>" always;` or `proxy_hide_header <nam
 generator writes one per header (it drops the API's copy so the header is never doubled), so its real output
 could not pass without it. It opens no location and proxies nothing. If the owner meant `add_header` and
 nothing else, the generator would have to change first, which is outside this cluster.
+
+## Phase 5 follow-up (2026-11-27)
+
+**Q-p5-image-host-4. Where do the reader's fail-closed tests live, and which CI job runs them (DEV-p5-image-host-07)?**
+*(Blocks DEV-p5-image-host-07 only. The follow-up's other rows, -10 and -14 and DEV-p5-infra-50, are done
+without it. Evidence: `spec/worklogs/p5-image-host.md`, session 5.)*
+
+Context:
+- `docker/image-fs.ts` fails closed (an error, exit 2, no model) on a whiteout that is not an empty file, an
+  overlay metadata file it does not know, a hard link to nothing, a PAX key it does not understand, a global
+  PAX header, nested or doubled extended headers, a tar type a layer may not use (FIFO, device), a malformed
+  or mis-checksummed header, data after the end-of-archive marker, a blob whose SHA-256 or diff_id does not
+  match, and a compression it does not know. Through `added`, an opaque directory or whiteout in a COPY layer
+  is a finding (exit 1). The two clean images reach none of these branches, so CI never runs them. They ran
+  once from a scratch generator outside the repo (#90, session 1), and the reviewer's crafted layers (a FIFO,
+  a PAX `comment`, a tampered blob) exit 2 today. Nothing keeps them so.
+- A test needs crafted `docker save` folders: `index.json`, `manifest.json`, a config blob, and layer
+  tarballs with hand-built tar headers (ustar, PAX, GNU long names), gzipped with `node:zlib`. All of it is
+  Node's standard library, so no new dependency. `image-fs.ts` is a CLI with no exports, so a test would
+  spawn `node docker/image-fs.ts read <folder> <diff_ids> <model.json>` (and `added` for the COPY-layer
+  cases), then assert the exit code and the message, with a clean control case that must exit 0. The reader
+  itself would not change.
+- `docker/` has no tests today. Its `.ts` files are already linted (web's `pnpm lint` covers `../docker`,
+  with the rule that makes `.only`/`.skip`/`.todo` errors) and typechecked (`tsc -p ../docker/tsconfig.json`
+  in `pnpm typecheck`), so a test file there gets both gates without a config change. Web's Vitest `unit`
+  project includes only `src/**` and `stub/**`, under jsdom with the MSW setup file; `integration` includes
+  only `../api/src/**` and needs PostgreSQL. infra/ is a separate package with its own Vitest.
+
+Options:
+- (a) **`node:test` under `docker/`, one new CI step.** `docker/image-fs.test.ts` plus its generator (for
+  example `docker/image-fs-craft.ts`), using `node:test` and `node:assert`, run by `node --test docker/` as a
+  new step in the existing `test` job of `.github/workflows/ci.yml` (setup-web already gives Node 24 there; no
+  Docker needed). Touches `docker/` (new files) and `.github/workflows/ci.yml` (one step), so the PR gets the
+  security second review. It is not in `pnpm verify` unless web's `verify` script also runs it, which would
+  be a `web/package.json` edit too.
+- (b) **Vitest, through web's config.** The same files under `docker/`, written for Vitest, and a third
+  project `docker` (environment `node`, include `../docker/**/*.test.ts`) in `web/vitest.config.ts`, with
+  `pnpm test` running it beside `unit` (`web/package.json`'s `test` script). Touches `docker/`,
+  `web/vitest.config.ts` and `web/package.json`; no CI file change. It runs in `pnpm test`, `pnpm verify` and
+  the `test` job. It edits the gate's config (an addition, not a loosening, but the reviewer has to check it
+  is one). Adding `../docker/**` to the existing `unit` include instead would run node-only tests under jsdom
+  and the MSW setup.
+- (c) **A self-test inside `check-images.sh`.** Before reading the real images, run the reader on crafted
+  folders and require the expected exit for each. Touches only `docker/`, and the existing e2e-compose step
+  runs it. Cost: a test suite inside a gate, run only in the slowest job, and a failing case reads like an
+  image finding.
+- (d) **No test**: record the untested branches as an accepted residual in DEV-p5-image-host-07.
+
+Recommendation: **(a)**. The tests are about the reader alone, so they belong next to it and need neither
+Docker nor web's jsdom set-up; `node:test` is in the runtime the reader already requires, so there is no
+new tool or dependency, and lint and typecheck already cover the folder. The `test` job is the fast one that
+already runs on every push. The cost is one `.github/` line and the security second review. If the owner
+also wants it in `pnpm verify`, (a) plus the one-line `verify` edit.
