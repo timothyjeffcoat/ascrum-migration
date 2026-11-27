@@ -176,3 +176,13 @@ Docker nor web's jsdom set-up; `node:test` is in the runtime the reader already 
 new tool or dependency, and lint and typecheck already cover the folder. The `test` job is the fast one that
 already runs on every push. The cost is one `.github/` line and the security second review. If the owner
 also wants it in `pnpm verify`, (a) plus the one-line `verify` edit.
+
+## Owner answer, Q-p5-image-host-4 (2026-11-27)
+
+Relayed by the orchestrator; the owner said "yes, send it back to the worker".
+
+- **Q-p5-image-host-4: (a), without the `verify` change.** The reader's fail-closed tests run under
+  `node --test` from `docker/` (`docker/image-fs.test.ts` and its generator), as one new step in the
+  existing `test` job of `.github/workflows/ci.yml`. They are not added to `pnpm verify`, so
+  `web/package.json` is unchanged. For this round the owned paths add those two files and that one step;
+  nothing else in `.github/` or `web/`. Done in session 6 (`spec/worklogs/p5-image-host.md`).
