@@ -1983,3 +1983,76 @@ infra `pnpm verify` exit 0: prettier "All matched files use Prettier code style!
 gitleaks was **not run**: it is not installed on this machine (`gitleaks: command not found`). Instead, a
 grep of the whole diff against `origin/migration` for local paths, user names and e-mail addresses found
 nothing. CI's secret scan is the check of record.
+
+## 2026-11-27, capabilities follow-up, round 2 (worker): DEV-p5-infra-49, -51, -52, -53
+
+The owner approved round 2 for #92. Both reviews were non-blocking. I fast-forwarded onto the reviewer's
+`29a8202` (`git pull --ff-only`; that commit changed only `MIGRATION.md` and `spec/deviations.md`, which I
+did not edit). -50 is a separate follow-up; -47 and -48 stay as they are. No AWS command was run.
+
+### -49 (sec-01): a refused or throttled DescribeSecret stays LEFTOVER (e593685, test only)
+
+- `leftovers.test.ts`, "DEV-p5-infra-49: a refused or throttled DescribeSecret is never gone; …". It
+  mirrors -46. For an AccessDeniedException and for a ThrottlingException from describe-secret (each
+  stderr carries an account id), the check gives `ok` false, `gone` [], and `remaining` [the secret]. The
+  line contains `(describe refused: AccessDeniedException)` or `(describe failed: ThrottlingException)`,
+  and not the account id.
+- Mutations of the secret's gone pattern (`leftovers.ts:84`), each applied to a saved copy and then
+  restored:
+  - B17 `/ResourceNotFoundException|AccessDenied/`: "Tests 1 failed | 61 passed (62)". The new test failed
+    on the refused case (`expected true to be false` on `report.ok`).
+  - B18 `/ResourceNotFoundException|Exception/`: "Tests 1 failed | 61 passed (62)", the same test, failing
+    first on the refused case. The test loops over the two cases and stops at the first failure, so B18's
+    effect on the throttled case is not shown separately. Under B18 that case would also be counted as
+    gone, because "ThrottlingException" matches `Exception`.
+  - After the restore, `git status` showed only the test file changed: 62 passed.
+
+### -51 (sec-03): the API container's user pinned to 1000:1000 (4fcf9f5)
+
+- `demoStack.ts`: `user: '1000:1000'` on the API container. The synthesized template has
+  `"User": "1000:1000"`.
+- Test: "DEV-p5-infra-51: … runs as uid:gid 1000:1000 …", `expect(container?.User).toBe('1000:1000')`.
+- **Evidence that `node` is 1000:1000, read on the host without running the image:**
+  - `docker image inspect` gave `User=node` and the 12 layer diff_ids.
+  - I ran `docker save` and unpacked it into the scratchpad, then
+    `node docker/image-fs.ts read <folder> <diff_ids> <model>`, which printed "read 12 layers, 1256 paths
+    in the final filesystem".
+  - `image-fs.ts uid <model> node` printed `1000`.
+  - `image-fs.ts cat <model> /etc/passwd` has `node:x:1000:1000::/home/node:/bin/sh`.
+  - `/etc/group` has `node:x:1000:node`.
+- **Local run** (`ascrum-api:p5caps`, compose project `ascrum-p5caps`, db port 56836, API port 56832):
+  - Run with `--user 1000:1000 --cap-drop ALL --init --read-only --pull never`, the `sh -c` entry point
+    and production mode (as in round 1, `DATABASE_URL` given directly because local Postgres has no TLS).
+  - `/healthz` returned 200 `{"status":"ok"}`, and the log said `[api] listening on
+    http://localhost:3000 (production mode)`.
+  - `id` gave `uid=1000(node) gid=1000(node) groups=1000(node)`. PID 1 had Uid and Gid all 1000, Groups
+    `1000`, and CapEff and CapBnd both `0000000000000000`.
+  - `docker inspect` gave `health=healthy user=1000:1000 capdrop=[ALL] init=true readonly=true`.
+  - I removed the container, the db and the volume afterwards, and deleted the saved image from the
+    scratchpad.
+- Mutation `user: '0'`: "Tests 1 failed | 22 passed (23)" (`expected '0' to be '1000:1000'`). Restored.
+
+### -52 (sec-04): no DockerSecurityOptions (4fcf9f5)
+
+- The capabilities test adds `expect(container).not.toHaveProperty('DockerSecurityOptions')`. The
+  synthesized template has none.
+- Mutation `dockerSecurityOptions: ['apparmor:unconfined']`: "Tests 1 failed | 22 passed (23)" (expected
+  not to have property "DockerSecurityOptions"; received `["apparmor:unconfined"]`). Restored.
+
+### -53 (sec-05): the comment's wording (4fcf9f5)
+
+- The `demoStack.ts` comment now says that, with an empty bounding set, a file capability or a setuid
+  binary "cannot give a process any capability". A setuid-root binary still sets euid 0, but with no
+  capability (capabilities(7)). The comment also says that `check-images.sh` still fails the image on any
+  setuid or setgid file and on any xattr.
+
+### Wrong turn
+
+- My first `pnpm verify` stopped at prettier: `[warn] src/demoStack.test.ts`. The -51 test name used `\'`
+  inside single quotes, and prettier wants double quotes there. I ran `prettier --write` on that one file
+  (a one-line change) and committed it separately (abcddc7). No guard refused a command this round.
+
+### Gates (this session; every AWS credential source at `/dev/null`; no AWS command; run unpiped)
+
+infra `pnpm verify` exit 0 (after the prettier fix): "All matched files use Prettier code style!", tsc
+clean, "Test Files  12 passed (12)", "Tests  243 passed (243)", "Successfully synthesized".
