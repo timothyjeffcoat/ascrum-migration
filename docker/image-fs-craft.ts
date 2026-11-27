@@ -48,11 +48,17 @@ export function header(entry: TarEntry): Buffer {
   block.write(entry.type ?? '0', 156, 1, 'latin1')
   Buffer.from(entry.linkname ?? '', 'utf8').copy(block, 157)
   block.write('ustar\u000000', 257, 8, 'latin1')
+  withChecksum(block)
+  entry.corrupt?.(block)
+  return block
+}
+
+/** Writes a header's checksum for its current bytes (after a test changed a field on purpose). */
+export function withChecksum(block: Buffer): Buffer {
   block.fill(0x20, 148, 156)
   let sum = 0
   for (const byte of block) sum += byte
   block.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'latin1')
-  entry.corrupt?.(block)
   return block
 }
 
@@ -109,8 +115,23 @@ export const rawLayer = (tarBytes: Buffer, createdBy?: string): Layer => ({
   createdBy,
 })
 
+/** What a test may break in the folder itself (DEV-p5-image-host-21). */
+export interface FolderOptions {
+  /** Store the config blob under this digest instead of its own. */
+  configName?: string
+  /** Rewrite the manifest's layer list (drop one, or replace a ref). */
+  manifestLayers?: (refs: string[]) => string[]
+  /** How many images manifest.json and index.json list (default 1 each). */
+  manifestCount?: number
+  indexCount?: number
+}
+
 /** Writes a `docker save` folder; `expected` is the diff_id list as check-images.sh passes it. */
-export function saveFolder(parent: string, layers: Layer[]): { dir: string; expected: string } {
+export function saveFolder(
+  parent: string,
+  layers: Layer[],
+  options: FolderOptions = {},
+): { dir: string; expected: string } {
   const dir = mkdtempSync(join(parent, 'save-'))
   mkdirSync(join(dir, 'blobs', 'sha256'), { recursive: true })
   const blob = (bytes: Buffer, name?: string): string => {
@@ -128,9 +149,12 @@ export function saveFolder(parent: string, layers: Layer[]): { dir: string; expe
       history: layers.map((l) => ({ created_by: l.createdBy ?? 'RUN /bin/sh -c true # buildkit' })),
     }),
   )
-  const manifest = [{ Config: blob(config), Layers: layers.map((l) => blob(l.blob, l.blobName)) }]
+  const refs = layers.map((l) => blob(l.blob, l.blobName))
+  const image = { Config: blob(config, options.configName), Layers: (options.manifestLayers ?? ((r) => r))(refs) }
+  const manifest = Array.from({ length: options.manifestCount ?? 1 }, () => image)
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest))
-  writeFileSync(join(dir, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{}] }))
+  const manifests = Array.from({ length: options.indexCount ?? 1 }, () => ({}))
+  writeFileSync(join(dir, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests }))
   return { dir, expected: diffIds.join(',') }
 }
 

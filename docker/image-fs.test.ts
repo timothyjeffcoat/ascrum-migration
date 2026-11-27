@@ -1,23 +1,29 @@
 // DEV-p5-image-host-07 (owner's answer to Q-p5-image-host-4 (a)): the host-side image reader's fail-closed
-// branches, run in CI by `node --test docker/` in the `test` job. The clean images never reach these
-// branches, so without this file nothing would notice one of them turning into "skip and carry on".
-// Each case is a `docker save` folder built by docker/image-fs-craft.ts with exactly one thing wrong; the
-// reader runs as check-images.sh runs it (`node docker/image-fs.ts read <folder> <diff_ids> <model>`), and
-// the test asserts the exit code and a stable part of the message. Clean control cases must exit 0, so a
-// refusal is known to come from the crafted detail and not from a broken generator.
+// branches. CI runs this file by name in the `test` job (`node --test docker/image-fs.test.ts`, which fails
+// when the file is missing, and the step also fails on any skipped or todo test: DEV-p5-image-host-18). The
+// clean images never reach these branches, so without this file nothing would notice one of them turning
+// into "skip and carry on". Each case is a `docker save` folder built by docker/image-fs-craft.ts with
+// exactly one thing wrong; the reader runs as check-images.sh runs it (`node docker/image-fs.ts read <folder>
+// <diff_ids> <model>`), and the test asserts the exit code and a stable part of the message. Clean control
+// cases must exit 0, so a refusal is known to come from the crafted detail and not from a broken generator.
+// Also here: the output escaping of the reader and of docker/log-safe.sh (-16), and the API's
+// node_modules against the lockfile's production tree (`pnpm-store`, -17).
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
 import {
   gnuLong,
   gzipLayer,
+  header,
   pax,
   rawLayer,
   saveFolder,
   scratch,
   tar,
+  withChecksum,
+  type FolderOptions,
   type Layer,
   type TarEntry,
 } from './image-fs-craft.ts'
@@ -31,8 +37,11 @@ function run(args: string[]): { code: number | null; stdout: string; stderr: str
   const result = spawnSync(process.execPath, [READER, ...args], { encoding: 'utf8' })
   return { code: result.status, stdout: result.stdout, stderr: result.stderr }
 }
-function read(layers: Layer[]): { code: number | null; stdout: string; stderr: string; model: string } {
-  const { dir, expected } = saveFolder(work, layers)
+function read(
+  layers: Layer[],
+  options?: FolderOptions,
+): { code: number | null; stdout: string; stderr: string; model: string } {
+  const { dir, expected } = saveFolder(work, layers, options)
   const model = join(work, `model-${++models}.json`)
   return { ...run(['read', dir, expected, model]), model }
 }
@@ -362,5 +371,273 @@ describe('DEV-p5-image-host-07: the runtime-stage check (docker/image-fs.ts adde
     ])
     assert.equal(result.code, 1, result.stderr)
     assert.ok(result.stdout.includes(`layer 1 (${COPY}): entry /etc/evil is outside the COPY roots`), result.stdout)
+  })
+})
+
+// DEV-p5-image-host-21: refusals of the folder and the tar stream that the first cases did not pin.
+describe('DEV-p5-image-host-21: the docker save folder and the tar stream, more refusals', () => {
+  const clean = () =>
+    tar([
+      { name: 'app/', type: '5' },
+      { name: 'app/a', data: 'x' },
+    ])
+  const refusedFolder = (layers: Layer[], options: FolderOptions, message: string) => {
+    const result = read(layers, options)
+    assert.equal(result.code, 2, `exit code (stderr: ${result.stderr})`)
+    assert.ok(result.stderr.includes(message), `stderr: ${result.stderr}`)
+  }
+  it('DEV-p5-image-host-21: a config blob whose SHA-256 is not its name is refused', () => {
+    refusedFolder([gzipLayer(clean())], { configName: 'e'.repeat(64) }, "config: the blob's SHA-256 is not its name")
+  })
+  it('DEV-p5-image-host-21: a layer ref that is not blobs/sha256/<64 hex> is refused, and a missing blob too', () => {
+    for (const ref of [
+      'blobs/sha256/../../index.json',
+      `blobs/sha512/${'a'.repeat(64)}`,
+      `blobs/sha256/${'A'.repeat(64)}`,
+    ]) {
+      refusedFolder(
+        [gzipLayer(clean())],
+        { manifestLayers: () => [ref] },
+        `'${ref}' is not a blobs/sha256/<digest> path`,
+      )
+    }
+    refusedFolder(
+      [gzipLayer(clean())],
+      { manifestLayers: () => [`blobs/sha256/${'f'.repeat(64)}`] },
+      'is missing or not a regular file',
+    )
+  })
+  it('DEV-p5-image-host-21: a manifest whose layer count is not the config diff_ids count is refused', () => {
+    refusedFolder(
+      [gzipLayer(clean()), gzipLayer(tar([{ name: 'app/b', data: 'y' }]))],
+      { manifestLayers: (refs) => refs.slice(0, 1) },
+      'manifest: 1 layers, the config has 2 diff_ids',
+    )
+  })
+  it('DEV-p5-image-host-21: index.json or manifest.json listing other than exactly one image is refused', () => {
+    refusedFolder([gzipLayer(clean())], { indexCount: 2 }, 'index.json: not exactly one image')
+    refusedFolder([gzipLayer(clean())], { indexCount: 0 }, 'index.json: not exactly one image')
+    refusedFolder([gzipLayer(clean())], { manifestCount: 2 }, 'manifest.json: not exactly one image')
+  })
+  it('DEV-p5-image-host-21: an extended header over 16 MiB is refused', () => {
+    refused([{ ...pax({ mtime: '1' }), size: 16 * 1024 * 1024 + 1, data: '' }], 'an extended header of 16777217 bytes')
+  })
+  it('DEV-p5-image-host-21: an archive that ends inside an entry is refused', () => {
+    const cut = Buffer.concat([header({ name: 'app/a', size: 1000 }), Buffer.alloc(100, 0x61)])
+    const result = read([gzipLayer(cut)])
+    assert.equal(result.code, 2)
+    assert.ok(result.stderr.includes('the archive ends inside an entry'), result.stderr)
+  })
+  it('DEV-p5-image-host-21: base-256 numbers: a valid one is read, a negative or too large one is refused', () => {
+    const uid = (bytes: number[]) => (block: Buffer) => {
+      Buffer.from(bytes).copy(block, 108)
+      withChecksum(block)
+    }
+    const ok = read([layerOf({ name: 'app/a', data: 'x', corrupt: uid([0x80, 0, 0, 0, 0, 0, 0x03, 0xe8]) })])
+    assert.equal(ok.code, 0, ok.stderr)
+    const model = JSON.parse(readFileSync(ok.model, 'utf8')) as { files: Record<string, { uid: number }> }
+    assert.equal(model.files['app/a']?.uid, 1000)
+    refused([{ name: 'app/a', data: 'x', corrupt: uid([0xc0, 0, 0, 0, 0, 0, 0, 1]) }], 'a negative base-256 number')
+    refused(
+      [{ name: 'app/a', data: 'x', corrupt: uid([0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]) }],
+      'a base-256 number too large',
+    )
+  })
+  it('DEV-p5-image-host-21: malformed PAX record lengths are refused', () => {
+    const record = (data: string): TarEntry[] => [
+      { name: 'PaxHeaders/x', type: 'x', data },
+      { name: 'app/a', data: 'x' },
+    ]
+    refused(record('nolength'), 'a PAX record without a length')
+    refused(record('0x a=b\n'), "a PAX record length '0x'")
+    refused(record('07 a=b\n'), "a PAX record length '07'")
+    refused(record('99 a=b\n'), 'a PAX record that overruns or lacks its newline')
+    refused(record('7 a=bcX'), 'a PAX record that overruns or lacks its newline')
+  })
+})
+
+// DEV-p5-image-host-16: what the reader prints and what docker/log-safe.sh prints must never hold a `::`
+// (the runner's command form, found after .NET TrimStart() drops every Unicode blank) or a `##[` (its old
+// form, found anywhere in a line). This keeps -14's fix.
+describe('DEV-p5-image-host-16: output escaping', () => {
+  const NBSP = ' '
+  it('DEV-p5-image-host-16: a refusal quoting a crafted PAX key prints no `::` and no `##[`', () => {
+    const key = `${NBSP}::warning::x##[y`
+    const result = read([layerOf(pax({ [key]: '1' }), { name: 'app/a', data: 'x' })])
+    assert.equal(result.code, 2)
+    assert.ok(result.stderr.includes('is not understood by this reader'), result.stderr)
+    assert.ok(result.stderr.includes(':?:warning:?:x##(y'), result.stderr)
+    assert.ok(!result.stderr.includes('::'), result.stderr)
+    assert.ok(!result.stderr.includes('##['), result.stderr)
+  })
+  it('DEV-p5-image-host-16: a refusal quoting crafted path names prints no `::` and no `##[`', () => {
+    const name = `app/${NBSP}::warning:::x##[e`
+    const result = read([layerOf({ name, data: 'x' }, { name: `${name}/under`, data: 'y' })])
+    assert.equal(result.code, 2)
+    assert.ok(result.stderr.includes('which is a file, not a directory'), result.stderr)
+    assert.ok(result.stderr.includes(`${NBSP}:?:warning:?:?:x##(e`), result.stderr)
+    assert.ok(!result.stderr.includes('::'), result.stderr)
+    assert.ok(!result.stderr.includes('##['), result.stderr)
+  })
+
+  const LOG_SAFE = join(import.meta.dirname, 'log-safe.sh')
+  const bash = (script: string, input: Buffer, ...args: string[]): Buffer => {
+    const result = spawnSync('bash', ['-c', `source "$0"; ${script}`, LOG_SAFE, ...args], { input })
+    assert.equal(result.status, 0, result.stderr.toString())
+    return result.stdout
+  }
+  const cases: [string, string][] = [
+    [`${NBSP}::warning::nbsp\n`, `${NBSP}:?:warning:?:nbsp\n`],
+    [' ::warning::emsp\n', ' :?:warning:?:emsp\n'],
+    ['　::add-mask::ideo\n', '　:?:add-mask:?:ideo\n'],
+    [' ::error::lsep\n', ' :?:error:?:lsep\n'],
+    ['  ::warning::ascii\n', '  :?:warning:?:ascii\n'],
+    ['a:::b::::c:::::d\n', 'a:?:?:b:?:?:?:c:?:?:?:?:d\n'],
+    ['mid ::error:: line\n', 'mid :?:error:?: line\n'],
+    ['##[warning]x ##[add-mask]y\n', '##(warning]x ##(add-mask]y\n'],
+    [`a${C(0x1b)}b${C(0x0d)}c${C(0x7f)}\td\n`, 'a?b?c?\td\n'],
+  ]
+  it('DEV-p5-image-host-16: log_safe_lines escapes every `::` and `##[` on raw bytes', () => {
+    for (const [input, want] of cases) {
+      const got = bash('log_safe_lines', Buffer.from(input, 'utf8'))
+      assert.deepEqual(got, Buffer.from(want, 'utf8'), JSON.stringify(input))
+    }
+    const all = bash('log_safe_lines', Buffer.from(cases.map(([i]) => i).join(''), 'utf8')).toString('latin1')
+    assert.ok(!all.includes('::') && !all.includes('##['))
+  })
+  it('DEV-p5-image-host-16: log_safe keeps the text on one line and escapes it the same way', () => {
+    const got = bash('log_safe "$1"', Buffer.alloc(0), `l1\n${NBSP}::error::x\n##[warning]:::`)
+    assert.deepEqual(got, Buffer.from(`l1?${NBSP}:?:error:?:x?##(warning]:?:?:`, 'utf8'))
+  })
+})
+
+// DEV-p5-image-host-17: the API's node_modules against the lockfile's production tree, in pnpm's layout.
+describe('DEV-p5-image-host-17: installed packages (docker/image-fs.ts pnpm-store)', () => {
+  const NM = 'app/api/node_modules'
+  const P = (dir: string, name: string) => `/build/api/node_modules/.pnpm/${dir}/node_modules/${name}`
+  const TREE = [
+    {
+      name: 'ascrum-api',
+      dependencies: {
+        a: { from: 'a', path: P('a@1.0.0', 'a'), dependencies: { b: { from: 'b', path: P('b@2.0.0', 'b') } } },
+        '@s/c': { from: '@s/c', path: P('@s+c@1.0.0', '@s/c') },
+      },
+    },
+  ]
+  const d = (name: string): TarEntry => ({ name: `${NM}/${name}/`, type: '5' })
+  const f = (name: string): TarEntry => ({ name: `${NM}/${name}`, data: 'x' })
+  const l = (name: string, target: string): TarEntry => ({ name: `${NM}/${name}`, type: '2', linkname: target })
+  const CLEAN: TarEntry[] = [
+    { name: 'app/', type: '5' },
+    { name: 'app/api/', type: '5' },
+    { name: `${NM}/`, type: '5' },
+    f('.modules.yaml'),
+    f('.pnpm-workspace-state-v1.json'),
+    l('a', '.pnpm/a@1.0.0/node_modules/a'),
+    d('@s'),
+    l('@s/c', '../.pnpm/@s+c@1.0.0/node_modules/@s/c'),
+    d('.pnpm'),
+    f('.pnpm/lock.yaml'),
+    d('.pnpm/node_modules'),
+    l('.pnpm/node_modules/b', '../b@2.0.0/node_modules/b'),
+    d('.pnpm/a@1.0.0'),
+    d('.pnpm/a@1.0.0/node_modules'),
+    d('.pnpm/a@1.0.0/node_modules/a'),
+    f('.pnpm/a@1.0.0/node_modules/a/index.js'),
+    l('.pnpm/a@1.0.0/node_modules/b', '../../b@2.0.0/node_modules/b'),
+    d('.pnpm/b@2.0.0'),
+    d('.pnpm/b@2.0.0/node_modules'),
+    d('.pnpm/b@2.0.0/node_modules/b'),
+    f('.pnpm/b@2.0.0/node_modules/b/index.js'),
+    d('.pnpm/@s+c@1.0.0'),
+    d('.pnpm/@s+c@1.0.0/node_modules'),
+    d('.pnpm/@s+c@1.0.0/node_modules/@s'),
+    d('.pnpm/@s+c@1.0.0/node_modules/@s/c'),
+    f('.pnpm/@s+c@1.0.0/node_modules/@s/c/index.js'),
+  ]
+  const treeFile = (tree: unknown) => {
+    const path = join(mkdtempSync(join(work, 'tree-')), 'prod-tree.json')
+    writeFileSync(path, JSON.stringify(tree))
+    return path
+  }
+  const store = (extra: TarEntry[] = [], drop: (name: string) => boolean = () => false, tree: unknown = TREE) => {
+    const image = read([gzipLayer(tar([...CLEAN.filter((e) => !drop(e.name.replace(/\/$/, ''))), ...extra]))])
+    assert.equal(image.code, 0, image.stderr)
+    return run(['pnpm-store', image.model, NM, treeFile(tree)])
+  }
+  const finding = (result: ReturnType<typeof run>, message: string) => {
+    assert.equal(result.code, 1, result.stdout + result.stderr)
+    assert.ok(result.stdout.includes(message), result.stdout)
+  }
+  const under = (prefix: string) => (name: string) => name === `${NM}/${prefix}` || name.startsWith(`${NM}/${prefix}/`)
+
+  it("DEV-p5-image-host-17: control: pnpm's layout of exactly the production tree passes, exit 0", () => {
+    const result = store()
+    assert.equal(result.code, 0, result.stdout + result.stderr)
+    assert.match(result.stdout, /exactly the lockfile's production tree in pnpm's layout: 3 store directories/)
+  })
+  it('DEV-p5-image-host-17 (I5): a real package directory in .pnpm/node_modules/ is a finding', () => {
+    finding(
+      store([d('.pnpm/node_modules/evil'), f('.pnpm/node_modules/evil/index.js')]),
+      `/${NM}/.pnpm/node_modules/evil: a dir in pnpm's hoisted links, not a symlink`,
+    )
+  })
+  it('DEV-p5-image-host-17 (I6): a real package directory beside a store package is a finding (scoped too)', () => {
+    finding(
+      store([d('.pnpm/a@1.0.0/node_modules/evil'), f('.pnpm/a@1.0.0/node_modules/evil/index.js')]),
+      `/${NM}/.pnpm/a@1.0.0/node_modules/evil: a dir beside a, not a symlink`,
+    )
+    finding(
+      store([d('.pnpm/@s+c@1.0.0/node_modules/@s/evil')]),
+      `/${NM}/.pnpm/@s+c@1.0.0/node_modules/@s/evil: a dir beside @s/c, not a symlink`,
+    )
+  })
+  it('DEV-p5-image-host-17 (I7): a non-directory .pnpm/<name> is a finding', () => {
+    finding(
+      store([l('.pnpm/evil@1.0.0', 'a@1.0.0')]),
+      `/${NM}/.pnpm/evil@1.0.0: a symlink in the store the lockfile's production tree does not name`,
+    )
+    finding(
+      store([l('.pnpm/b@2.0.0', 'a@1.0.0')], under('.pnpm/b@2.0.0')),
+      `/${NM}/.pnpm/b@2.0.0: a symlink, not a store directory`,
+    )
+  })
+  it('DEV-p5-image-host-17 (I8): a top-level scope that is not a directory is a finding', () => {
+    finding(store([f('@evil')]), `/${NM}/@evil: a scope that is a file, not a directory`)
+  })
+  it('DEV-p5-image-host-17 (I9): a dot-named top-level entry pnpm does not write is a finding', () => {
+    finding(
+      store([d('.evil'), f('.evil/index.js')]),
+      `/${NM}/.evil: a dir pnpm does not write at the top of node_modules`,
+    )
+    finding(store([f('.bin')]), `/${NM}/.bin: a file pnpm does not write at the top of node_modules`)
+  })
+  it('DEV-p5-image-host-17: top-level packages are exactly the production dependencies, as symlinks into their store', () => {
+    finding(store([f('top.js')]), `/${NM}/top.js: a top-level package the lockfile's production tree does not name`)
+    finding(store([d('@s/evil')]), `/${NM}/@s/evil: a top-level package the lockfile's production tree does not name`)
+    finding(store([d('a')], under('a')), `/${NM}/a: a dir, not pnpm's symlink into the store`)
+    finding(
+      store([l('a', '.pnpm/b@2.0.0/node_modules/b')], under('a')),
+      `/${NM}/a: a symlink that does not resolve to a's store directory`,
+    )
+    finding(store([], under('a')), `/${NM}/a: production dependency a is missing`)
+  })
+  it("DEV-p5-image-host-17: store directories are exactly the lockfile's, each with only its own package", () => {
+    finding(store([], under('.pnpm/b@2.0.0')), `/${NM}/.pnpm/b@2.0.0: missing from the image`)
+    finding(
+      store([], under('.pnpm/b@2.0.0/node_modules/b')),
+      `/${NM}/.pnpm/b@2.0.0/node_modules/b: b's own directory is missing or not a directory`,
+    )
+    finding(store([f('.pnpm/b@2.0.0/extra.js')]), `/${NM}/.pnpm/b@2.0.0/extra.js: not pnpm's node_modules folder`)
+    finding(
+      store([d('.pnpm/b@2.0.0/node_modules/b/node_modules'), d('.pnpm/b@2.0.0/node_modules/b/node_modules/evil')]),
+      `/${NM}/.pnpm/b@2.0.0/node_modules/b/node_modules: a node_modules folder inside b`,
+    )
+    finding(store([d('.pnpm/lock.yaml')], under('.pnpm/lock.yaml')), `/${NM}/.pnpm/lock.yaml: a dir, not a file`)
+  })
+  it('DEV-p5-image-host-17: a production tree with no packages cannot be compared, exit 2', () => {
+    const result = store([], () => false, [{ name: 'ascrum-api' }])
+    assert.equal(result.code, 2)
+    assert.ok(result.stderr.includes('no production packages, so nothing can be compared'), result.stderr)
   })
 })
