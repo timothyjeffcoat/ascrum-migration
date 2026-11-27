@@ -1,0 +1,41 @@
+# The one place the Trivy version and its SHA-256 live, the way .github/actions/setup-gitleaks pins
+# Gitleaks (owner's answer to Q-p5-image-cves-2 (a)). Used by e2e-compose (.github/workflows/ci.yml), which
+# runs docker/scan-images.sh on both built images.
+#
+# The Apache-2.0 CLI as a release tarball whose SHA-256 is checked before it is unpacked. Never Aqua's
+# `trivy-action` or `setup-trivy` actions, a floating tag or `latest`: in March 2026 an attacker re-pointed
+# 76 of trivy-action's 77 tags and all 7 of setup-trivy's, and published a malicious v0.69.4 release
+# (GHSA-69fq-xp46-6x23). v0.76.2 was published on 2026-11-05 as an immutable release, after every fix in
+# Trivy's advisories (the newest, GHSA-8rc5-4fr6-64pw, is fixed in 0.72.0). spec/worklogs/p5-image-scan.md
+# records how this pin was checked: the release's checksums file, its Sigstore bundle and GitHub's build
+# attestation, all tied to the v0.76.2 tag of aquasecurity/trivy.
+# To move Trivy, change both values below together, from trivy_<v>_checksums.txt in the new release, plus
+# PINNED_TRIVY_VERSION in docker/scan-images.sh (which refuses any other version), and
+# check that release the same way first (spec/worklogs/p5-image-scan.md, "How the pin was checked").
+# Sets TRIVY (the binary's path) for later steps, which docker/scan-images.sh reads.
+name: Set up Trivy
+description: Install the pinned, checksum-verified Trivy release binary and export its path as TRIVY
+outputs:
+  path:
+    description: Absolute path of the trivy binary
+    value: ${{ steps.install.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        PINNED_VERSION: 0.76.2
+        # From trivy_0.76.2_checksums.txt in the v0.76.2 release, Linux-64bit tarball. (Not TRIVY_*: Trivy
+        # reads every TRIVY_* variable as a flag.)
+        PINNED_SHA256: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+      run: |
+        tarball="trivy_${PINNED_VERSION}_Linux-64bit.tar.gz"
+        mkdir -p "$RUNNER_TEMP/trivy"
+        curl -fsSLo "$RUNNER_TEMP/trivy/$tarball" \
+          "https://github.com/aquasecurity/trivy/releases/download/v${PINNED_VERSION}/$tarball"
+        echo "$PINNED_SHA256  $RUNNER_TEMP/trivy/$tarball" | sha256sum --check --strict
+        tar -xzf "$RUNNER_TEMP/trivy/$tarball" -C "$RUNNER_TEMP/trivy" trivy
+        "$RUNNER_TEMP/trivy/trivy" --version
+        echo "TRIVY=$RUNNER_TEMP/trivy/trivy" >> "$GITHUB_ENV"
+        echo "path=$RUNNER_TEMP/trivy/trivy" >> "$GITHUB_OUTPUT"
