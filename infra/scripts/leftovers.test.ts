@@ -179,10 +179,12 @@ describe('AC-AWS-04: the final leftover check', () => {
   // once, as INACTIVE or as a MISSING failure (owner decision, 2026-11-27).
   describe('DEV-p5-infra-50: a DescribeClusters answer clears only the asked cluster', () => {
     const OTHER_CLUSTER = `arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/other-cluster`
-    const answering = (stdout: string): Aws => async (args) => {
-      expect(args.slice(0, 4)).toEqual(['ecs', 'describe-clusters', '--clusters', CLUSTER])
-      return { code: 0, stdout, stderr: '' }
-    }
+    const answering =
+      (stdout: string): Aws =>
+      async (args) => {
+        expect(args.slice(0, 4)).toEqual(['ecs', 'describe-clusters', '--clusters', CLUSTER])
+        return { code: 0, stdout, stderr: '' }
+      }
     const ghost = (answer: unknown) => isGhost(answering(JSON.stringify(answer)), CLUSTER)
 
     it('DEV-p5-infra-50: an empty answer ({clusters:[],failures:[]}) is not gone', async () => {
