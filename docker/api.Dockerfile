@@ -29,7 +29,7 @@
 # pinned by version and digest.
 
 # --- deps: the production dependencies of api/ (only `pg` and its own dependencies) ----------------
-FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS deps
+FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS deps
 WORKDIR /build/api
 # pnpm at the version the repo pins (web/package.json "packageManager"), through Node's corepack.
 COPY web/package.json /build/web-package.json
@@ -61,7 +61,7 @@ RUN printf '{ "type": "module" }\n' > web/package.json \
  && echo "API sources in the image:" && cat /build/import-graph.txt
 
 # --- runtime -----------------------------------------------------------------------------------
-FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS runtime
+FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS runtime
 ENV NODE_ENV=production \
     PORT=3000
 # Alpine's OpenSSL and zlib leave the image (owner's answer to Q-p5-image-scan-1 (a)). In this image their
