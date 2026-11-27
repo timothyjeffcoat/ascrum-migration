@@ -86,8 +86,10 @@ const hasControl = (s: string): boolean => [...s].some((c) => c.charCodeAt(0) < 
 // What this reader prints (findings, errors) shows a control character as \xNN, tab included, so no
 // image-derived text can start a new log line (DEV-p5-image-host-05). It is also kept from being read as a
 // workflow command (DEV-p5-image-host-13 / sec-09), the same way docker/log-safe.sh does it for the scripts: the runner takes
-// `##[` anywhere in a line as its old command form, so every `##[` becomes `##(`, and a `::` at the start
-// of a line (after blanks) becomes `:?:`.
+// `##[` anywhere in a line as its old command form, so every `##[` becomes `##(`; and every colon followed
+// by a colon gets a `?` after it, so no `::` is left anywhere (`::` → `:?:`, `:::` → `:?:?:`). The runner's
+// `::` form is found after .NET TrimStart(), which drops every Unicode blank, so escaping it only after
+// ASCII blanks was not enough (DEV-p5-image-host-14 / sec-10).
 const printable = (s: string): string =>
   [...s]
     .map((c) => {
@@ -96,7 +98,7 @@ const printable = (s: string): string =>
     })
     .join('')
     .replaceAll('##[', '##(')
-    .replace(/^([ \t]*)::/, '$1:?:')
+    .replace(/:(?=:)/g, ':?')
 function normalise(raw: string, what: string): string {
   if (raw.includes('\0')) fatal(`${what}: a NUL byte in the name`)
   // DEV-p5-image-host-05: a control character (CR, ESC, ...) in a path could forge a workflow command
