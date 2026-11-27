@@ -219,6 +219,12 @@ describe('demo stack: the API container', () => {
     expect(linux).toEqual({ InitProcessEnabled: true, Capabilities: { Drop: ['ALL'] } })
     expect(linux.Capabilities?.Add).toBeUndefined()
     expect(container).not.toHaveProperty('Privileged')
+    // DEV-p5-infra-52: no security option may loosen the profile (for example `apparmor:unconfined`).
+    expect(container).not.toHaveProperty('DockerSecurityOptions')
+  })
+
+  it('DEV-p5-infra-51: the API container runs as uid:gid 1000:1000 (the image\'s node user), never root', () => {
+    expect(container?.User).toBe('1000:1000')
   })
 
   it('S-p5-4: the start script builds DATABASE_URL in the container, percent-encoding any password', () => {
