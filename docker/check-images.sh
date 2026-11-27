@@ -758,9 +758,11 @@ check_runtime_changes() {
   local image_env base_env extra
   image_env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | sed '/^$/d' | LC_ALL=C sort)
   base_env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$base" | sed '/^$/d' | LC_ALL=C sort)
-  extra=$(comm -13 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | LC_ALL=C sort)
-  if [[ -n $(comm -23 <(echo "$base_env") <(echo "$image_env")) ]]; then
-    fail "$image: ENV changes or drops the base's entries: $(comm -23 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | tr '\n' ' ')"
+  # comm compares in the C locale, the order `LC_ALL=C sort` produced; in the caller's locale (en_US.UTF-8)
+  # it misreads C-sorted input, e.g. `B=1` before `a=1` (DEV-p5-image-host-22).
+  extra=$(LC_ALL=C comm -13 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | LC_ALL=C sort)
+  if [[ -n $(LC_ALL=C comm -23 <(echo "$base_env") <(echo "$image_env")) ]]; then
+    fail "$image: ENV changes or drops the base's entries: $(LC_ALL=C comm -23 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | tr '\n' ' ')"
   fi
   if [[ $extra != "$(tr ' ' '\n' <<< "${RUNTIME_ENV_NAMES[$dockerfile]:-}" | sed '/^$/d' | LC_ALL=C sort)" ]]; then
     fail "$image: ENV adds $(tr '\n' ' ' <<< "$extra")but the runtime stage may add only ${RUNTIME_ENV_NAMES[$dockerfile]:-nothing}"
@@ -889,7 +891,7 @@ else
   if [[ -z $production || -z $direct ]]; then
     fail "$api_image: pnpm listed no production packages for api/pnpm-lock.yaml, so the installed tree cannot be compared"
   elif [[ $installed != "$production" || $top_level != "$direct" ]]; then
-    fail "$api_image: installed packages are not api/pnpm-lock.yaml's production tree. In the image only: $(comm -23 <(echo "$installed") <(echo "$production") | tr '\n' ' ')$(comm -23 <(echo "$top_level") <(echo "$direct") | sed 's|^|node_modules/|' | tr '\n' ' ')missing from the image: $(comm -13 <(echo "$installed") <(echo "$production") | tr '\n' ' ')$(comm -13 <(echo "$top_level") <(echo "$direct") | sed 's|^|node_modules/|' | tr '\n' ' ')"
+    fail "$api_image: installed packages are not api/pnpm-lock.yaml's production tree. In the image only: $(LC_ALL=C comm -23 <(echo "$installed") <(echo "$production") | tr '\n' ' ')$(LC_ALL=C comm -23 <(echo "$top_level") <(echo "$direct") | sed 's|^|node_modules/|' | tr '\n' ' ')missing from the image: $(LC_ALL=C comm -13 <(echo "$installed") <(echo "$production") | tr '\n' ' ')$(LC_ALL=C comm -13 <(echo "$top_level") <(echo "$direct") | sed 's|^|node_modules/|' | tr '\n' ' ')"
   else
     echo "$api_image: installed packages are exactly api/pnpm-lock.yaml's production tree ($(wc -l <<< "$production") in .pnpm; top level: $(paste -sd ' ' <<< "$direct")): $(log_safe "$(paste -sd ' ' <<< "$installed")")"
   fi
