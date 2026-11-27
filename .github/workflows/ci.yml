@@ -39,6 +39,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-web
       - run: pnpm test
+      # DEV-p5-image-host-07 (Q-p5-image-host-4 (a)): the image reader's fail-closed branches, on crafted
+      # `docker save` folders. Node's own test runner, on the Node 24 setup-web installed; no Docker.
+      - name: Image reader tests (docker/image-fs.ts)
+        working-directory: .
+        run: node --test 'docker/*.test.ts'
 
   build:
     runs-on: ubuntu-latest
