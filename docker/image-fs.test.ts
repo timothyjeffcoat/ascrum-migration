@@ -702,6 +702,19 @@ describe('DEV-p5-image-host-17: installed packages (docker/image-fs.ts pnpm-stor
       store([...inside, l('.pnpm/node_modules/b', '../a@1.0.0/node_modules/a/evil')], under('.pnpm/node_modules/b')),
       `/${NM}/.pnpm/node_modules/b: a symlink in pnpm's hoisted links that does not resolve to b's store directory`,
     )
+    // The right name and the right package, but a subdirectory of it: still not the package's own directory.
+    const sub = [d('.pnpm/b@2.0.0/node_modules/b/lib')]
+    finding(
+      store([...sub, l('.pnpm/node_modules/b', '../b@2.0.0/node_modules/b/lib')], under('.pnpm/node_modules/b')),
+      `/${NM}/.pnpm/node_modules/b: a symlink in pnpm's hoisted links that does not resolve to b's store directory`,
+    )
+    finding(
+      store(
+        [...sub, l('.pnpm/a@1.0.0/node_modules/b', '../../b@2.0.0/node_modules/b/lib')],
+        under('.pnpm/a@1.0.0/node_modules/b'),
+      ),
+      `/${NM}/.pnpm/a@1.0.0/node_modules/b: a symlink that does not resolve to b's store directory`,
+    )
   })
   it('DEV-p5-image-host-24: links outside node_modules, relative or absolute, and a loop, are findings', () => {
     finding(
