@@ -76,8 +76,7 @@ export async function isGhost(aws: Aws, arn: string, reasons?: Map<string, strin
   if (service === 'ecs' && resource.startsWith('cluster/')) {
     const result = await aws(['ecs', 'describe-clusters', '--clusters', arn, ...where])
     if (result.code !== 0) return failed(result, false)
-    const clusters = (JSON.parse(result.stdout) as { clusters?: { status?: string }[] }).clusters ?? []
-    return clusters.every((cluster) => cluster.status === 'INACTIVE')
+    return clusterAnswerSaysGone(result.stdout, arn)
   }
   if (service === 'secretsmanager') {
     const result = await aws(['secretsmanager', 'describe-secret', '--secret-id', arn, ...where])
@@ -85,6 +84,27 @@ export async function isGhost(aws: Aws, arn: string, reasons?: Map<string, strin
     return Boolean((JSON.parse(result.stdout) as { DeletedDate?: unknown }).DeletedDate)
   }
   return false
+}
+
+/**
+ * A DescribeClusters answer says the cluster `arn` is gone only when it names that ARN exactly once, and
+ * that one mention is a cluster with status INACTIVE or a failure with reason MISSING (DEV-p5-infra-50, owner
+ * decision 2026-11-27). Everything else is not gone: an empty answer (`every` on `[]` had been true), a
+ * failure with any other reason, an INACTIVE entry for another cluster, an entry with no ARN, the ARN named
+ * twice, and an answer that is not JSON. As in ecsGhosts, an answer only clears the ARN its call asked about.
+ */
+function clusterAnswerSaysGone(stdout: string, arn: string): boolean {
+  let answer: { clusters?: { clusterArn?: string; status?: string }[]; failures?: { arn?: string; reason?: string }[] }
+  try {
+    answer = JSON.parse(stdout) as typeof answer
+  } catch {
+    return false
+  }
+  const mentions = [
+    ...(answer.clusters ?? []).filter((c) => c.clusterArn === arn).map((c) => c.status === 'INACTIVE'),
+    ...(answer.failures ?? []).filter((f) => f.arn === arn).map((f) => f.reason === 'MISSING'),
+  ]
+  return mentions.length === 1 && mentions[0] === true
 }
 
 // The types isGhost asks about; every other leftover is a billable type that is never asked (S14). Used only
