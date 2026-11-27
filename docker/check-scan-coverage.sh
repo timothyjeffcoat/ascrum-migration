@@ -9,11 +9,9 @@
 #     read from the image's layers on the host by docker/image-fs.ts;
 #   - language packages: in the HIGH/CRITICAL pass (`--pkg-types os,library`), the set Trivy read
 #     (name@version and file) must equal every package.json with a name and a version in the image's final
-#     filesystem, also read on the host; the fixed-OS pass (`--pkg-types os`) must read none;
-#   - the nginx window (Q-p5-image-scan-2 (c)): scan-images.sh decides it with the web image's own `apk`.
-#     Here the same decision is made on the host from apk's database and docker/image-fs.ts's version
-#     order, with scan-images.sh's own constants; if the host says the window is closed while the web
-#     reports hold nginx findings that scan-images.sh let through, this fails.
+#     filesystem, also read on the host; the fixed-OS pass (`--pkg-types os`) must read none.
+# The nginx window is decided in one place only, docker/scan-images.sh, which also reads its facts on the
+# host (owner's answer to Q-p5-image-host-1 (b)).
 #
 #   docker/check-scan-coverage.sh <api image> <web image> <report dir>   (from the repo root, after
 #                                                                         docker/scan-images.sh)
@@ -100,26 +98,6 @@ check_image() {
 }
 check_image "$api_image" api
 check_image "$web_image" web
-
-# The nginx window, decided on the host with scan-images.sh's own constants (one place to edit them).
-closes_at=$(sed -n 's/^WINDOW_CLOSES_AT_NGINX=\([^[:space:]]*\)$/\1/p' docker/scan-images.sh)
-expires=$(sed -n 's/^WINDOW_EXPIRES=\([0-9-]*\)$/\1/p' docker/scan-images.sh)
-package=$(sed -n 's/^WINDOW_PACKAGE=\([a-z0-9._+-]*\)$/\1/p' docker/scan-images.sh)
-if [[ -z $closes_at || -z $expires || -z $package ]]; then
-  fail "docker/scan-images.sh: could not read WINDOW_PACKAGE, WINDOW_CLOSES_AT_NGINX and WINDOW_EXPIRES"
-else
-  have=$(image_fs apk-installed "$work/web.json" | awk -F'\t' -v n="$package" '$1 == n { print $2 }')
-  open=no
-  if [[ -n $have && ! $(date -u +%F) > $expires ]] && [[ $(image_fs vercmp "$have" "$closes_at") == '<' ]]; then open=yes; fi
-  if ! windowed=$(jq -r --arg p "$package" '[.Results[]? | select(.Class == "os-pkgs") | .Vulnerabilities[]? | select(.PkgName == $p) | .VulnerabilityID] | unique | .[]' \
-    "$reports/web.json" "$reports/web-os-fixed.json" | LC_ALL=C sort -u); then
-    fail "the web reports cannot be read for $package findings"
-  elif [[ $open == no && -n $windowed ]]; then
-    fail "the nginx window is closed on the host ($package ${have:-not installed}, closes at $closes_at or after $expires), but the web reports hold $package findings: $(tr '\n' ' ' <<< "$windowed")"
-  else
-    echo "nginx window on the host: $([[ $open == yes ]] && echo open || echo closed) ($package ${have:-not installed} against $closes_at, expires $expires); $(grep -c . <<< "$windowed" || true) $package finding(s) in the web reports"
-  fi
-fi
 
 if ((findings > 0)); then
   echo "check-scan-coverage: $findings finding(s)" >&2

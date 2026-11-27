@@ -88,3 +88,22 @@ Options:
 
 Recommendation: **(a)**: defence in depth at the place the image actually runs, at the cost of one line and
 a test, verified on the next deploy run that the infra cluster does anyway.
+
+## Owner answers (2026-11-26)
+
+Relayed by the orchestrator; the owner said "yes" to the orchestrator's recommendations.
+
+- **Q-p5-image-host-1: (b), in this cluster, now.** `docker/scan-images.sh` is added to p5-image-host's owned
+  paths for this change only. Its two in-image reads (the `/lib/apk/db/installed` package count and the
+  in-image `apk version -t` nginx-window decision) are replaced by host-side reads through
+  `docker/image-fs.ts`, so it runs no binary from the image it scans. The duplicated window logic leaves
+  `docker/check-scan-coverage.sh` (the window is decided in exactly one place); its set-equality coverage
+  checks stay. Window semantics unchanged: it closes at nginx >= 1.30.7-r0 or after 2026-12-31 UTC, with the
+  banner and `::warning::` on every run, and no ignore file. Done in session 2 (worklog).
+- **Q-p5-image-host-2: (a), as implemented.** The residual is **accepted by the owner**: the content of the
+  files inside the COPY roots (for example, edited JavaScript in `node_modules` from the `deps` stage, or
+  static files from the `build` stage) is trusted as far as the lockfile, `--frozen-lockfile` and
+  `--ignore-scripts` make it. (b), verifying `node_modules` against the lockfile's integrity hashes, is not
+  wanted now.
+- **Q-p5-image-host-3: (a), but not in this cluster.** The orchestrator runs it as a separate infra follow-up
+  (`linuxParameters.capabilities.drop: ['ALL']`). This cluster does not touch `infra/`.

@@ -227,3 +227,67 @@ blocks; see `spec/questions/p5-image-host.md`.
   the COPY roots, never as ELF, never on the PATH (P3, P4, P5, P6). Hostile JavaScript or static files inside
   the roots would still pass (Q-p5-image-host-2).
 - **-04 (b): fixed.** OS and language package sets are compared with the images (C1-C6).
+
+## 2026-11-26, session 2 (worker): the owner's answers to Q-p5-image-host-1..3
+
+**Contract:** the owner's answers, relayed by the orchestrator, recorded in `spec/questions/p5-image-host.md`
+("Owner answers (2026-11-26)"). Q-1 (b) in this cluster: `docker/scan-images.sh` is in the owned paths for
+this change only. Q-2 (a): the residual (the content of files inside the COPY roots) is accepted by the owner.
+Q-3 (a): an infra follow-up the orchestrator runs; `infra/` is untouched here.
+
+**What changed:**
+- `docker/scan-images.sh` runs no binary from the images it scans (`grep -c 'docker run'` on it: 0). For
+  each image, `installed_of` does `docker save`, then `docker/image-fs.ts read` (digests against the engine's
+  diff_ids), then `apk-installed`. The OS-package count Trivy must match is the number of packages in apk's
+  database read that way. The nginx window takes the installed nginx version from the same list and compares
+  it with `image-fs.ts vercmp`. Semantics are unchanged:
+  - expired after `WINDOW_EXPIRES` (UTC);
+  - closed on an unreadable database, a missing or duplicated package, or anything but a clean `<`;
+  - the banner and `::warning::` print on every run, and there is still no ignore file.
+
+  A failed host read fails the scan and closes the window. Node 24, GNU tar and the reader's path (found from
+  the script's own folder, because the script `cd`s into an empty folder for Trivy) are checked before
+  anything runs. CI needs no change: the scan step already runs after setup-web.
+- `docker/check-scan-coverage.sh`: the nginx-window section is gone, so the window is decided in exactly one
+  place. The OS and language set-equality checks stay as they were. The comment in the CI step was adjusted
+  to match.
+
+**Red/green (scratch copies; `old` = `origin/migration`'s `scan-images.sh`, `new` = this branch; window
+shifts are `sed` edits to copies of the script, never the tracked file; Trivy ran in full each time):**
+
+| Case | Change | Exit | Window state printed |
+|---|---|---|---|
+| S0 (new) | clean | 0 | open: 1.30.6-r1 below 1.30.7-r0, not after 2026-12-31 |
+| S1 (new) | `WINDOW_CLOSES_AT_NGINX=1.30.6-r0` | 1 (6 + 10 nginx findings fail) | closed: gives `>` |
+| S2 (new) | `=1.30.6-r1` (the installed version) | 1 | closed: gives `=` |
+| S3 (new) | `=1.30.6-r2` | 0 | open: below 1.30.6-r2 |
+| S4 (new) | `WINDOW_EXPIRES=2026-11-01` | 1 | expired: 2026-11-27 is after 2026-11-01 |
+| S5 (new) | `WINDOW_EXPIRES=2027-01-31` | 0 | open |
+| S6 old | web image with wrapper `/usr/local/bin/apk` (prints `<`) and `grep` (prints 70) copied from an earlier stage; closes at 1.30.6-r0 | **0, fooled** | "open: 1.30.6-r1 is below 1.30.6-r0" |
+| S6 new | the same | 1 | closed: gives `>` |
+| S7 old / new | the same wrapper image, real constants | 0 / 0 | open (both correct) |
+| S8 old | wrapper `grep` prints 999 | 1 | "Trivy read 70 OS packages, apk lists 999" |
+| S8 new | the same | 0 | open: same result as the clean image |
+
+S6 and S8 show the -15 class in `scan-images.sh`. The wrapper changed the old script's result in both
+directions: S6 fooled it into passing with findings that should fail, and S8 made it fail a clean scan. The
+new script's result is the same as on the clean image. I confirmed the wrappers are live in the image before
+each run (`docker run … grep -c '^P:' …` printed 70 or 999, `apk version -t …` printed `<`).
+
+`check-scan-coverage.sh`, re-run on the session's real reports: clean 0; C1–C5 each exit 1, as in session 1.
+C6 was the window check in this script, so it no longer applies here. Its case now lives in
+`scan-images.sh`: S1 and S6 above.
+
+**Gates (session 2, unpiped, on the images built with `--no-cache` in session 1; none of the images' inputs
+changed since):**
+- `docker/check-images.sh ascrum-api:p5host ascrum-web:p5host`: exit 0 (same summary line as session 1).
+- `GITHUB_ACTIONS=true docker/scan-images.sh …`: exit 0. API 12 OS / 15 language packages, 0 findings. Web
+  70 OS packages, 6 and 10 findings, all nginx, inside the window. `state: open: installed nginx 1.30.6-r1 is
+  below 1.30.7-r0, and today (2026-11-27) is not after 2026-12-31`, and `::warning title=nginx window
+  (Q-p5-image-scan-2)::16 nginx finding(s) in the web image reported, not failed; …`.
+- `docker/check-scan-coverage.sh …`: exit 0 (12/15 API, 70/0 web, identical sets).
+- `pnpm lint`: exit 0. `pnpm typecheck`: exit 0. `pnpm test`: exit 0, `Tests 443 passed (443)`.
+
+**Item status after session 2:** -15 is fixed in both scripts, so no CI check takes a fact about an image's
+files from a binary in that image. -10 is fixed for location; the content residual is accepted by the owner
+(Q-2 (a)). -14 and -04 (b) are unchanged (fixed).
