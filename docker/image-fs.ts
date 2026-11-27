@@ -613,8 +613,10 @@ const load = (path: string): Model => JSON.parse(readFileSync(path, 'utf8')) as 
 const sortC = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
 // Resolves a path in the image as the kernel would inside the container: every symlink, relative or
-// absolute, followed within the image's root, at most 40 of them.
-function resolve(model: Model, path: string, followLast: boolean): string | undefined {
+// absolute, followed within the image's root, at most 40 of them. More is fatal, or, with `loopIsMissing`
+// (pnpm-store's links, where a loop is the image's own finding, not a reason to stop), the path does not
+// resolve.
+function resolve(model: Model, path: string, followLast: boolean, loopIsMissing = false): string | undefined {
   let pending = normalise(path, 'resolve').split('/').filter(Boolean)
   const done: string[] = []
   let hops = 0
@@ -629,7 +631,10 @@ function resolve(model: Model, path: string, followLast: boolean): string | unde
     const entry = model.files[candidate]
     if (entry === undefined) return undefined
     if (entry.kind === 'symlink' && (pending.length > 0 || followLast)) {
-      if (++hops > 40) fatal(`resolve: too many symlinks at ${candidate}`)
+      if (++hops > 40) {
+        if (loopIsMissing) return undefined
+        fatal(`resolve: too many symlinks at ${candidate}`)
+      }
       const target = entry.target as string
       if (target.startsWith('/')) done.length = 0
       pending = [...target.split('/').filter(Boolean), ...pending]
@@ -1069,7 +1074,16 @@ function headerInclude(model: Model, path: string): { findings: string[]; adds: 
 //     store name (a symlink `.pnpm/x@1`) is a finding;
 //   - `.pnpm/<dir>/` holds only `node_modules/`, which holds the package's own directory (its scope as a
 //     directory when scoped) and symlinks to its dependencies; no other real directory or file, and no
-//     `node_modules` folder inside the package itself.
+//     `node_modules` folder anywhere inside the package itself.
+// Every symlink in these places must land, once resolved in the image (relative or absolute, every hop),
+// on `.pnpm/<d>/node_modules/<name>`, the own directory of a store directory `d` that the lockfile maps to
+// `<name>`, the link's own name (DEV-p5-image-host-24: links to a directory outside the store, to a
+// subdirectory of a package, or under another name had passed). The tree also says which store directory
+// each edge uses, so a top-level link must be a production dependency into the directory the tree names,
+// and a link beside a store package must be one of that package's dependencies in the tree, into the
+// directory the tree names. Hoisted links in `.pnpm/node_modules/` may go to any store directory of their
+// name. A scope is a real directory everywhere, never a symlink. An npm alias (`"x": "npm:y@1"`) would be a
+// link whose name is not its package's; there is none today, and one would fail here until this learns it.
 // So no package can sit anywhere Node's lookup would find it unless the lockfile names it (sec-01: real
 // directories in `.pnpm/node_modules/` and in a store directory's `node_modules/` had passed).
 const PNPM_TOP_DOT = new Map([
@@ -1099,6 +1113,28 @@ function pnpmStore(model: Model, nm: string, tree: unknown): { findings: string[
     { dependencies?: Record<string, unknown>; optionalDependencies?: Record<string, unknown> } | undefined
   const direct = new Set([...Object.keys(root?.dependencies ?? {}), ...Object.keys(root?.optionalDependencies ?? {})])
   if (store.size === 0 || direct.size === 0) fatal('pnpm list: no production packages, so nothing can be compared')
+  // The tree's edges: from a store directory ('' for the project itself), each dependency name and the
+  // store directories the tree resolves it to.
+  const edges = new Map<string, Map<string, Set<string>>>()
+  const addEdges = (node: unknown, from: string): void => {
+    if (node === null || typeof node !== 'object') return
+    for (const key of ['dependencies', 'optionalDependencies']) {
+      const deps = (node as Record<string, unknown>)[key]
+      if (deps === null || typeof deps !== 'object') continue
+      for (const [name, child] of Object.entries(deps as Record<string, unknown>)) {
+        const path = child !== null && typeof child === 'object' ? (child as { path?: unknown }).path : undefined
+        const m = typeof path === 'string' ? /\/node_modules\/\.pnpm\/([^/]+)\/node_modules\/(.+)$/.exec(path) : null
+        if (!m) continue
+        const byName = edges.get(from) ?? new Map<string, Set<string>>()
+        edges.set(from, byName)
+        const dirs = byName.get(name) ?? new Set<string>()
+        byName.set(name, dirs)
+        dirs.add(m[1] as string)
+        addEdges(child, m[1] as string)
+      }
+    }
+  }
+  addEdges(root, '')
 
   const findings: string[] = []
   const kind = (path: string): string | undefined => model.files[path]?.kind
@@ -1109,21 +1145,42 @@ function pnpmStore(model: Model, nm: string, tree: unknown): { findings: string[
       .sort(sortC)
   const at = (...parts: string[]) => [nm, ...parts].join('/')
   if (kind(nm) !== 'dir') return { findings: [`/${nm}: not a directory in the image`], summary: '' }
-  // A production dependency's link must resolve to its own package directory in the store.
-  const linksInto = (path: string, name: string): boolean => {
-    const real = resolve(model, path, true)
-    return [...store].some(([dir, n]) => n === name && real === at('.pnpm', dir, 'node_modules', name))
+  // A link must resolve to `.pnpm/<d>/node_modules/<name>`, a real directory, for a store directory `d`
+  // the lockfile maps to `name` (the link's own name), and one of `dirs` when the tree names them.
+  const linkLands = (path: string, name: string, dirs?: Set<string>): boolean => {
+    const real = resolve(model, path, true, true)
+    return (
+      real !== undefined &&
+      kind(real) === 'dir' &&
+      [...store].some(
+        ([d, n]) => n === name && (dirs === undefined || dirs.has(d)) && real === at('.pnpm', d, 'node_modules', name),
+      )
+    )
   }
-  // A folder of pnpm's links: every entry a symlink, a scope a directory of symlinks.
-  const onlyLinks = (dir: string, why: string) => {
+  // A folder of pnpm's links: a scope is a real directory; every other entry, and every entry in a scope,
+  // is a symlink that `check` accepts, except the package's own directory (`own`, a store's).
+  const linkFolder = (
+    dir: string,
+    where: string,
+    check: (path: string, name: string) => string | undefined,
+    own?: string,
+  ) => {
     for (const c of children(dir)) {
       const p = `${dir}/${c}`
-      if (c.startsWith('@') && kind(p) === 'dir') {
-        for (const s of children(p)) {
-          if (kind(`${p}/${s}`) !== 'symlink')
-            findings.push(`/${p}/${s}: a ${kind(`${p}/${s}`)} in ${why}, not a symlink`)
+      const names = c.startsWith('@')
+        ? kind(p) === 'dir'
+          ? children(p).map((s) => `${c}/${s}`)
+          : (findings.push(`/${p}: a scope that is a ${kind(p)}, not a directory`), [])
+        : [c]
+      for (const name of names) {
+        const q = `${dir}/${name}`
+        if (q === own) continue
+        if (kind(q) !== 'symlink') findings.push(`/${q}: a ${kind(q)} ${where}, not a symlink`)
+        else {
+          const why = check(q, name)
+          if (why !== undefined) findings.push(`/${q}: ${why}`)
         }
-      } else if (kind(p) !== 'symlink') findings.push(`/${p}: a ${kind(p)} in ${why}, not a symlink`)
+      }
     }
   }
 
@@ -1147,7 +1204,8 @@ function pnpmStore(model: Model, nm: string, tree: unknown): { findings: string[
       const q = at(name)
       if (!direct.has(name)) findings.push(`/${q}: a top-level package the lockfile's production tree does not name`)
       else if (kind(q) !== 'symlink') findings.push(`/${q}: a ${kind(q)}, not pnpm's symlink into the store`)
-      else if (!linksInto(q, name)) findings.push(`/${q}: a symlink that does not resolve to ${name}'s store directory`)
+      else if (!linkLands(q, name, edges.get('')?.get(name)))
+        findings.push(`/${q}: a symlink that does not resolve to ${name}'s store directory`)
     }
   }
   for (const name of [...direct].sort(sortC)) {
@@ -1163,7 +1221,12 @@ function pnpmStore(model: Model, nm: string, tree: unknown): { findings: string[
       if (kind(p) !== 'file') findings.push(`/${p}: a ${kind(p)}, not a file`)
     } else if (c === 'node_modules') {
       if (kind(p) !== 'dir') findings.push(`/${p}: a ${kind(p)}, not a directory`)
-      else onlyLinks(p, "pnpm's hoisted links")
+      else
+        linkFolder(p, "in pnpm's hoisted links", (q, name) =>
+          linkLands(q, name)
+            ? undefined
+            : `a symlink in pnpm's hoisted links that does not resolve to ${name}'s store directory`,
+        )
     } else if (!store.has(c)) {
       findings.push(`/${p}: a ${kind(p)} in the store the lockfile's production tree does not name`)
     } else if (kind(p) !== 'dir') {
@@ -1175,17 +1238,16 @@ function pnpmStore(model: Model, nm: string, tree: unknown): { findings: string[
       const inner = `${p}/node_modules`
       const ownPath = `${inner}/${own}`
       if (kind(ownPath) !== 'dir') findings.push(`/${ownPath}: ${own}'s own directory is missing or not a directory`)
-      for (const x of children(inner)) {
-        const q = `${inner}/${x}`
-        if (x.startsWith('@') && kind(q) === 'dir') {
-          for (const s of children(q)) {
-            const r = `${q}/${s}`
-            if (r !== ownPath && kind(r) !== 'symlink')
-              findings.push(`/${r}: a ${kind(r)} beside ${own}, not a symlink`)
-          }
-        } else if (q !== ownPath && kind(q) !== 'symlink')
-          findings.push(`/${q}: a ${kind(q)} beside ${own}, not a symlink`)
-      }
+      linkFolder(
+        inner,
+        `beside ${own}`,
+        (q, name) => {
+          const dirs = edges.get(c)?.get(name)
+          if (dirs === undefined) return `a symlink beside ${own} that the lockfile does not list as its dependency`
+          return linkLands(q, name, dirs) ? undefined : `a symlink that does not resolve to ${name}'s store directory`
+        },
+        ownPath,
+      )
       for (const path of Object.keys(model.files)) {
         if (
           path.startsWith(`${ownPath}/`) &&

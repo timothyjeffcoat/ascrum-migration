@@ -358,7 +358,7 @@ check_secrets() {
   # password. A value with no name and no shape to go by (a bare random ENV or ARG) is beyond any pattern
   # check; that is for the image scan and review (wave C).
   urls=$(grep -ohE "$URL_WITH_PASSWORD" "$dir/history.txt" "$dir/inspect.json" |
-    sed -E 's#^([^:]+://[^:@]*):[^@]*@#\1:<redacted>@#' | sort -u || true)
+    sed -E 's#^([^:]+://[^:@]*):[^@]*@#\1:<redacted>@#' | LC_ALL=C sort -u || true)
   [[ -z $urls ]] || fail "$image: URLs with a password in the image's own layers or its config: $(tr '\n' ' ' <<< "$urls")"
   # The summary only when this image passed every check above.
   if ((findings == before)); then
@@ -810,7 +810,9 @@ hits=$(grep -E '^app/.' "$work/api.txt" | grep -v '^app/api/node_modules/' | gre
 if graph=$(docker run --pull never --rm --network none --entrypoint node \
   --mount "type=bind,source=$PWD/docker/api/import-graph.ts,target=/tmp/import-graph.ts,readonly" \
   "$api_image" /tmp/import-graph.ts /app /app/api/src/main.ts 2> "$work/graph.err"); then
-  present=$(grep -E '^app/(api/src|web/stub)/[^/]+\.ts$' "$work/api.txt" | sed 's|^app/||' | sort)
+  # Sorted as import-graph.ts sorts (JS code-unit order, which is C order for these ASCII names), not in the
+  # caller's locale, where `Zeta.ts` would sort after `alpha.ts` and the comparison fail (-22 class).
+  present=$(grep -E '^app/(api/src|web/stub)/[^/]+\.ts$' "$work/api.txt" | sed 's|^app/||' | LC_ALL=C sort)
   if [[ $graph != "$present" ]]; then
     fail "$api_image: the .ts files in /app differ from what main.ts loads: $(diff <(echo "$graph") <(echo "$present") | grep '^[<>]' | tr '\n' ' ')(< loaded but missing, > present but never loaded)"
   fi
@@ -877,10 +879,13 @@ done < <(jq -r '.devDependencies // {} | keys[]' api/package.json)
 # from the layers (`image-fs.ts pnpm-store`, which states the layout rules): the store directories are
 # exactly the lockfile's, each holds only its own package and symlinks, `.pnpm/node_modules/` holds only
 # symlinks, and the top level holds only pnpm's three dot entries and a symlink per production dependency.
-# So a package Node could load from anywhere under node_modules must be one the lockfile names (-17: real
-# directories in `.pnpm/node_modules/` or beside a store package, a non-directory store name, a non-directory
-# scope and a dot-named directory had passed the earlier name comparison). An empty or unreadable expected
-# list fails; it never passes as "nothing expected".
+# Every one of those symlinks, resolved in the image, must land on the own directory of a store package of
+# the link's own name, and a link beside a package or at the top level must be an edge the tree lists, into
+# the directory it names; a scope is always a real directory (-24: links out of the store, into a package's
+# subdirectory or under a new name had passed). So a package Node could load from anywhere under
+# node_modules must be one the lockfile names (-17: real directories in `.pnpm/node_modules/` or beside a
+# store package, a non-directory store name, a non-directory scope and a dot-named directory had passed the
+# earlier name comparison). An empty or unreadable expected list fails; it never passes as "nothing expected".
 if ! pnpm --dir api list --lockfile-only --prod --depth Infinity --json > "$work/prod-tree.json" 2> "$work/prod-tree.err"; then
   fail "$api_image: pnpm could not list api/pnpm-lock.yaml's production tree: $(tail -5 "$work/prod-tree.err")"
 else
