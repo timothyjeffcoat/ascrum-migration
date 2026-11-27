@@ -223,7 +223,7 @@ describe('demo stack: the API container', () => {
     expect(container).not.toHaveProperty('DockerSecurityOptions')
   })
 
-  it('DEV-p5-infra-51: the API container runs as uid:gid 1000:1000 (the image\'s node user), never root', () => {
+  it("DEV-p5-infra-51: the API container runs as uid:gid 1000:1000 (the image's node user), never root", () => {
     expect(container?.User).toBe('1000:1000')
   })
 
