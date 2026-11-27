@@ -581,3 +581,145 @@ DEV-p5-image-host-12 (sec-08) and -13 (sec-09). Comments in the four scripts and
 changed to cite those ids; a comment in `image-fs.ts` had wrongly said -11. The change is to comments
 only. `pnpm lint` and `pnpm typecheck` were run again afterwards (exit 0 each), and `bash -n` on the three
 scripts passed. The image gates were not re-run for a comment-only change.
+
+## 2026-11-27, session 5 (worker): Phase 5 follow-up PR (DEV-p5-image-host-14, -10; -07 blocked)
+
+Branch `convert/p5-followups` from `migration` at `6f6afaf`, with DEV-p5-infra-50 (its entry is in
+`spec/worklogs/p5-infra.md`). The owner approved the follow-up on 2026-11-27. Images were built with a
+tag of their own (`IMAGE_TAG=p5f`, compose project `ascrum-p5f`). Gitleaks 8.30.1 and Trivy 0.76.2 are the
+pinned releases from `.github/actions/setup-*`, downloaded into a scratch folder and checked with
+`sha256sum --check --strict` (both `OK`). The shell's own `node` is v22, so every image command ran with
+nvm's Node 24.22.3 first on the PATH. The Gitleaks binary was put on the PATH (the script's documented
+alternative to the `GITLEAKS` variable), because commands naming that variable had been refused (below).
+
+### -14 (sec-10): every `::` is neutralised (0adc416)
+
+- I chose the recommended option, neutralising **every** `::` on a line, rather than refusing any
+  non-printable-ASCII byte before `::`. It does not depend on knowing which code points .NET's
+  `TrimStart()` treats as white space, and it holds even if the runner ever looks for `::` elsewhere in a
+  line. The cost is cosmetic: a legitimate `::` (an IPv6 address, a C++ name) prints as `:?:`. Nothing
+  parses these lines back.
+- `docker/log-safe.sh` `log_safe_lines`: `sed -e 's/##\[/##(/g' -e 's/::/:?:/g' -e 's/::/:?:/g'`. One
+  global pass leaves a `::` where a run of three or more colons straddles two matches (`:::` gives `:?::`),
+  so a second pass runs. After it, no `::` is left (`a:::b::::c:::::d` → `a:?:?:b:?:?:?:c:?:?:?:?:d`).
+- `docker/image-fs.ts` `printable`: `.replace(/:(?=:)/g, ':?')`: every colon followed by a colon gets a
+  `?`, in one pass and with the same result. The `##[` → `##(` rule is unchanged in both.
+- `docker/scan-images.sh`'s `gha_data` has its own escaping, for the data of its `::warning` command. It
+  first drops everything but printable ASCII, CR and LF, and its text always follows the fixed `::warning
+  title=…::` prefix. It is outside the owned paths and has no Unicode blank left to strip, so it is
+  unchanged.
+
+**Repro, raw bytes (`od -c`), `printf '<bytes>' | log_safe_lines`:**
+
+Before (`log-safe.sh` as on `migration`):
+```
+U+00A0  302 240   :   :   w   a   r   n   i   n   g   :   :   n   b   s   p  \n
+U+2003  342 200 203   :   :   w   a   r   n   i   n   g   :   :   e   m   s   p  \n
+U+3000  343 200 200   :   :   a   d   d   -   m   a   s   k   :   :   i   d   e   o  \n
+U+2028  342 200 250   :   :   e   r   r   o   r   :   :   l   s   e   p  \n
+ASCII   (two blanks)  :   ?   :   w   a   r   n   i   n   g   :   :   a   s   c   i   i  \n
+```
+After (`0adc416`):
+```
+U+00A0  302 240   :   ?   :   w   a   r   n   i   n   g   :   ?   :   n   b   s   p  \n
+U+2003  342 200 203   :   ?   :   w   a   r   n   i   n   g   :   ?   :   e   m   s   p  \n
+U+3000  343 200 200   :   ?   :   a   d   d   -   m   a   s   k   :   ?   :   i   d   e   o  \n
+U+2028  342 200 250   :   ?   :   e   r   r   o   r   :   ?   :   l   s   e   p  \n
+ASCII   (two blanks)  :   ?   :   w   a   r   n   i   n   g   :   ?   :   a   s   c   i   i  \n
+```
+`printf '\xc2\xa0::warning::nbsp\n' | log_safe_lines | command grep -ac '::'` prints `0`. `log_safe` on
+`l1<LF><U+00A0>::error::x` gives `l1?<U+00A0>:?:error:?:x` on one line. `##[warning]x ::y` gives
+`##(warning]x :?:y`.
+
+The reader's `printable` is not exported, so a scratch script took the arrow function's text out of
+`image-fs.ts` and evaluated it. On `migration`'s `image-fs.ts`, `<U+00A0>::warning::nbsp`,
+`<U+2003>::warning::emsp` and `<U+3000>::add-mask::x` come out unchanged (`302 240 : : w a r n …`). On
+`0adc416` they come out as `302 240 : ? : w a r n i n g : ? : n b s p`, and so on; `a:::b::::c` gives
+`a:?:?:b:?:?:?:c`, `##[error]x` gives `##(error]x`, and `path/::x<CR>` gives `path/:?:x\x0d`.
+
+### -10: the installed packages are compared with the lockfile's production tree (f607e7c)
+
+- The dependency-free source of the production set is pnpm itself: `pnpm --dir api list --lockfile-only
+  --prod --depth Infinity --json` reads `api/pnpm-lock.yaml` without any `node_modules`, and each entry's
+  `path` holds its virtual-store directory, so the `.pnpm/<dir>` names (peer suffix included:
+  `pg-pool@3.14.0_pg@8.23.1`) are what `pnpm install --prod --frozen-lockfile` creates. pnpm is the version
+  `web/package.json` pins: setup-web installs it in the e2e-compose job, and the Dockerfile uses the same pin
+  through corepack. So no question was needed, and there is no new dependency. Run from the repo root it
+  works inside the workspace (`sharedWorkspaceLockfile: false`, so api's own lockfile is read). I also ran
+  it in a scratch folder holding only `package.json` and the lockfile: the same 14 entries.
+- `check-images.sh` now fails unless both match, both ways: the image's `.pnpm` directories equal that set,
+  and the top-level packages under `app/api/node_modules/` (dot entries such as `.pnpm` and
+  `.modules.yaml` are not packages) equal the production `dependencies` and `optionalDependencies` pnpm
+  lists (today `pg`). If pnpm fails or lists nothing, that is a failure, never "nothing expected". `pnpm`
+  joins the required-tool list, and the header comment says what is checked. Q-p5-image-host-2's context
+  ("the installed packages equal to the production tree") is now true as written, so it needs no rewording.
+- The green line: `ascrum-api:p5f: installed packages are exactly api/pnpm-lock.yaml's production tree (14
+  in .pnpm; top level: pg): pg-cloudflare@1.4.1 pg-connection-string@2.14.1 … xtend@4.0.2`.
+
+**Planted cases (a temporary edit to `docker/api.Dockerfile`'s `deps` stage, never committed, restored
+with `git checkout`, the images untagged afterwards):**
+- AB6 class, extras (`&& mkdir -p node_modules/.pnpm/evil@1.0.0/node_modules/evil node_modules/evil-top`):
+  the new script exits 1 with one finding, `check-images FAIL: ascrum-api:p5fbad: installed packages are
+  not api/pnpm-lock.yaml's production tree. In the image only: evil@1.0.0 node_modules/evil-top missing
+  from the image:`. The pre-change script (HEAD's copy, run from a scratch folder beside `log-safe.sh`)
+  exits 0 on the same image, printing `installed packages: evil@1.0.0 pg@8.23.1 …`.
+- Missing (`&& rm -rf node_modules/.pnpm/pg-cloudflare@1.4.1`, an optional package nothing loads at
+  start): exit 1, three findings: the two dangling `pg-cloudflare` symlinks (an existing check) and `…
+  missing from the image: pg-cloudflare@1.4.1`.
+
+### -07: blocked on Q-p5-image-host-4
+
+Where the reader's fail-closed tests live, and which CI job runs them, is an owner question
+(`spec/questions/p5-image-host.md`, Q-p5-image-host-4; recommendation (a): `node:test` under `docker/`, one
+`node --test docker/` step in the `test` job). **Blocked**: nothing for it is committed, and I did not
+prepare a generator in this session.
+
+### Commands refused by the worktree guard (word for word)
+
+1. A compound command that wrote the scratch `printable` checker with a heredoc and then ran node: "This
+   agent is isolated in the worktree <worktree>, but this command is too complex to verify that it stays
+   inside the worktree. Refusing to run it — a worktree-isolated agent's git operations must target its
+   own worktree. Split it into plain, separate commands and run them from <worktree>." I wrote the file
+   with the editor tool and ran node as a separate plain command.
+2. A compound command that ran `pnpm --dir api list …`, `docker --version` and a check for the secret
+   scanner on the PATH: "This agent is isolated in the worktree <worktree>, but this command names git in
+   a form too complex to verify that it stays inside the worktree. Refusing to run it — a worktree-isolated
+   agent's git operations must target its own worktree. Split it into plain, separate commands and run them
+   from <worktree>." (the scanner's name begins with `git`). I ran the three as separate plain commands.
+3. A command that checked for Trivy and echoed whether the scanner's path variable was set: the same
+   "names git in a form too complex" message, word for word as in 2. I did not retry the echo in any form.
+   I ran the Trivy check alone, read `check-images.sh` to see how it finds the scanner, and checked the
+   PATH with a plain `command -v` (not found).
+4. Appending this entry with a shell heredoc followed by `git status`: the "this command is too complex to
+   verify" message, word for word as in 1. Nothing was written; I appended the entry with the editor tool.
+
+No command was respelled and nothing was moved into a script to get past a refusal. The one scratch script
+(the `printable` checker) was written with the editor tool after refusal 1, which asked for a split.
+
+### Mistakes and wrong turns
+
+- My first planted build also removed `xtend` (a missing-package case). That broke the `deps` stage's
+  import graph, so the build failed and no `ascrum-api:p5fbad` image was made, but I ran `check-images.sh`
+  before reading the build log, and it stopped at `No such image`. I then split the plant into extras only
+  and, separately, a missing optional package (both above).
+- The first green run printed `top level: pg )` (a stray space from `tr`). I changed it to `paste -sd ' '`
+  before the commit and re-ran (the final run below).
+
+### Gates (this session; Node 24.22.3; unpiped; each exit code from the tool)
+
+The e2e-compose job's image steps, from the worktree root, on fresh images
+(`docker compose --profile prod-check build`, exit 0):
+- `docker/check-images.sh ascrum-api:p5f ascrum-web:p5f`: exit 0, 0 `FAIL` lines, 0 `::` in the log, the
+  installed-packages line as above, and the last line `check-images: AC-CTR-02 (non-root, no dev
+  dependencies, test files or .env), pins, compose builds, …`.
+- `docker/scan-images.sh ascrum-api:p5f ascrum-web:p5f` (pinned Trivy): exit 0, `scan-images: no failing
+  finding in either image (Trivy, two passes; ECR's gate stays the final check on the deployed image)`.
+- `docker/check-scan-coverage.sh ascrum-api:p5f ascrum-web:p5f <reports>`: exit 0, `ascrum-api:p5f: Trivy
+  read exactly the 12 OS packages in apk's database and the 15 package.json packages in the image, …`,
+  `ascrum-web:p5f: … 70 OS packages … 0 package.json packages …`, `check-scan-coverage: the scan read every
+  OS and language package in both images (DEV-p5-image-scan-04 (b)), checked on the host`.
+- web `pnpm lint` (covers `../docker`): exit 0, "All matched files use Prettier code style!".
+- web `pnpm typecheck` (includes `tsc -p ../docker/tsconfig.json`): exit 0.
+- `bash -n docker/check-images.sh`: OK. shellcheck is not installed here, and CI does not run it.
+- Not run: the rest of the e2e-compose job (compose up, `pnpm e2e:compose`, the client-address and health
+  checks) and web `pnpm verify`. This PR changes nothing they exercise beyond the three scripts above.

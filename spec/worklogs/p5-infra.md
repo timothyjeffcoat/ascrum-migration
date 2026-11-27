@@ -2056,3 +2056,64 @@ did not edit). -50 is a separate follow-up; -47 and -48 stay as they are. No AWS
 
 infra `pnpm verify` exit 0 (after the prettier fix): "All matched files use Prettier code style!", tsc
 clean, "Test Files  12 passed (12)", "Tests  243 passed (243)", "Successfully synthesized".
+
+## 2026-11-27, Phase 5 follow-up PR (worker): DEV-p5-infra-50
+
+Branch `convert/p5-followups` from `migration` at `6f6afaf`, one PR with DEV-p5-image-host-10, -14 (and
+Q-p5-image-host-4 for -07); those are in `spec/worklogs/p5-image-host.md`. The owner approved this
+follow-up on 2026-11-27 and had already decided the rule. No AWS command was run.
+
+### -50 (sec-02): the cluster branch of `isGhost` (31d9bd9, formatting in d3c178c)
+
+- The rule as decided: a cluster is gone **only** when the DescribeClusters answer names the asked ARN
+  exactly once, and that one mention is a cluster with status `INACTIVE` (matched on `clusterArn`) or a
+  failure with reason `MISSING` (matched on `arn`). Everything else is not gone: `{clusters:[],failures:[]}`
+  (and `{}`), a failure with another reason, an `INACTIVE` entry or a `MISSING` failure for another cluster,
+  an entry with no ARN, an `ACTIVE` asked cluster, the ARN named twice (as INACTIVE and as MISSING, or as two
+  clusters), and an answer that is not JSON (before, `JSON.parse` would have thrown). This is the same
+  "an answer only clears the ARN its own call asked about, mentioned once" rule `ecsGhosts` already uses
+  for services and tasks. A failed call is unchanged (never gone, with its reason).
+- Tests: a `describe('DEV-p5-infra-50: …')` block of seven tests, one per shape in the row, each calling
+  `isGhost` with an `Aws` that also asserts the call was `ecs describe-clusters --clusters <the ARN>`, plus
+  one through `findLeftovers` (an empty answer keeps the cluster LEFTOVER).
+- The fake's DescribeClusters answer (`fakeAws.ts`) has no `clusterArn`, so two existing tests (inactive
+  clusters are not leftovers; clusters are still asked one by one) would have gone red for an unrealistic
+  answer. `fakeAws.ts` is outside this PR's owned paths, so I did not edit it: `leftovers.test.ts` wraps the
+  fake in `withClusterArns`, which adds the asked ARN to each entry, as a real answer has it. The fake still
+  records the call. A one-line change in `fakeAws.ts` would be simpler; that is the reviewer's call.
+
+**Breakage proof (both planted in `clusterAnswerSaysGone`, run, then restored with `git checkout`):**
+- B20 (`clusters.length === 0 || clusters.some(INACTIVE)`): `Tests  5 failed | 64 passed (69)`. Red: the
+  empty answer, the other-reason failure, the other-cluster entry, the ACTIVE/contradictory/not-JSON test,
+  and the `findLeftovers` empty-answer test.
+- The pre-fix `clusters.every(INACTIVE)`: the same five red, `Tests  5 failed | 64 passed (69)`.
+- Restored: `Tests  69 passed (69)` (before prettier; the file has 69 tests).
+
+**Not changed, on purpose:** the task-definition "gone" pattern (`/not found|does not exist|Unable to
+describe/i` anywhere in stderr) stays as it is. Anchoring it waits on the text of a live refusal, which no
+run has shown yet (the row's own note); an SSO "Token … does not exist" line would still match.
+
+### Commands refused by the worktree guard (word for word)
+
+1. While restoring after the B20 run, a compound command (`git checkout`, a scratch edit, then `cd infra
+   && vitest`, then `cd ..` and `git checkout` again) was refused: "This agent is isolated in the worktree
+   <worktree>, but this command changes directory to a location computed at runtime before running git.
+   Refusing to run it — a worktree-isolated agent's git operations must target its own worktree. Run the
+   equivalent from <worktree> without the redirect." Nothing in it ran. I ran the same steps as separate
+   plain commands, each from the worktree root (restore, plant, test, restore, test).
+
+### Mistakes
+
+- I committed 31d9bd9 before running lint. The infra `pnpm lint` then stopped at prettier: `[warn]
+  scripts/leftovers.test.ts`. `prettier --write` on that file changed line breaks only (6 insertions, 4
+  deletions), committed as d3c178c.
+- My first `pnpm test` run in infra was piped through `tail`, which the metrics hook would record by
+  `tail`'s exit code. I re-ran it unpiped (below).
+
+### Gates (this session; Node 24.22.3; AWS files at `/dev/null` for synth; unpiped)
+
+The infra job's four steps (`.github/workflows/ci.yml`, job `infra`), from `infra/`:
+- `pnpm lint`: exit 0, "All matched files use Prettier code style!"
+- `pnpm typecheck`: exit 0 (tsc, no output).
+- `pnpm test`: exit 0, "Test Files  12 passed (12)", "Tests  250 passed (250)" (243 before, plus 7).
+- `pnpm synth`: exit 0, "Successfully synthesized to …/infra/cdk.out".
