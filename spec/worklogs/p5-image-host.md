@@ -1006,3 +1006,149 @@ scratch file and ran it with `bash -e`, `RUNNER_TEMP` set to the scratchpad and 
 - `bash -n docker/check-images.sh`: OK.
 - Not run: the rest of the e2e-compose job (compose up, `pnpm e2e:compose`) and web `pnpm verify`. Nothing
   they exercise changed beyond the scripts above.
+
+## 2026-11-27, session 8 (worker): round 4 of #94 (DEV-p5-image-host-18, -24, -25, -22 class)
+
+The owner approved one more round. I pulled to b8e8a92 (`git pull --ff-only`) and read -18, -22, -24 and
+-25 as they stood. I did not edit `spec/deviations.md`.
+
+Commits:
+- af51a5c: -24, plus the 813 and 361 `sort` fixes.
+- 92f1ab6: tests for -24, -25 and -18 (one `it(` per test).
+- 2b65515: the CI step.
+- 3254355: a -24 case added after a plant survived.
+
+### What changed
+
+- **-18 / sec-r3-01, the CI step.**
+  - It still runs `node --test` on `docker/image-fs.test.ts` by name, with a TAP copy in `$RUNNER_TEMP`.
+  - It now also fails on any `# SKIP` or `# TODO` directive anywhere in the TAP, at any indent (a skipped
+    suite is reported only as a directive, not in the summary's `# skipped`).
+  - It also fails unless the summary's `# tests` equals the number of tests the file defines.
+  - That number is counted from the file itself (`grep -cE '^[[:space:]]*it\('`), so there is no
+    hand-kept literal.
+  - The cost of that choice: every test must be its own `it(` at a line start. The one loop that made
+    tests (five tar types) is unrolled into five `it(` calls with a shared helper. The test file's header
+    says why. A test added in a loop later fails the step (fail-closed) until it is written out.
+  - Still exactly one step in the `test` job, and no lint-config change.
+- **-24 / sec-r3-02, where pnpm's links point.**
+  - `linksInto` is replaced by `linkLands(path, name, dirs?)`. The link must resolve in the model (every
+    hop, relative or absolute) to a real directory `.pnpm/<d>/node_modules/<name>`. Here `<name>` is the
+    link's own name, `d` is a store directory the lockfile maps to that name and, when the tree names one,
+    `d` is the directory the tree gives for that edge.
+  - It applies to top-level links, hoisted links in `.pnpm/node_modules/` and links beside a store
+    package.
+  - A link beside a package must also be one of that package's dependencies in `pnpm list`, so the
+    optional edge check is done. In the real image the 14 beside-package links are exactly the tree's
+    edges (5 store directories), checked before writing it.
+  - A scope that is a symlink (or a file) fails everywhere, through one shared `linkFolder`.
+  - A link loop is now "does not resolve", a finding, not an exit 2. `resolve` gained a `loopIsMissing`
+    flag, used only here. The I7 plant (`.pnpm/b@2.0.0` → `a@1.0.0`) builds such a loop, and it first
+    went to the fatal path.
+  - Not checked: an npm alias (a link named differently from its package) would be a finding. There is
+    none today, and the reader's comment says so.
+  - The reader's rules comment and the comment near check-images.sh 880 now describe the link rule.
+- **-25 / sec-r3-03.** New tests:
+  - T1: a real `@evil/x/` in `.pnpm/node_modules/`.
+  - T6: `.modules.yaml` as a directory.
+  - T13: `b/lib/node_modules/evil/`, deeper than the first segment.
+  - (2): two packages in one store directory, exit 2.
+  - (4): `node_modules` as a file.
+- **-22 class, locale.**
+  - `check-images.sh:813` (now 815) `present=… | sort` becomes `LC_ALL=C sort`. `import-graph.ts`
+    sorts with JS `.sort()`, which is code-unit order, the same as C for these ASCII names.
+  - Repro under `LC_ALL=en_US.UTF-8`, with names `main.ts`, `Zeta.ts`, `alpha.ts`:
+    - before: the graph is `[Zeta alpha main]` and `present` is `[alpha main Zeta]`, a mismatch (a false
+      failure);
+    - after: both are `[Zeta alpha main]`, equal.
+  - I searched the file for every other `sort`, `comm`, `uniq` and `join`. Only line 361 (`sort -u` of
+    redacted password URLs) lacked `LC_ALL=C`. It feeds a message and an emptiness test, not a comparison,
+    but a locale `sort -u` can merge lines that collate equal, so it is `LC_ALL=C` too. No other remains.
+
+### Red/green proofs
+
+**Reader plants.** Each was planted in `docker/image-fs.ts` by a scratch script, then restored with `git
+checkout`; 67/67 after each.
+
+| Plant | Result | Red |
+|---|---|---|
+| hoisted links' targets not checked | 64/3 | M1, M4, outside/loop |
+| beside-package link need not be a tree edge | 65/2 | M2, M4 |
+| beside-package links' targets not checked | 66/1 | M2 |
+| a scope that is a symlink accepted | 66/1 | M3 |
+| any store package's directory accepted, whatever the link's name | 66/1 | M1 |
+| a subdirectory of the right package accepted | 66/1 | M4 (see wrong turns) |
+| link loop fatal again (`loopIsMissing` off) | 65/2 | I7, outside/loop |
+| T1: scope directories' contents not listed | 64/3 | T1, I6, M2 |
+| T6: dot entries' kind not checked | 66/1 | T6 |
+| T13: only a `node_modules` directly inside the package | 66/1 | T13 |
+| (2): two packages in one store directory accepted | 66/1 | (2) |
+| (4): the `node_modules`-not-a-directory guard removed | 66/1 | (4) |
+
+**Real build.**
+- I made a temporary, uncommitted `deps`-stage plant in `docker/api.Dockerfile`:
+  - M1: `.pnpm/node_modules/evil` → `../pg@8.23.1/node_modules/pg`;
+  - M2: `.pnpm/pg@8.23.1/node_modules/evil` → `/app/api/src`;
+  - M3: `.pnpm/node_modules/@evil` → `../pg@8.23.1/node_modules/pg/lib`;
+  - M4: a real `pg/evil/`, plus `.pnpm/xtend@4.0.2/node_modules/evil` → `../../pg@8.23.1/node_modules/pg/evil`.
+- I built it as `p5f9bad` (exit 0) and ran `check-images.sh` on it: exit 1, with exactly four `FAIL` lines:
+  - `…/.pnpm/node_modules/@evil: a scope that is a symlink, not a directory`
+  - `…/.pnpm/node_modules/evil: a symlink in pnpm's hoisted links that does not resolve to evil's store
+    directory`
+  - `…/.pnpm/pg@8.23.1/node_modules/evil: a symlink beside pg that the lockfile does not list as its
+    dependency`
+  - `…/.pnpm/xtend@4.0.2/node_modules/evil: a symlink beside xtend that the lockfile does not list as its
+    dependency`
+- The real `pg/evil/` directory is a package's own content, which is not compared; only links into it are.
+- I restored the Dockerfile with `git checkout` and removed both `p5f9bad` tags. The clean `p5f9` images
+  pass.
+
+**The CI step.** The `run:` body was copied verbatim from `ci.yml` and run with `bash -e`, `RUNNER_TEMP`
+in the scratchpad, on Node 24. Each plant was restored afterwards:
+- clean: exit 0, `tests 67`, `skipped 0`, `todo 0`;
+- skipped suite (`describe('DEV-p5-image-host-17: …', { skip: true }, …)`): exit 1. The summary said
+  `tests 48`, `skipped 0`; the directive `ok 5 - … # SKIP` and the count failed it;
+- todo suite: exit 1 (`# todo 19`, and `# TODO` directives);
+- `process.exit(0)` inside a test: exit 1 (`# tests 1` against 67 defined; node itself exited 0);
+- `t.skip()`: exit 1 (`# skipped 1`, `ok 16 - … # SKIP`);
+- a failing test (the T6 plant): exit 1 from node, before the check;
+- a throw at load: exit 1 from node ("planted: a throw while loading");
+- file renamed (`git mv` and back): exit 1, "Could not find 'docker/image-fs.test.ts'".
+
+### Commands refused by the worktree guard (word for word)
+
+1. While checking how node:test writes skip and todo directives in TAP, a command that made a scratch
+   folder, wrote a test file there with a heredoc and ran `node --test --test-reporter=tap` on it, piped
+   through grep, was refused: "This agent is isolated in the worktree <worktree>, but this command is too
+   complex to verify that it stays inside the worktree. Refusing to run it — a worktree-isolated agent's
+   git operations must target its own worktree. Split it into plain, separate commands and run them from
+   <worktree>." Nothing in it ran. As told, I split it: the scratch file was written with the editor tool,
+   then a plain `node --test --test-reporter=tap <file>` was run from the worktree.
+
+### Wrong turns
+
+- My first draft of the step's count was red on the clean head: it counted 63 `it(` lines and 67 tests
+  ran. The tar-type loop made five tests from one `it(`. I unrolled the loop rather than weaken the count.
+- The "subdirectory of the right package" plant first survived (exit 0, 67/67). M4's shapes are caught by
+  the name or edge checks before the target check. I added two cases (a hoisted `b` and a `b` beside `a`,
+  both into `b/lib`). The same plant is then red (66/1). Committed separately as 3254355.
+
+### Gates (this session; Node 24.22.3; unpiped; each exit code from the tool)
+
+- The CI step body under `bash -e` on the clean head: exit 0, `ℹ tests 67`, `ℹ pass 67`, `ℹ fail 0`,
+  `ℹ skipped 0`, `ℹ todo 0`.
+- `node --test docker/image-fs.test.ts`: exit 0, 67/67.
+- web `pnpm lint`: exit 0, "All matched files use Prettier code style!". web `pnpm typecheck`: exit 0.
+- infra `pnpm lint`, `pnpm typecheck` and `pnpm test` all exit 0, with "Test Files 12 passed (12)" and
+  "Tests 252 passed (252)". `AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null pnpm synth`:
+  exit 0, "Successfully synthesized". No infra code changed this round.
+- `docker compose --profile prod-check build` (tag `p5f9`): exit 0.
+- `GITLEAKS=<scratch path> docker/check-images.sh ascrum-api:p5f9 ascrum-web:p5f9`: exit 0, 0 `FAIL`,
+  "main.ts loads exactly the 16 .ts files in /app", "…: exactly the lockfile's production tree in pnpm's
+  layout: 14 store directories (…)". The scanner was supplied as before, and no guard refused it.
+- `docker/scan-images.sh ascrum-api:p5f9 ascrum-web:p5f9` (pinned Trivy): exit 0, "no failing finding in
+  either image".
+- `docker/check-scan-coverage.sh ascrum-api:p5f9 ascrum-web:p5f9 <reports>`: exit 0, api 12 OS + 15
+  package.json packages, web 70 + 0, "the scan read every OS and language package in both images".
+- `bash -n docker/check-images.sh`: OK.
+- Not run: the rest of the e2e-compose job and web `pnpm verify`.
