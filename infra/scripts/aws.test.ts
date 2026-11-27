@@ -153,3 +153,36 @@ describe('DEV-p5-infra-44 (sec-09): an account id split by a removed code point 
     expect(printable('id 123456 789012 x')).toBe('id 123456 789012 x')
   })
 })
+
+describe('DEV-p5-infra-45 (sec-10): a run of 12 or more digits is scrubbed, also after the deletion', () => {
+  const ch = (code: number) => String.fromCodePoint(code)
+  const twelveOrMore = /\d{12,}/
+
+  it('DEV-p5-infra-45: a split id with a glued extra digit never prints 12 or more digits in a row', () => {
+    const out = printable(`id 1${ch(0x00ad)}123456${ch(0x00ad)}789012 x`)
+    expect(out).not.toMatch(twelveOrMore)
+    expect(out).toBe('id *** x')
+    // A whole id is scrubbed by the first pass, so the stray digit stays apart (the mirror of `*** 3`).
+    expect(printable(`arn:aws:sts::1${ch(0x200b)}123456789012:role`)).toBe('arn:aws:sts::1 ***:role')
+  })
+
+  it('DEV-p5-infra-45: plain 12-digit and 13-digit ids are scrubbed, by printable() and by redact()', () => {
+    for (const text of ['id 123456789012 x', 'id 1234567890123 x', 'id 12345678901234567890 x']) {
+      expect(printable(text), text).toBe('id *** x')
+      expect(redact(text), text).toBe('id *** x')
+    }
+    expect(redact('arn:aws:iam::1234567890123:role/x')).toBe('arn:aws:iam::***:role/x')
+  })
+
+  it('DEV-p5-infra-45: shorter numbers, ISO timestamps and digits inside hex ids are unchanged', () => {
+    for (const text of [
+      'id 12345678901 x',
+      'revision 42, exit 254, epoch 1764000000',
+      '2026-11-27T10:15:30.123Z',
+      'task 0a1b2c3d4e5f60718293a4b5c6d7e8f9',
+      'sha256:abc1234567890123456def',
+    ]) {
+      expect(printable(text), text).toBe(text)
+    }
+  })
+})

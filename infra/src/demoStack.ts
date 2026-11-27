@@ -187,8 +187,21 @@ export class DemoStack extends Stack {
       },
     })
     const repository = ecr.Repository.fromRepositoryName(this, 'ApiRepository', NAMES.apiRepository)
+    // The ECS twin of compose's `init: true`: a stop does not wait for the timeout (p5-containers note).
+    const linuxParameters = new ecs.LinuxParameters(this, 'ApiLinux', { initProcessEnabled: true })
+    // No Linux capabilities at all (Q-p5-image-host-3 (a), DEV-p5-image-scan-14's run-time half): the API
+    // runs as uid 1000 on port 3000, so it needs none. With an empty bounding set, a file capability or a
+    // setuid binary that slipped past docker/check-images.sh cannot give a process any capability (a
+    // setuid-root binary still sets euid 0, but with no capability; DEV-p5-infra-53). check-images.sh still
+    // fails the image on any setuid or setgid file and on any xattr. The init process ECS injects only reaps
+    // children and forwards signals to the same user's process, which needs none.
+    linuxParameters.dropCapabilities(ecs.Capability.ALL)
     taskDefinition.addContainer('api', {
       image: ecs.ContainerImage.fromEcrRepository(repository, imageTag),
+      // The image's `USER node` is uid:gid 1000:1000 (its /etc/passwd, read on the host by docker/image-fs.ts).
+      // Pinned here too, so the task definition alone decides that the container never runs as root
+      // (DEV-p5-infra-51).
+      user: '1000:1000',
       entryPoint: ['sh', '-c'],
       command: [API_START_SCRIPT],
       environment: {
@@ -207,8 +220,7 @@ export class DemoStack extends Stack {
       },
       portMappings: [{ containerPort: API_PORT }],
       readonlyRootFilesystem: true,
-      // The ECS twin of compose's `init: true`: a stop does not wait for the timeout (p5-containers note).
-      linuxParameters: new ecs.LinuxParameters(this, 'ApiLinux', { initProcessEnabled: true }),
+      linuxParameters,
       // The image's own check (docker/api.Dockerfile, AC-CTR-03); ECS ignores HEALTHCHECK.
       healthCheck: {
         command: [

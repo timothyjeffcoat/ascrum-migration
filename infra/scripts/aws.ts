@@ -45,9 +45,16 @@ export async function stackStatus(aws: Aws, stack: string, region: string): Prom
   return status === 'DELETE_COMPLETE' ? null : status
 }
 
-/** Account ids stay out of public logs and artifacts (spec §11): any 12-digit number becomes ***. */
+/**
+ * Account ids stay out of public logs and artifacts (spec §11): any number of 12 or more digits becomes ***.
+ * "Or more" (DEV-p5-infra-45, sec-10): printable() deletes removed code points between digits, so
+ * `1<U+00AD>123456<U+00AD>789012` joins into 13 digits, which an exact `\d{12}` let through. A longer run is
+ * scrubbed whole, never cut down to a visible remainder. Nothing these scripts print needs a 12+ digit
+ * number: timestamps are ISO dates or epoch seconds (10 digits), ARNs carry the account id (scrubbed
+ * anyway), and the other ids are hex or UUIDs, which `\b` keeps out unless they are all digits.
+ */
 export function redact(text: string): string {
-  return text.replace(/\b\d{12}\b/g, '***')
+  return text.replace(/\b\d{12,}\b/g, '***')
 }
 
 /**
@@ -58,11 +65,13 @@ export function redact(text: string): string {
  * format characters, variation selectors and tag characters; `for ... of` walks code points, so a surrogate
  * pair becomes one space.
  *
- * The 12-digit scrub (DEV-p5-infra-44, sec-09): removed code points that sit between two digits are deleted
- * rather than spaced, so `123456<U+00AD>789012` joins up and is scrubbed as one id; on screen it reads as
- * one anyway. redact() also runs on the raw text first, so an id that is already whole stays scrubbed even
- * when the deletion glues another digit to it (`123456789012<U+00AD>3` prints `*** 3`, not 13 digits).
- * Over-scrubbing is the safe direction. An ASCII space still separates numbers, as it always has.
+ * The account-id scrub (DEV-p5-infra-44, sec-09): removed code points that sit between two digits are
+ * deleted rather than spaced, so `123456<U+00AD>789012` joins up and is scrubbed as one id; on screen it
+ * reads as one anyway. redact() also runs on the raw text first, so an id that is already whole keeps its
+ * shape when the deletion glues another digit to it (`123456789012<U+00AD>3` prints `*** 3`). The second
+ * redact() scrubs any run of 12 or more digits the deletion made (DEV-p5-infra-45), so no split, glued or
+ * long id prints 12 digits in a row. Over-scrubbing is the safe direction. An ASCII space still separates
+ * numbers, as it always has.
  */
 export function printable(text: string): string {
   const chars = [...redact(text)]

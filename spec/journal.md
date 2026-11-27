@@ -1321,3 +1321,29 @@ These come from how the first post's comments went: every question was about tru
   - The reviewer's runs: 17 cases in round 1, then 31 in each of rounds 2 and 3, on freshly built images. The security reviewer ran its own cases each round.
 - **Gate results (reviewer, `154e992`, AWS credential files at `/dev/null`).** `check-images.sh`, `scan-images.sh` and `check-scan-coverage.sh` exit 0 on fresh images. `pnpm lint`, `typecheck` and `test` (443) exit 0. CI 12/12 green on `154e992` (`gh pr checks 90`).
 - **Decision.** No blocking findings remain. The owner chose no round 4; the row is `verified`. Not merged: the owner merges.
+
+## 2026-11-27: Dropping the container's privileges where it runs (p5-infra, PR #92, review)
+- **What.** One infra follow-up closed three items.
+  - **Q-p5-image-host-3 (a).** The API container on ECS drops every Linux capability.
+  - **DEV-p5-infra-45.** The account-id scrub now covers runs of 12 or more digits.
+  - **DEV-p5-infra-46.** A test now pins a refused DescribeTaskDefinition as a LEFTOVER.
+  - Only `infra/` and the p5-infra worklog changed. There is no new dependency and no IAM or bootstrap change.
+- **The moment: the run-time half of a fix.** #90 made the image check fail any file capability (DEV-p5-image-scan-14). A check on the image can only stop what it recognises. Dropping all capabilities where the image actually runs is the second layer: with an empty bounding set, even a file that slipped past the check grants nothing.
+  - **Locally, as ECS runs it.** The reviewer ran the image with `--cap-drop ALL --init --read-only`. A seed user signed in and listed 3 projects. Every capability set of the init process and of node was 0, and `setuid(0)` failed with EPERM. Without the drop, the bounding set was `a80425fb`.
+  - **Only one container on ECS.** The question assumed "both containers". The stack has only the API on ECS; the web is S3 and CloudFront.
+- **The moment: the strongest control available.** Fargate accepts neither `privileged` nor Docker security options such as `no-new-privileges`. That leaves drop ALL as the strongest control the platform offers. The security review confirmed this from the AWS documentation. The deploy role needed no change, because its permission to register a task definition does not depend on the definition's contents.
+- **The moment: a leak found by reading a regex.** The scrub matched exactly 12 digits. In #87 the security reviewer found, by reading the regex, that two invisible characters could join an id and a stray digit into 13 digits, which then printed in full (DEV-45). Two reviewer breakages are red on the fix. One survives, keeping the first pass at exactly 12; it is equivalent for safety, because the second pass scrubs every run of 12 or more (-47, accepted). The reviewer's edge-input probe found two residuals, both older than #92 and logged (-48): ids glued to a letter, and hyphen- or space-separated ids. The AWS CLI prints neither.
+- **The moment: the same gap on a sibling path.** DEV-46 pinned a refused DescribeTaskDefinition. The security review found the same untested gap on DescribeSecret: two breakages that count a refused secret as gone passed every test (sec-01, -49).
+  - It also found an older gap in the cluster check. That check does not tie AWS's answer to the cluster it asked about, and an empty answer counts as gone (-50).
+  - The owner sent -49 back to the worker along with three smaller items. -50 changes a decision, not a test, so it became a separate follow-up.
+- **The moment: the container no longer depends on the image for its user.** The task definition named no user, so the uid came only from the image's `USER node`. A breakage that set `user: "0"` passed every test (sec-03, -51). Round 2 pins `1000:1000` in the task definition, with a test. `user: '0'`, `'1000:0'`, `'node'` and a removed user are all red.
+  - Round 2 also pins that no Docker security option is set; an AppArmor `unconfined` breakage is red (-52). It corrects one comment: a setuid-root binary still sets euid 0, but gains no capability (-53).
+- **The moment: two timings, both recorded.** The reviewer measured `docker stop` at 0.22 s, and the security re-check at about 7 s. Both stops were SIGTERM, exit 143, which the init process forwarded. Both numbers are in the log, not just the faster one.
+- **Numbers.**
+  - **Deviations.** #92 added 7 rows to `deviations.md` (183 in all), none blocking. Six were fixed: -45 and -46 in round 1, then -49, -51, -52 and -53 in round 2. -47 is accepted, -48 logged, and -50 is open as a separate follow-up (owner, 2026-11-27).
+  - **Reviewer breakages, round 1.** 10 of 11 were red. The survivor is M7, accepted as -47. The reviewer also reproduced two of the security review's survivors, B17 and B20.
+  - **Reviewer breakages, round 2.** 15 of 16 were red. Only M7 survived again.
+  - **Security review breakages.** Round 1: 15 red and 5 survivors (B4, B8, B17, B18, B20). Round 2: every case red except B20, which is -50.
+  - **Not yet proven live.** Fargate running drop ALL, `initProcessEnabled` and user `1000:1000` together, and the live error text for a refused or throttled DescribeSecret. Both are for the next deploy run.
+- **Gate results (reviewer, `f5df283`, AWS credential files at `/dev/null`).** infra `pnpm verify` exit 0, "Tests 243 passed (243)", synth OK. The `rg` check found only two existing config comments in `infra/`. CI 12/12 green on `f5df283` (`gh pr checks 92`).
+- **Decision.** No blocking findings. The owner approved round 2 and said "yes, set it to verified". Not merged: the owner merges.

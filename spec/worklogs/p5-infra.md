@@ -1842,3 +1842,217 @@ Wrong turns:
 Gates (credentials pointed at /dev/null, run unpiped): infra `pnpm verify` exit 0,
 "Test Files  12 passed (12)", "Tests  236 passed (236)", "Successfully synthesized". gitleaks on the staged
 change: "no leaks found".
+
+## 2026-11-27, capabilities follow-up (worker): Q-p5-image-host-3 (a), DEV-p5-infra-45, -46
+
+Branch `convert/p5-infra-caps` from `origin/migration` (a439770, #91). The owner approved the follow-up on
+2026-11-27. Spec status line checked: APPROVED rev 2. No AWS command was run; synth and unit tests only.
+
+### 1. Q-p5-image-host-3 (a): drop every Linux capability for the API container (1b7a302)
+
+- `infra/src/demoStack.ts`: the API container's `ecs.LinuxParameters` keeps `initProcessEnabled: true` and
+  now calls `dropCapabilities(ecs.Capability.ALL)`. The synthesized `AscrumDemo` template reads
+  `"LinuxParameters": { "Capabilities": { "Drop": ["ALL"] }, "InitProcessEnabled": true }`.
+- Test (`demoStack.test.ts`, "Q-p5-image-host-3 (a): …"): exactly one container definition, and
+  `LinuxParameters` equals `{ InitProcessEnabled: true, Capabilities: { Drop: ['ALL'] } }` (so there is no
+  `Add`). There is no `Privileged`, because privileged mode would make ECS ignore `drop`.
+- **Only the API runs on ECS.** The stack has one `AWS::ECS::TaskDefinition` with one container. The web is
+  S3 + CloudFront (`WebBucket`, `Cdn`). Q-p5-image-host-3's "(a) for both containers" assumed nginx on ECS,
+  which this stack does not have, so nginx (uid 101, port 8080) has nothing to change here.
+- **Why nothing in the container needs a capability (by reading):** `docker/api.Dockerfile` ends with
+  `USER node` (uid 1000) and `EXPOSE 3000`, which is not a privileged port. The ECS entry point is `sh -c`
+  with `API_START_SCRIPT`: busybox sh, a `node -e` that builds a URL string, then `exec node`. The health
+  check is `node -e fetch(...)`. Nothing in `api/src` calls setuid, chown, chroot or similar. The ECS init
+  process (`initProcessEnabled`, Docker's `--init`) runs as the container's user. It only reaps children
+  and forwards signals to a process of the same uid, which needs no capability.
+- **Evidence (local, `docker run --cap-drop ALL --pull never`):** I built `ascrum-api:p5caps` (compose
+  project `ascrum-p5caps`, `IMAGE_TAG=p5caps`) and started its `db` (host port 56836). Then I ran the image
+  the way ECS does: `--entrypoint sh … -c 'exec node api/src/main.ts'`, `--init`, `--read-only`,
+  `--cap-drop ALL`, `APP_ENV=production`, `TRUST_PROXY_HOPS=2`, on host port 56831. One deliberate
+  difference: the local Postgres has no TLS, so I passed `DATABASE_URL` directly instead of the start
+  script's `sslmode=no-verify` URL.
+  - The log said `[api] listening on http://localhost:3000 (production mode)`, and `GET /healthz` returned
+    200 `{"status":"ok"}`.
+  - The ECS health-check command, run with `docker exec`, exited 0. `docker inspect` gave
+    `health=healthy capdrop=[ALL] init=true readonly=true user=node`.
+  - `/proc/<pid>/status` showed PID 1 (`/sbin/docker-init -- sh -c exec node api/src/main.ts`) and
+    `node api/src/main.ts` both at Uid 1000, with CapInh, CapPrm, CapEff, CapBnd and CapAmb all
+    `0000000000000000`.
+  - The same image without `--cap-drop` showed `CapEff: 0000000000000000` and `CapBnd: 00000000a80425fb`.
+  - So the API never used a capability (as uid 1000 its effective set is already empty). The drop empties
+    the bounding set, and the bounding set is what a file capability or a setuid binary would grant from
+    (DEV-p5-image-scan-14).
+  - I removed the containers afterwards (`docker rm -f`, `docker compose -p ascrum-p5caps down -v`).
+- **AWS documentation (read only):**
+  - Amazon ECS API Reference, *KernelCapabilities*
+    (https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_KernelCapabilities.html). `drop` lists
+    `"ALL"` as a valid value, with no Fargate restriction. Only `add` is restricted: "Tasks launched on AWS
+    Fargate only support adding the `SYS_PTRACE` kernel capability". Also: "When the `drop` request
+    parameter is set to ALL, the container capabilities are the capabilities specified in the `add`
+    request parameter" (none here), and in a privileged container `drop` is ignored (not used here).
+  - *LinuxParameters*
+    (https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_LinuxParameters.html). "For tasks that
+    use the Fargate launch type, `capabilities` is supported for all platform versions but the `add`
+    parameter is only supported if using platform version 1.4.0 or later." `initProcessEnabled` maps to
+    `--init` and carries no Fargate exclusion, while `devices`, `maxSwap`, `sharedMemorySize` and
+    `swappiness` each say they are not supported on Fargate.
+  - Not found: a sentence about the combination of `drop: ALL` and `initProcessEnabled` on Fargate. The
+    pages allow each one separately; the live run is the proof of the combination.
+- The deploy role is unchanged. The task definition is still registered by CloudFormation through the same
+  `ecs:RegisterTaskDefinition` call, and the new field is part of its body, not a new action. No question.
+- **What the owner's next deploy run should show:**
+  - The `AscrumDemo` change set registers the task definition without a validation error about
+    `linuxParameters`.
+  - The ECS service reaches steady state, and the circuit breaker does not trip.
+  - The container's health status is HEALTHY.
+  - The smoke tests pass through CloudFront (`/healthz` and a login).
+  - Optional, from the run's evidence: `describe-task-definition` shows
+    `linuxParameters.capabilities.drop = ["ALL"]` and `initProcessEnabled = true`.
+  - If the task stops at start with an error that names capabilities or init, that falsifies the
+    documentation reading above.
+
+### 2. DEV-p5-infra-45: scrub runs of 12 or more digits (4710e31)
+
+- `infra/scripts/aws.ts` `redact()`: `\b\d{12}\b` became `\b\d{12,}\b`. `printable()` calls `redact()` on
+  the raw text and again after the deletion, so both passes changed.
+  - **Second pass:** this is the fix. `1<U+00AD>123456<U+00AD>789012` joins into `1123456789012`, which is
+    now `***`.
+  - **First pass:** it now uses the same rule, so `redact()` stays one function. A mutant that kept the
+    first pass at exactly 12 digits passed all 21 `aws.test.ts` tests, because the second pass catches
+    every run of 12 or more digits anyway. The first pass still decides the shape when a digit is glued
+    to a whole id (`*** 3`, and the mirror case `1 ***`). It also applies to the direct `redact()` calls
+    (the leftover reason in `leftovers.ts`, and the bucket name in `destroy.ts`), where a 13-digit run is
+    now scrubbed too.
+  - **Over-redaction (checked):** nothing these scripts print needs a number of 12 or more digits.
+    Timestamps are ISO dates (digits split by `-`, `:` and `.`) or epoch seconds (10 digits). ARNs carry
+    the account id, which was already scrubbed. Task ids, image digests and stack-id UUIDs are hex, and
+    `\b` keeps digits inside them unless the run is all digits between non-word characters. An epoch in
+    milliseconds (13 digits) would now print `***`. None is printed today, and over-scrubbing is the safe
+    direction. The `\b` anchors are kept: the deletion only ever joins digit to digit, so it cannot glue a
+    run onto a letter, and dropping `\b` would start scrubbing inside hex ids.
+- Tests (`aws.test.ts`, describe "DEV-p5-infra-45 (sec-10)"):
+  - the split-and-glued input prints no 12 or more digits in a row (`id *** x`);
+  - plain 12-, 13- and 20-digit ids are scrubbed by both `printable()` and `redact()`, and so is a 13-digit
+    account in an ARN;
+  - an 11-digit number, short numbers, a 10-digit epoch, an ISO timestamp, a hex task id and a hex digest
+    with a 16-digit run inside are unchanged.
+- Red/green: with the old exact-12 regex put back, "Tests 2 failed | 19 passed (21)" (`id 1123456789012 x`
+  printed, and `id 1234567890123 x` was not scrubbed). Restored: 21 passed.
+
+### 3. DEV-p5-infra-46: a refused DescribeTaskDefinition stays LEFTOVER (23ca79c, test only)
+
+- `leftovers.test.ts`, "DEV-p5-infra-46: a refused DescribeTaskDefinition is never gone; …". An
+  AccessDeniedException from describe-task-definition (with an account id in the stderr) gives
+  `ok` false, `gone` [], `remaining` [the task definition], and the line contains
+  `(describe refused: AccessDeniedException)` and not the account id.
+- Reviewer's D4 mutation (the "gone" pattern widened to
+  `/not found|does not exist|Unable to describe|AccessDenied/i`): "Tests 1 failed | 60 passed (61)". Only
+  the new test failed (`expected true to be false` on `report.ok`). Reverted from a saved copy, and
+  `git status` showed only the test file changed: 61 passed.
+
+### Wrong turns and guard refusals
+
+- My first DEV-45 test expected `arn:aws:sts::1<U+200B>123456789012:role` to print `arn:aws:sts::***:role`.
+  It printed `arn:aws:sts::1 ***:role`, because the first pass had already scrubbed the whole id, so the
+  stray digit was left on its own. That is the designed shape (the mirror of `*** 3`) and prints no
+  account id, so the test's expectation was wrong, not the code. I corrected the expectation.
+- One Edit call on `demoStack.test.ts` was a no-op (old and new text identical) and was rejected. The real
+  test went in with the next edit.
+- The worktree guard refused three commands. Quoted word for word, with the worktree's absolute path
+  replaced by `<worktree>` (this repo is public):
+  1. A `cat >> … <<EOF` append followed by a test run: "This agent is isolated in the worktree <worktree>,
+     but this command is too complex to verify that it stays inside the worktree. Refusing to run it — a
+     worktree-isolated agent's git operations must target its own worktree. Split it into plain, separate
+     commands and run them from <worktree>." I used the Edit tool and ran the tests as a separate command.
+  2. Loading nvm to switch to Node 24: "This agent is isolated in the worktree <worktree>, but this command
+     runs a string through source, which can't be verified to stay inside the worktree. Refusing to run it
+     — a worktree-isolated agent's git operations must target its own worktree. Run git directly with
+     literal arguments from <worktree>." I did not retry it in another form. Instead, every command put
+     the installed Node 24 directory first on `PATH` (the shell's default `node` was 22).
+  3. `git status` combined with a test run: "This agent is isolated in the worktree <worktree>, but this
+     command names git in a form too complex to verify that it stays inside the worktree. Refusing to run
+     it — a worktree-isolated agent's git operations must target its own worktree. Split it into plain,
+     separate commands and run them from <worktree>." I split it into two plain commands.
+- The worktree had no `node_modules`, so `pnpm install --frozen-lockfile` from `web/` came first (lockfiles
+  unchanged; "Lockfile is up to date").
+
+### Gates (this session; every AWS credential source at `/dev/null`; no AWS command; run unpiped)
+
+infra `pnpm verify` exit 0: prettier "All matched files use Prettier code style!", tsc clean,
+"Test Files  12 passed (12)", "Tests  241 passed (241)", "Successfully synthesized".
+gitleaks was **not run**: it is not installed on this machine (`gitleaks: command not found`). Instead, a
+grep of the whole diff against `origin/migration` for local paths, user names and e-mail addresses found
+nothing. CI's secret scan is the check of record.
+
+## 2026-11-27, capabilities follow-up, round 2 (worker): DEV-p5-infra-49, -51, -52, -53
+
+The owner approved round 2 for #92. Both reviews were non-blocking. I fast-forwarded onto the reviewer's
+`29a8202` (`git pull --ff-only`; that commit changed only `MIGRATION.md` and `spec/deviations.md`, which I
+did not edit). -50 is a separate follow-up; -47 and -48 stay as they are. No AWS command was run.
+
+### -49 (sec-01): a refused or throttled DescribeSecret stays LEFTOVER (e593685, test only)
+
+- `leftovers.test.ts`, "DEV-p5-infra-49: a refused or throttled DescribeSecret is never gone; …". It
+  mirrors -46. For an AccessDeniedException and for a ThrottlingException from describe-secret (each
+  stderr carries an account id), the check gives `ok` false, `gone` [], and `remaining` [the secret]. The
+  line contains `(describe refused: AccessDeniedException)` or `(describe failed: ThrottlingException)`,
+  and not the account id.
+- Mutations of the secret's gone pattern (`leftovers.ts:84`), each applied to a saved copy and then
+  restored:
+  - B17 `/ResourceNotFoundException|AccessDenied/`: "Tests 1 failed | 61 passed (62)". The new test failed
+    on the refused case (`expected true to be false` on `report.ok`).
+  - B18 `/ResourceNotFoundException|Exception/`: "Tests 1 failed | 61 passed (62)", the same test, failing
+    first on the refused case. The test loops over the two cases and stops at the first failure, so B18's
+    effect on the throttled case is not shown separately. Under B18 that case would also be counted as
+    gone, because "ThrottlingException" matches `Exception`.
+  - After the restore, `git status` showed only the test file changed: 62 passed.
+
+### -51 (sec-03): the API container's user pinned to 1000:1000 (4fcf9f5)
+
+- `demoStack.ts`: `user: '1000:1000'` on the API container. The synthesized template has
+  `"User": "1000:1000"`.
+- Test: "DEV-p5-infra-51: … runs as uid:gid 1000:1000 …", `expect(container?.User).toBe('1000:1000')`.
+- **Evidence that `node` is 1000:1000, read on the host without running the image:**
+  - `docker image inspect` gave `User=node` and the 12 layer diff_ids.
+  - I ran `docker save` and unpacked it into the scratchpad, then
+    `node docker/image-fs.ts read <folder> <diff_ids> <model>`, which printed "read 12 layers, 1256 paths
+    in the final filesystem".
+  - `image-fs.ts uid <model> node` printed `1000`.
+  - `image-fs.ts cat <model> /etc/passwd` has `node:x:1000:1000::/home/node:/bin/sh`.
+  - `/etc/group` has `node:x:1000:node`.
+- **Local run** (`ascrum-api:p5caps`, compose project `ascrum-p5caps`, db port 56836, API port 56832):
+  - Run with `--user 1000:1000 --cap-drop ALL --init --read-only --pull never`, the `sh -c` entry point
+    and production mode (as in round 1, `DATABASE_URL` given directly because local Postgres has no TLS).
+  - `/healthz` returned 200 `{"status":"ok"}`, and the log said `[api] listening on
+    http://localhost:3000 (production mode)`.
+  - `id` gave `uid=1000(node) gid=1000(node) groups=1000(node)`. PID 1 had Uid and Gid all 1000, Groups
+    `1000`, and CapEff and CapBnd both `0000000000000000`.
+  - `docker inspect` gave `health=healthy user=1000:1000 capdrop=[ALL] init=true readonly=true`.
+  - I removed the container, the db and the volume afterwards, and deleted the saved image from the
+    scratchpad.
+- Mutation `user: '0'`: "Tests 1 failed | 22 passed (23)" (`expected '0' to be '1000:1000'`). Restored.
+
+### -52 (sec-04): no DockerSecurityOptions (4fcf9f5)
+
+- The capabilities test adds `expect(container).not.toHaveProperty('DockerSecurityOptions')`. The
+  synthesized template has none.
+- Mutation `dockerSecurityOptions: ['apparmor:unconfined']`: "Tests 1 failed | 22 passed (23)" (expected
+  not to have property "DockerSecurityOptions"; received `["apparmor:unconfined"]`). Restored.
+
+### -53 (sec-05): the comment's wording (4fcf9f5)
+
+- The `demoStack.ts` comment now says that, with an empty bounding set, a file capability or a setuid
+  binary "cannot give a process any capability". A setuid-root binary still sets euid 0, but with no
+  capability (capabilities(7)). The comment also says that `check-images.sh` still fails the image on any
+  setuid or setgid file and on any xattr.
+
+### Wrong turn
+
+- My first `pnpm verify` stopped at prettier: `[warn] src/demoStack.test.ts`. The -51 test name used `\'`
+  inside single quotes, and prettier wants double quotes there. I ran `prettier --write` on that one file
+  (a one-line change) and committed it separately (abcddc7). No guard refused a command this round.
+
+### Gates (this session; every AWS credential source at `/dev/null`; no AWS command; run unpiped)
+
+infra `pnpm verify` exit 0 (after the prettier fix): "All matched files use Prettier code style!", tsc
+clean, "Test Files  12 passed (12)", "Tests  243 passed (243)", "Successfully synthesized".
