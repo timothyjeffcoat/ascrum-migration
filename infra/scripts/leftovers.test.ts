@@ -480,6 +480,19 @@ describe('AC-AWS-04: the final leftover check', () => {
       expect(lineFor(report, TASK_DEF)).toContain('(describe failed: ThrottlingException)')
     })
 
+    it('DEV-p5-infra-46: a refused DescribeTaskDefinition is never gone; the task definition stays LEFTOVER with "describe refused"', async () => {
+      const report = await failingOne(
+        { stacks: {}, tagged: tagged(TASK_DEF) },
+        'describe-task-definition',
+        `An error occurred (AccessDeniedException) when calling the DescribeTaskDefinition operation: User: arn:aws:sts::${ACCOUNT}:assumed-role/x is not authorized to perform: ecs:DescribeTaskDefinition`,
+      )
+      expect(report.ok).toBe(false)
+      expect(report.gone).toEqual([])
+      expect(report.remaining).toEqual([TASK_DEF])
+      expect(lineFor(report, TASK_DEF)).toContain('(describe refused: AccessDeniedException)')
+      expect(lineFor(report, TASK_DEF)).not.toContain(ACCOUNT)
+    })
+
     it('DEV-p5-infra-37: a DescribeSecret error other than not-found says "describe failed" and the secret is still LEFTOVER', async () => {
       const report = await failingOne(
         { stacks: {}, tagged: tagged(SECRET) },
