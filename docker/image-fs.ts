@@ -18,10 +18,11 @@
 //   node docker/image-fs.ts node-packages <model.json>        name@version of every package.json
 //   node docker/image-fs.ts layers <base.json> <model.json> <expected history file>
 //   node docker/image-fs.ts added <base.json> <model.json> <packages the apk line names> <root>...
+//   node docker/image-fs.ts header-include <model.json> <path>  the nginx header include: header lines only
 //
 // Fails closed: an unreadable or unknown blob, a digest that does not match, a compression it does not
 // know, a tar entry type or PAX key it does not know, a malformed header, a path with `..`, an entry under
-// a symlink, a hard link to nothing: each is an error and exit 1, never a partial model. The checks print
+// a symlink, a hard link to nothing: each is an error and exit 2, never a partial model. The checks print
 // one finding per line and exit 1 if there is any; check-images.sh counts them.
 import { createHash, type Hash } from 'node:crypto'
 import { createReadStream, lstatSync, readFileSync, writeFileSync } from 'node:fs'
@@ -83,7 +84,10 @@ const keepContent = (path: string): boolean =>
 // C0 controls and DEL (a character test, not a regex: lint refuses control characters in one).
 const hasControl = (s: string): boolean => [...s].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f)
 // What this reader prints (findings, errors) shows a control character as \xNN, tab included, so no
-// image-derived text can start a new log line or a workflow command (DEV-p5-image-host-05).
+// image-derived text can start a new log line (DEV-p5-image-host-05). It is also kept from being read as a
+// workflow command (DEV-p5-image-host-13 / sec-09), the same way docker/log-safe.sh does it for the scripts: the runner takes
+// `##[` anywhere in a line as its old command form, so every `##[` becomes `##(`, and a `::` at the start
+// of a line (after blanks) becomes `:?:`.
 const printable = (s: string): string =>
   [...s]
     .map((c) => {
@@ -91,6 +95,8 @@ const printable = (s: string): string =>
       return n < 0x20 || n === 0x7f ? `\\x${n.toString(16).padStart(2, '0')}` : c
     })
     .join('')
+    .replaceAll('##[', '##(')
+    .replace(/^([ \t]*)::/, '$1:?:')
 function normalise(raw: string, what: string): string {
   if (raw.includes('\0')) fatal(`${what}: a NUL byte in the name`)
   // DEV-p5-image-host-05: a control character (CR, ESC, ...) in a path could forge a workflow command
@@ -1009,6 +1015,40 @@ function added(base: Model, model: Model, allowed: string[], roots: string[]): s
   return findings
 }
 
+// The nginx header include (DEV-p5-image-host-03, owner's answer: header lines only; -12 / sec-08). The build
+// stage writes it and nginx includes it inside `server {}`, so anything but header lines is server config
+// from the build stage. The bytes come first: every byte must be printable ASCII (0x20-0x7e), a tab or a
+// newline, before any line is matched. A NUL made GNU grep treat the file as binary and match nothing
+// (WB6), while nginx skipped the NUL inside a comment and applied a `location` on the line before; CR,
+// other C0 bytes, DEL, a BOM and anything at or above 0x80 are refused the same way. Then every line is
+// blank, a comment, or one directive exactly as docker/web/security-headers.ts writes it:
+// `add_header <name> "<value>" always;` (no `"`, `$` or backslash in the value) or `proxy_hide_header
+// <name>;`. No `{`, `}`, `include`, variable or escape, nothing after the `;`, and at least one header.
+function headerInclude(model: Model, path: string): { findings: string[]; adds: number; hides: number } {
+  const bytes = contentOf(model, path)
+  const findings: string[] = []
+  let line = 1
+  for (const b of bytes) {
+    if (b === 0x0a) line++
+    else if (b !== 0x09 && (b < 0x20 || b > 0x7e)) {
+      findings.push(
+        `/${path}: line ${line} has byte 0x${b.toString(16).padStart(2, '0')}, which is not printable ASCII`,
+      )
+    }
+  }
+  if (findings.length > 0) return { findings, adds: 0, hides: 0 }
+  let adds = 0
+  let hides = 0
+  for (const [i, text] of bytes.toString('latin1').split('\n').entries()) {
+    if (/^[ \t]*(#.*)?$/.test(text)) continue
+    if (/^add_header [A-Za-z0-9-]+ "[^"$\\]+" always;$/.test(text)) adds++
+    else if (/^proxy_hide_header [A-Za-z0-9-]+;$/.test(text)) hides++
+    else findings.push(`/${path}: line ${i + 1} is not one add_header or proxy_hide_header directive`)
+  }
+  if (findings.length === 0 && adds === 0) findings.push(`/${path}: no add_header line, so no security header is sent`)
+  return { findings, adds, hides }
+}
+
 // --- CLI ------------------------------------------------------------------------------------------
 const [command, ...args] = process.argv.slice(2)
 const report = (findings: string[]) => {
@@ -1066,6 +1106,14 @@ try {
         ),
       )
       break
+    case 'header-include': {
+      const { findings, adds, hides } = headerInclude(load(args[0] as string), normalise(args[1] ?? '', 'path'))
+      report(findings)
+      if (findings.length === 0) {
+        console.log(`/${args[1] ?? ''}: ${adds} add_header and ${hides} proxy_hide_header lines, nothing else`)
+      }
+      break
+    }
     default:
       fatal(`unknown command '${command ?? ''}'`)
   }

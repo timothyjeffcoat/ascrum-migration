@@ -56,12 +56,12 @@ command -v "$gitleaks" > /dev/null || {
   exit 2
 }
 
-# Image-derived text (a path, a package name, a USER) reaches these lines. Each control character,
-# newline and CR included, becomes "?", so no such text can start a new log line or a workflow
-# command (DEV-p5-image-host-05). The reader already refuses control characters in paths.
-printable() { printf '%s' "$*" | LC_ALL=C tr '\000-\010\012-\037\177' '?'; }
+# Image-derived text (a path, a package name, a USER, the API's log line) reaches these lines; it is
+# printed only through log_safe or log_safe_lines (DEV-p5-image-host-05, -13 / sec-09; the rules are in the file).
+# shellcheck source=docker/log-safe.sh
+source "$(dirname "$0")/log-safe.sh"
 fail() {
-  echo "check-images FAIL: $(printable "$*")" >&2
+  echo "check-images FAIL: $(log_safe "$*")" >&2
   findings=$((findings + 1))
 }
 
@@ -110,7 +110,7 @@ check_user() {
     return
   fi
   [[ $uid != 0 ]] || fail "$image: USER '$user' is uid 0 in the image's /etc/passwd"
-  echo "$image: USER=$(printable "$user"), which is uid $uid in its /etc/passwd"
+  echo "$image: USER=$(log_safe "$user"), which is uid $uid in its /etc/passwd"
 }
 
 # No setuid or setgid file anywhere in the image's final filesystem (DEV-p5-image-scan-12: a
@@ -133,7 +133,7 @@ findings_of() {
   shift
   out=$(image_fs "$@") && rc=0 || rc=$?
   if ((rc == 0)); then
-    [[ -z $out ]] || echo "$image: $(printable "$out")"
+    [[ -z $out ]] || echo "$image: $(log_safe "$out")"
     return 0
   elif ((rc == 1)); then
     while IFS= read -r line; do fail "$image: $line"; done <<< "$out"
@@ -339,8 +339,10 @@ check_secrets() {
   rm "$dir/all.txt"
   docker image inspect "$image" > "$dir/inspect.json"
   # Gitleaks' default rules only: no config or ignore file from the environment or the scanned folder.
+  # Its report quotes the image's own history and config, so it is printed through log_safe_lines. With
+  # pipefail the pipeline fails when Gitleaks does (or the filter does), so the result is still Gitleaks'.
   if ! (cd "$dir" && env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML "$gitleaks" dir --no-banner --redact \
-    --verbose --log-level warn --ignore-gitleaks-allow "$dir"); then
+    --verbose --log-level warn --ignore-gitleaks-allow "$dir") 2>&1 | log_safe_lines; then
     fail "$image: Gitleaks found a secret in the image's own layers or its config (findings above, redacted)"
   fi
   # A credential with too little entropy for Gitleaks still has a telltale name.
@@ -675,11 +677,11 @@ check_apk() {
   if [[ $mode == floors ]]; then apk_named=("${floors[@]%%>=*}"); else apk_named=("${removed[@]}" "${API_ALSO_REMOVED[@]}"); fi
   check_runtime_changes "$image" "$dockerfile" "$model" "$base_model" "$(IFS=,; echo "${apk_named[*]}")"
   if ((findings == before)); then
-    echo "$image: $(printable "$summary")"
+    echo "$image: $(log_safe "$summary")"
     if [[ $mode == floors ]]; then
       echo "$image: /etc/apk repositories, keys and config identical to $base; world is the base's plus the ${#floors[@]} floors"
     else
-      echo "$image: /etc/apk adds or changes nothing against $base (gone with apk: ${gone:-nothing}); world is the base's minus the removed packages"
+      echo "$image: /etc/apk adds or changes nothing against $base (gone with apk: $(log_safe "${gone:-nothing}")); world is the base's minus the removed packages"
     fi
   fi
 }
@@ -843,7 +845,7 @@ check_startup() {
   done
   if [[ $status == 'running healthy' ]] &&
     docker exec "$api" node -e "fetch('http://127.0.0.1:3000/healthz').then(async (r) => { const b = await r.text(); console.log(r.status, b); process.exit(r.status === 200 && b === '{\"status\":\"ok\"}' ? 0 : 1) }, () => process.exit(1))" > "$work/healthz.txt"; then
-    echo "$image: starts with only DATABASE_URL and answers /healthz: $(cat "$work/healthz.txt"); $(docker logs "$api" 2>&1 | grep -m1 'listening' || echo 'no start-up line')"
+    echo "$image: starts with only DATABASE_URL and answers /healthz: $(log_safe "$(cat "$work/healthz.txt"); $(docker logs "$api" 2>&1 | grep -a -m1 'listening' || echo 'no start-up line')")"
   else
     fail "$image: does not start and answer /healthz (state: $status). Last log lines: $(docker logs --tail 15 "$api" 2>&1)"
   fi
@@ -863,7 +865,7 @@ while read -r dev; do
   ! grep -qE "$pattern" "$work/api.txt" || fail "$api_image: dev dependency $dev is installed"
 done < <(jq -r '.devDependencies // {} | keys[]' api/package.json)
 # And what is installed is exactly the production tree: pg and the packages pg depends on.
-echo "$api_image: installed packages: $(grep -oE '^app/api/node_modules/\.pnpm/[^/]+/$' "$work/api.txt" | sed -E 's|.*/\.pnpm/||; s|/$||' | grep -v '^node_modules$' | sort | tr '\n' ' ')"
+echo "$api_image: installed packages: $(log_safe "$(grep -oE '^app/api/node_modules/\.pnpm/[^/]+/$' "$work/api.txt" | sed -E 's|.*/\.pnpm/||; s|/$||' | grep -v '^node_modules$' | sort | tr '\n' ' ')")"
 
 # --- web ---------------------------------------------------------------------------------------
 check_user "$web_image" "$work/web.model.json"
@@ -886,22 +888,14 @@ check_apk "$web_image" docker/web.Dockerfile floors "$work/web.model.json" "$wor
 # must be blank, a comment, or one directive the generator writes: `add_header <name> "<value>" always;` or
 # `proxy_hide_header <name>;` (it drops the API's copy of a header; it opens nothing). No `{`, `}`,
 # `include`, variable or escape, and nothing after the `;`. Only line numbers are printed, never the text.
+#
+# The check itself is in docker/image-fs.ts (`header-include`), on the file's bytes (DEV-p5-image-host-12 / sec-08): it refuses
+# any byte that is not printable ASCII, a tab or a newline before it matches a line. A grep here could not
+# be trusted with the file: a NUL made GNU grep treat it as binary, print nothing and exit 0 (WB6), while
+# nginx applied the `location` on the line before the NUL. Any exit but 0 fails.
 check_header_include() {
-  local image=$1 model=$2 conf=etc/nginx/ascrum/security-headers.conf bad count
-  if ! image_fs cat "$model" "$conf" > "$work/security-headers.conf"; then
-    fail "$image: could not read /$conf from its layers"
-    return
-  fi
-  count=$(grep -cE '^add_header ' "$work/security-headers.conf" || true)
-  bad=$(LC_ALL=C grep -nvE '^[[:blank:]]*(#.*)?$|^add_header [A-Za-z0-9-]+ "[^"$\\[:cntrl:]]+" always;$|^proxy_hide_header [A-Za-z0-9-]+;$' \
-    "$work/security-headers.conf" | cut -d: -f1 | tr '\n' ' ' || true)
-  if [[ -n $bad ]]; then
-    fail "$image: /$conf has lines that are not one add_header or proxy_hide_header directive (line ${bad% })"
-  elif ((count == 0)); then
-    fail "$image: /$conf has no add_header line, so the site would send no security header"
-  else
-    echo "$image: /$conf is $count add_header lines and their proxy_hide_header lines only (read on the host)"
-  fi
+  local image=$1 model=$2
+  findings_of "$image" header-include "$model" etc/nginx/ascrum/security-headers.conf || true
 }
 check_header_include "$web_image" "$work/web.model.json"
 

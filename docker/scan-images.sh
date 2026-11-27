@@ -78,6 +78,12 @@ image_fs_ts="$(cd "$(dirname "$0")" && pwd)/image-fs.ts"
   exit 2
 }
 image_fs() { node "$image_fs_ts" "$@"; }
+# Image-derived text (Trivy reads package names, versions and the OS name from the image; the window's
+# state carries the installed version) is printed only through log_safe or log_safe_lines
+# (DEV-p5-image-host-05, -13 / sec-09; the rules are in the file). Sourced here, before the script leaves its
+# folder.
+# shellcheck source=docker/log-safe.sh
+source "$(cd "$(dirname "$0")" && pwd)/log-safe.sh"
 while read -r name; do unset "$name"; done < <(compgen -e | grep '^TRIVY_' || true)
 # Exactly the release .github/actions/setup-trivy pins (DEV-p5-image-scan-04 (a)): move both together.
 PINNED_TRIVY_VERSION=0.76.2
@@ -95,14 +101,8 @@ reports=$(cd "$reports" && pwd)
 mkdir "$work/empty"
 cd "$work/empty"
 findings=0
-# Image-derived text (Trivy reads package names, versions and the OS name from the image) reaches these
-# lines. In a message each control character, newline and CR included, becomes "?"; in the finding
-# lists (one per line, from jq's @tsv, which already escapes tab, newline and CR) every other control
-# character does. So no such text can start a log line or a workflow command (DEV-p5-image-host-05).
-printable() { printf '%s' "$*" | LC_ALL=C tr '\000-\010\012-\037\177' '?'; }
-printable_lines() { LC_ALL=C tr '\000-\010\013-\037\177' '?'; }
 fail() {
-  echo "scan-images FAIL: $(printable "$*")" >&2
+  echo "scan-images FAIL: $(log_safe "$*")" >&2
   findings=$((findings + 1))
 }
 
@@ -191,9 +191,9 @@ check_report() {
   blocking=$(sed '/^$/d' <<< "$blocking")
   if [[ -n $blocking ]]; then
     fail "$image ($pass): $(wc -l <<< "$blocking") finding(s) that fail the scan:"
-    awk -F'\t' '{ printf "  %s\t%s\t%s\t%s\n", $3, $4, $5, $6 }' <<< "$blocking" | sort | printable_lines >&2
+    awk -F'\t' '{ printf "  %s\t%s\t%s\t%s\n", $3, $4, $5, $6 }' <<< "$blocking" | sort | log_safe_lines >&2
   fi
-  echo "$image ($pass): $(printable "$os"), $pkgs OS packages (as apk lists them), $(jq '[.Results[]? | select(.Class == "lang-pkgs") | .Packages[]?] | length' "$report") language packages; $(sed '/^$/d' <<< "$all" | wc -l) finding(s), $( [[ -n $blocking ]] && wc -l <<< "$blocking" || echo 0) failing"
+  echo "$image ($pass): $(log_safe "$os"), $pkgs OS packages (as apk lists them), $(jq '[.Results[]? | select(.Class == "lang-pkgs") | .Packages[]?] | length' "$report") language packages; $(sed '/^$/d' <<< "$all" | wc -l) finding(s), $( [[ -n $blocking ]] && wc -l <<< "$blocking" || echo 0) failing"
 }
 # apk's installed packages (name<TAB>version), read on the host from the image's layers: `docker save`,
 # then docker/image-fs.ts checks the digests against the engine's diff_ids and rebuilds the final
@@ -225,13 +225,13 @@ scan() {
     --skip-version-check --skip-db-update --image-src docker --scanners vuln --list-all-pkgs --format json
     --exit-code 0)
   if ! "$trivy" image "${common[@]}" --pkg-types os,library --severity HIGH,CRITICAL \
-    --output "$reports/$label.json" "$image"; then
+    --output "$reports/$label.json" "$image" 2> >(log_safe_lines >&2); then
     fail "$image (HIGH/CRITICAL pass): Trivy could not scan it (its log is above)"
   else
     check_report "$image" "$label" 'HIGH/CRITICAL pass' "$reports/$label.json" "$apk_pkgs" "$in_window"
   fi
   if ! "$trivy" image "${common[@]}" --pkg-types os --ignore-unfixed \
-    --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --output "$reports/$label-os-fixed.json" "$image"; then
+    --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --output "$reports/$label-os-fixed.json" "$image" 2> >(log_safe_lines >&2); then
     fail "$image (fixed OS pass): Trivy could not scan it (its log is above)"
   else
     check_report "$image" "$label" 'fixed OS pass' "$reports/$label-os-fixed.json" "$apk_pkgs" "$in_window"
@@ -244,12 +244,12 @@ scan "$2" web
 {
   echo "=============================================================================================="
   echo "NGINX WINDOW (owner's answer to Q-p5-image-scan-2 (c)), web image only, package '$WINDOW_PACKAGE' only:"
-  echo "  state: ${window_reason:-not evaluated (the web image could not be read)}"
+  echo "  state: $(log_safe "${window_reason:-not evaluated (the web image could not be read)}")"
   echo "  closes when the web image's installed nginx >= $WINDOW_CLOSES_AT_NGINX, or after $WINDOW_EXPIRES (UTC)."
   echo "  Every other finding, in either image, fails the scan now."
   if ((${#windowed[@]} > 0)); then
     echo "  Reported inside the window (NOT failing, NOT fixed):"
-    printf '    %s\n' "${windowed[@]}" | sort | printable_lines
+    printf '    %s\n' "${windowed[@]}" | sort | log_safe_lines
   else
     echo "  Nothing reported inside the window."
   fi
@@ -261,6 +261,7 @@ scan "$2" web
 gha_data() {
   local s
   s=$(printf '%s' "$1" | LC_ALL=C tr -cd '\r\n -~')
+  s=${s//'##['/'##('} # the runner's old command form, as log_safe (DEV-p5-image-host-13)
   s=${s//'%'/%25}
   s=${s//$'\r'/%0D}
   s=${s//$'\n'/%0A}

@@ -47,12 +47,12 @@ if ((node_major < 24)); then
 fi
 image_fs() { node docker/image-fs.ts "$@"; }
 findings=0
-# Image-derived text (a path, a package name, a USER) reaches these lines. Each control character,
-# newline and CR included, becomes "?", so no such text can start a new log line or a workflow
-# command (DEV-p5-image-host-05). The reader already refuses control characters in paths.
-printable() { printf '%s' "$*" | LC_ALL=C tr '\000-\010\012-\037\177' '?'; }
+# Image- and Trivy-derived text (paths, package names and versions) reaches these lines; it is printed
+# only through log_safe (DEV-p5-image-host-05, -13 / sec-09; the rules are in the file).
+# shellcheck source=docker/log-safe.sh
+source "$(dirname "$0")/log-safe.sh"
 fail() {
-  echo "check-scan-coverage FAIL: $(printable "$*")" >&2
+  echo "check-scan-coverage FAIL: $(log_safe "$*")" >&2
   findings=$((findings + 1))
 }
 work=$(mktemp -d)
