@@ -42,21 +42,31 @@ jobs:
       # DEV-p5-image-host-07 (Q-p5-image-host-4 (a)): the image reader's fail-closed branches, on crafted
       # `docker save` folders, and log-safe.sh's escaping. Node's own test runner, on the Node 24 setup-web
       # installed; no Docker. DEV-p5-image-host-18: the file is named, so a missing or renamed file fails
-      # (a glob that matches nothing passes), and a skipped or todo test, or a run with no test, fails the
-      # step from the TAP summary (node:test reports both with exit 0). A failing test fails it first.
-      - name: Image reader tests (docker/image-fs.test.ts), none skipped
+      # (a glob that matches nothing passes). A failing test, or a throw while loading, fails node first.
+      # node:test exits 0 on a skipped or todo test, suite or t.skip(), and on a process.exit(0) mid-run, so
+      # the step then reads the TAP copy (DEV-p5-image-host-18, sec-r3-01): no `# SKIP` or `# TODO`
+      # directive anywhere (a skipped suite is not counted in the summary's `# skipped`), and `# tests` in
+      # the summary equals the number of tests the file defines. That number is counted from the file
+      # itself, one `it(` per line start (prettier writes every test so), so no count is kept by hand; a
+      # test made in a loop would make the two differ and fail the step until this is changed with it.
+      - name: Image reader tests (docker/image-fs.test.ts), every test run
         working-directory: .
         run: |
+          file=docker/image-fs.test.ts
           tap="$RUNNER_TEMP/image-fs.tap"
-          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination="$tap" docker/image-fs.test.ts
-          # The run's summary is the TAP file's last 8 lines (tests, suites, pass, fail, cancelled, skipped,
-          # todo, duration_ms); a test's own `#` output earlier in the file cannot stand in for it.
+          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination="$tap" "$file"
+          defined=$(grep -cE '^[[:space:]]*it\(' "$file")
+          # The summary is the TAP file's last 8 lines (tests, suites, pass, fail, cancelled, skipped, todo,
+          # duration_ms); a test's own `#` output earlier in the file cannot stand in for it.
           summary=$(tail -n 8 "$tap")
-          grep -qx '# skipped 0' <<< "$summary" && grep -qx '# todo 0' <<< "$summary" && grep -qxE '# tests [1-9][0-9]*' <<< "$summary" || {
-            echo "image reader tests: a test was skipped or todo, or none ran"
+          if grep -qE '^[[:space:]]*(not )?ok [0-9]+ - .* # (SKIP|TODO)([[:space:]]|$)' "$tap" ||
+            ! grep -qx "# tests $defined" <<< "$summary" || ! grep -qx '# skipped 0' <<< "$summary" ||
+            ! grep -qx '# todo 0' <<< "$summary"; then
+            echo "image reader tests: $file defines $defined tests, and not all of them ran, or one was skipped or todo"
+            grep -E '^[[:space:]]*(not )?ok [0-9]+ - .* # (SKIP|TODO)([[:space:]]|$)' "$tap" || true
             echo "$summary"
             exit 1
-          }
+          fi
 
   build:
     runs-on: ubuntu-latest
