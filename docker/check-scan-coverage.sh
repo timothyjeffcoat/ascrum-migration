@@ -10,6 +10,13 @@
 #   - language packages: in the HIGH/CRITICAL pass (`--pkg-types os,library`), the set Trivy read
 #     (name@version and file) must equal every package.json with a name and a version in the image's final
 #     filesystem, also read on the host; the fixed-OS pass (`--pkg-types os`) must read none.
+# What this rests on (DEV-p5-image-host-09): the scan and this check both trust apk's installed database.
+# Trivy reads its OS packages from that database, and so does the host side here, so "every OS package"
+# means every package in the database. A rewritten database is not caught here: the reviewer's H2b
+# rewrote it without nginx in an earlier stage and laid it over the real one with a COPY, and the scan,
+# its window and this check all passed with /usr/sbin/nginx still in the image. docker/check-images.sh
+# is what catches that (a package removed that the apk line does not name, a COPY layer outside its
+# roots); it runs in the same required CI job, so the job is red.
 # The nginx window is decided in one place only, docker/scan-images.sh, which also reads its facts on the
 # host (owner's answer to Q-p5-image-host-1 (b)).
 #
@@ -40,8 +47,12 @@ if ((node_major < 24)); then
 fi
 image_fs() { node docker/image-fs.ts "$@"; }
 findings=0
+# Image-derived text (a path, a package name, a USER) reaches these lines. Each control character,
+# newline and CR included, becomes "?", so no such text can start a new log line or a workflow
+# command (DEV-p5-image-host-05). The reader already refuses control characters in paths.
+printable() { printf '%s' "$*" | LC_ALL=C tr '\000-\010\012-\037\177' '?'; }
 fail() {
-  echo "check-scan-coverage FAIL: $*" >&2
+  echo "check-scan-coverage FAIL: $(printable "$*")" >&2
   findings=$((findings + 1))
 }
 work=$(mktemp -d)

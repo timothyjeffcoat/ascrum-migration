@@ -70,16 +70,33 @@ function fatal(message: string): never {
 }
 
 // Contents kept for the files the checks read: apk's database and config, the user database, and every
-// package.json (the language-package list the scan coverage is compared with, DEV-p5-image-scan-04 (b)).
+// package.json (the language-package list the scan coverage is compared with, DEV-p5-image-scan-04 (b)),
+// and the nginx header include the build stage writes (checked line by line, DEV-p5-image-host-03).
 const KEEP_MAX = 4 * 1024 * 1024
 const keepContent = (path: string): boolean =>
-  /^(etc\/(apk\/.*|passwd|group)|lib\/apk\/db\/.*)$/.test(path) || /(^|\/)package\.json$/.test(path)
+  /^(etc\/(apk\/.*|passwd|group|nginx\/ascrum\/security-headers\.conf)|lib\/apk\/db\/.*)$/.test(path) ||
+  /(^|\/)package\.json$/.test(path)
 
 // --- Paths ------------------------------------------------------------------------------------------
 // A tar name as the engine applies it: relative to the root, no `.` or `..` segment, no empty segment.
 // The root itself ("./", "/") is ''.
+// C0 controls and DEL (a character test, not a regex: lint refuses control characters in one).
+const hasControl = (s: string): boolean => [...s].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f)
+// What this reader prints (findings, errors) shows a control character as \xNN, tab included, so no
+// image-derived text can start a new log line or a workflow command (DEV-p5-image-host-05).
+const printable = (s: string): string =>
+  [...s]
+    .map((c) => {
+      const n = c.charCodeAt(0)
+      return n < 0x20 || n === 0x7f ? `\\x${n.toString(16).padStart(2, '0')}` : c
+    })
+    .join('')
 function normalise(raw: string, what: string): string {
   if (raw.includes('\0')) fatal(`${what}: a NUL byte in the name`)
+  // DEV-p5-image-host-05: a control character (CR, ESC, ...) in a path could forge a workflow command
+  // or a terminal sequence wherever a path is printed. Neither clean image has one, so it is refused
+  // here, before any path reaches the output; the message escapes it instead of printing it.
+  if (hasControl(raw)) fatal(`${what}: a control character in the name ${JSON.stringify(raw)}`)
   let name = raw
   while (name.startsWith('./')) name = name.slice(2)
   name = name.replace(/^\/+/, '').replace(/\/+$/, '')
@@ -177,6 +194,9 @@ class TarParser {
   private pax = new Map<string, Buffer>()
   private longName: string | undefined
   private longLink: string | undefined
+  // Extended headers already read for the next entry (DEV-p5-image-host-01 (3)): a second one of the
+  // same kind is refused, because the engine keeps only the last where this reader would merge.
+  private pending = new Set<string>()
   private zeros = 0
   private ended = false
   private readonly what: string
@@ -270,6 +290,8 @@ class TarParser {
 
     if (typeflag === 'x' || typeflag === 'L' || typeflag === 'K') {
       if (this.meta) fatal(`${this.what}: nested extended headers`)
+      if (this.pending.has(typeflag)) fatal(`${this.what}: two '${typeflag}' extended headers for one entry`)
+      this.pending.add(typeflag)
       if (size > 16 * 1024 * 1024) fatal(`${this.what}: an extended header of ${size} bytes`)
       this.meta = typeflag === 'x' ? 'pax' : typeflag === 'L' ? 'longname' : 'longlink'
       this.remaining = size
@@ -280,6 +302,14 @@ class TarParser {
     // A global PAX header would change every later entry; layers do not use one, so it is refused.
     if (typeflag === 'g') fatal(`${this.what}: a global PAX header`)
 
+    // DEV-p5-image-host-01 (2): with both a GNU long name and a PAX path (or long link and PAX linkpath)
+    // the engine takes the GNU one; rather than pick, the entry is refused. BuildKit never writes both.
+    if (
+      (this.longName !== undefined || this.longLink !== undefined) &&
+      (this.pax.has('path') || this.pax.has('linkpath'))
+    )
+      fatal(`${this.what}: an entry has both a GNU long name or link and a PAX path or linkpath`)
+    this.pending = new Set()
     let name = text(cstring(block, 0, 100), this.what)
     const prefix = ustar ? text(cstring(block, 345, 155), this.what) : ''
     if (prefix !== '') name = `${prefix}/${name}`
@@ -310,6 +340,10 @@ class TarParser {
 
     const KNOWN: Record<string, string> = { '0': 'file', '\0': 'file', '1': 'hardlink', '2': 'symlink', '5': 'dir' }
     const type = KNOWN[typeflag]
+    // DEV-p5-image-host-01 (4): an old-style regular file (`\0`, or `0`) whose name ends in `/` is made a
+    // directory by the engine. BuildKit writes directories as type 5, so such an entry is refused.
+    if (type === 'file' && name.endsWith('/'))
+      fatal(`${this.what}: entry '${name}' is a regular-file type with a directory name`)
     // Character and block devices, FIFOs, contiguous files, GNU sparse, multi-volume and anything else:
     // neither clean image has one, and an unknown type must not be skipped.
     if (type === undefined)
@@ -426,6 +460,8 @@ function onLayerEntry(header: Header, layer: number, changes: Change[], what: st
   }
   if (header.type === 'symlink') {
     if (header.linkname === '') fatal(`${what}: symlink '${path}' has no target`)
+    if (hasControl(header.linkname))
+      fatal(`${what}: symlink '${path}' has a control character in its target ${JSON.stringify(header.linkname)}`)
     entry.target = header.linkname
   }
   changes.push({ op: 'entry', path, entry })
@@ -484,9 +520,19 @@ function apply(files: Map<string, Entry>, layer: Change[], index: number): void 
     if (change.op === 'hardlink') {
       const target = files.get(change.link as string)
       if (target?.kind !== 'file') fatal(`${what}: hard link '${path}' points at '${change.link}', which is not a file`)
-      // One inode: the link has the target's mode, owner, content and attributes.
+      // One inode. The engine applies the link header's mode, owner and attributes to that inode, so they
+      // would change the target too (a 04755 link to a 0755 file makes both setuid). BuildKit writes a
+      // link with its target's metadata; anything else is refused (DEV-p5-image-host-01 (1)).
       const t = target as Entry
-      entry = { ...t, layer: index, hardlinkOf: change.link, xattrs: [...new Set([...t.xattrs, ...entry.xattrs])] }
+      const sorted = (x: string[]) => [...x].sort().join('\n')
+      if (
+        entry.mode !== t.mode ||
+        entry.uid !== t.uid ||
+        entry.gid !== t.gid ||
+        sorted(entry.xattrs) !== sorted(t.xattrs)
+      )
+        fatal(`${what}: hard link '${path}' has a mode, owner or attributes different from its target '${change.link}'`)
+      entry = { ...t, layer: index, hardlinkOf: change.link }
     }
     const existing = files.get(path)
     if (existing?.kind === 'dir' && entry.kind !== 'dir') removeTree(path, true)
@@ -672,6 +718,7 @@ function apkInstalled(model: Model): Package[] {
       continue
     }
     const m = /^([A-Za-z]):(.*)$/.exec(line)
+    if (hasControl(line)) fatal(`lib/apk/db/installed: a control character in ${JSON.stringify(line)}`)
     if (!m) fatal(`lib/apk/db/installed: a line that is not 'X:value': ${line}`)
     const key = m[1] ?? ''
     const value = m[2] ?? ''
@@ -756,10 +803,14 @@ function parseVersion(v: string): Version {
   if ((m[1] as string).split('.').some((n, i) => i > 0 && n.length > 1 && n.startsWith('0'))) {
     fatal(`'${v}' has a number with a leading zero, which apk compares as a fraction; not supported here`)
   }
-  const suffixes = [...(m[3] ?? '').matchAll(/_([a-z]+)([0-9]*)/g)].map((s): [number, bigint] => [
-    SUFFIXES.indexOf(s[1] as string),
-    BigInt(s[2] || '0'),
-  ])
+  // DEV-p5-image-host-06: a suffix with no number (`_rc`) is refused. apk-tools 3.0.9 does not treat it as
+  // `_rc0`: `1.30.7_rc` < `1.30.7_rc0`, yet `1.0_rc_p` > `1.0_rc0_p`, so no simple rule matches it. No
+  // installed version in either image or base, and no floor, has one; it fails closed instead.
+  const suffixes = [...(m[3] ?? '').matchAll(/_([a-z]+)([0-9]*)/g)].map((s): [number, bigint] => {
+    if (s[2] === '')
+      fatal(`'${v}' has a suffix with no number (_${s[1]}), which apk orders inconsistently; not supported here`)
+    return [SUFFIXES.indexOf(s[1] as string), BigInt(s[2] as string)]
+  })
   return {
     nums: (m[1] as string).split('.'),
     letter: m[2] ?? '',
@@ -802,6 +853,8 @@ function nodePackages(model: Model): string[] {
       return fatal(`/${path}: not valid JSON`)
     }
     if (typeof json.name === 'string' && json.name !== '' && typeof json.version === 'string' && json.version !== '') {
+      if (hasControl(json.name) || hasControl(json.version))
+        fatal(`/${path}: a control character in its name or version ${JSON.stringify([json.name, json.version])}`)
       out.add(`${json.name}@${json.version}\t/${path}`)
     }
   }
@@ -902,23 +955,27 @@ function added(base: Model, model: Model, allowed: string[], roots: string[]): s
   let packaged = 0
   for (const [path, e] of Object.entries(model.files).sort(([a], [b]) => sortC(a, b))) {
     const b = base.files[path]
-    if (b !== undefined && same(b, e)) continue
     const root = roots.find((r) => isUnder(path, r))
     if (root !== undefined) {
+      // Every entry under a root, changed or not. DEV-p5-image-host-04: owned by root and not writable by
+      // others (a symlink's own mode means nothing), so the unprivileged runtime user cannot change it.
+      if (e.uid !== 0 || e.gid !== 0) findings.push(`/${path}: owned by ${e.uid}:${e.gid} under /${root}, not 0:0`)
+      if (e.kind !== 'symlink' && (e.mode & 0o002) !== 0)
+        findings.push(`/${path}: writable by others (mode ${e.mode.toString(8)}) under /${root}`)
+      // DEV-p5-image-host-02: a symlink is resolved in the image as the kernel would (every link on the
+      // way followed, at most 40, then exit 2), and the result must exist and stay under the root.
+      if (e.kind === 'symlink') {
+        const real = resolve(model, path, true)
+        if (real === undefined) findings.push(`/${path}: a symlink to ${e.target} that does not resolve in the image`)
+        else if (!isUnder(real, root))
+          findings.push(`/${path}: a symlink to ${e.target}, which resolves to /${real}, outside /${root}`)
+      }
+      if (b !== undefined && same(b, e)) continue
       copied++
       if (e.kind === 'file' && e.elf) findings.push(`/${path}: an ELF binary or library under /${root}`)
-      if (e.kind === 'symlink') {
-        const target = e.target as string
-        const joined = target.startsWith('/') ? target.slice(1) : `${parentOf(path)}/${target}`
-        const parts: string[] = []
-        for (const part of joined.split('/')) {
-          if (part === '..') parts.pop()
-          else if (part !== '.' && part !== '') parts.push(part)
-        }
-        if (!isUnder(parts.join('/'), root)) findings.push(`/${path}: a symlink to ${target}, outside /${root}`)
-      }
       continue
     }
+    if (b !== undefined && same(b, e)) continue
     if (APK_STATE.has(path)) continue
     if (e.kind !== 'dir' && owned.has(path)) {
       packaged++
@@ -955,7 +1012,7 @@ function added(base: Model, model: Model, allowed: string[], roots: string[]): s
 // --- CLI ------------------------------------------------------------------------------------------
 const [command, ...args] = process.argv.slice(2)
 const report = (findings: string[]) => {
-  for (const f of findings) console.log(f)
+  for (const f of findings) console.log(printable(f))
   process.exitCode = findings.length > 0 ? 1 : 0
 }
 try {
@@ -1013,6 +1070,6 @@ try {
       fatal(`unknown command '${command ?? ''}'`)
   }
 } catch (error) {
-  console.error(`image-fs: ${error instanceof Fatal ? error.message : String(error)}`)
+  console.error(`image-fs: ${printable(error instanceof Fatal ? error.message : String(error))}`)
   process.exitCode = 2
 }

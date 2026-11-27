@@ -52,6 +52,9 @@ So: no new dependency, no new tool, stdlib only (`node:zlib` for gzip and zstd, 
 - Layers are stacked as the engine stacks them: a layer's whiteouts (`.wh.<name>`) and opaque markers
   (`.wh..wh..opq`) delete from the layers below; then its entries apply in order; a directory replaced by a
   non-directory loses its subtree; a hard link takes its target's inode (mode, owner, content, xattrs).
+  **Corrected in session 3: this is wrong.** containerd applies the link header's own mode, owner and
+  xattrs to the shared inode, so they change the target too. The reader now refuses a link whose header
+  metadata differs from its target's (DEV-p5-image-host-01; see session 3's mistakes).
   A path with `..`, an entry under a symlink or a file, a hard link to nothing, an unknown overlay metadata
   file fail.
 - Every regular file is hashed (SHA-256 and SHA-1, the latter for apk's `Q1` checksums) and its first four
@@ -291,3 +294,133 @@ changed since):**
 **Item status after session 2:** -15 is fixed in both scripts, so no CI check takes a fact about an image's
 files from a binary in that image. -10 is fixed for location; the content residual is accepted by the owner
 (Q-2 (a)). -14 and -04 (b) are unchanged (fixed).
+
+## 2026-11-26, session 3 (worker): round 2 of #90 (DEV-p5-image-host-01..06, -09)
+
+**Contract:** the reviewer's rows DEV-p5-image-host-01..10 in `spec/deviations.md` (read only; pulled with
+`git pull --ff-only` at `9ad1da1`). The owner approved round 2 on 2026-11-26. For -03 the owner chose to check
+the header include, header lines only (recorded in `spec/questions/p5-image-host.md`). -07, -08 and -10 are
+logged follow-ups and are not touched here.
+
+**What changed:**
+- `docker/image-fs.ts`, the tar reader against containerd (-01):
+  - (1) a hard link whose header mode, owner or xattrs differ from its target's is refused (exit 2). The
+    engine applies the link header's metadata to the shared inode. The old code copied the target's metadata
+    and joined the two xattr sets.
+  - (2) a GNU `L`/`K` long name or link together with a PAX `path`/`linkpath` is refused.
+  - (3) a second extended header of the same kind (`x` after `x`, `L` after `L`, `K` after `K`) for one
+    entry is refused.
+  - (4) an old-style regular file (`\0` or `0`) whose name ends in `/` is refused.
+- `added()`, under the COPY roots:
+  - -02: each symlink is resolved with the model's own `resolve()` (every link on the way, at most 40, then
+    exit 2). The result must exist and stay under its root; a dangling link is a finding.
+  - -04: every entry, changed or not, must be owned 0:0 and, unless it is a symlink, not writable by others.
+- -05:
+  - The reader refuses a C0 control character or DEL in any path or symlink target, in an apk database
+    line, and in a package.json name or version.
+  - Its findings and errors print any control character as `\xNN`.
+  - `check-images.sh`, `check-scan-coverage.sh` and `scan-images.sh` pass every FAIL message, and each other
+    line that carries image-derived text, through `printable` (control characters, CR and LF included,
+    become `?`).
+  - Audit: the only workflow command in the three scripts is scan-images.sh's `::warning`, which already went
+    through `gha_data` (`%`, CR and LF escaped). Trivy's finding lists come from jq `@tsv`, which escapes
+    tab, CR and LF; they now also pass through `printable_lines`.
+- -06: a version suffix with no number (`_rc`) is refused instead of compared. Matching apk was not
+  possible with a simple rule. apk-tools 3.0.9 in the built web image gives `1.30.7_rc < 1.30.7_rc0` but
+  `1.0_rc_p > 1.0_rc0_p`. No installed version in either image or base has such a suffix (82 versions; two
+  have suffixes, both numbered), and no floor has one.
+- -03: `check-images.sh` gets `check_header_include`. It reads `/etc/nginx/ascrum/security-headers.conf`
+  from the web image's layers on the host (the reader now keeps that file's contents). Every line must be
+  blank, a comment, `add_header <name> "<value>" always;` or `proxy_hide_header <name>;`. The value may not
+  hold `"`, `$`, a backslash or a control character, and nothing may follow the `;`. Only line numbers are
+  printed. `proxy_hide_header` is in the rule because the generator writes one per header; see the
+  questions file.
+- -09: `check-scan-coverage.sh`'s header says what the coverage rests on (apk's database), and that H2b is
+  caught by `check-images.sh` in the same required job.
+- The session-1 worklog sentence about hard links is corrected in place, marked as wrong.
+
+**Red/green.** These ran on scratch copies of the repo outside tracked paths. "prev" is `c207e6e` (this
+branch before round 2) and "new" is the worktree. Exit codes are `check-images.sh`'s unless the row says
+otherwise.
+
+| Case | Plant | prev | new | new's finding |
+|---|---|---|---|---|
+| T1 / H5a | loaded image: `bin/x` 0755, hard link `bin/y` whose header says 04755 (`docker export`: both `-rwsr-xr-x`) | read 0, `special` 0 | read **2** | hard link 'bin/y' has a mode, owner or attributes different from its target |
+| H1, H1b, H1c | synthetic: the link header has 04755 / uid 1000 / an extra xattr | (not run) | 2, 2, 2 | the same |
+| H1-ok | link header identical to its target | | 0 | |
+| H2, H2b | `x` (path) + `L`; `x` (linkpath) + `K` | | 2, 2 | both a GNU long name or link and a PAX path or linkpath |
+| H2-ok | `L` alone (a 122-character name) | | 0, name read | |
+| H3, H3b | `x` then `x`; `L` then `L` | | 2, 2 | two 'x' (or 'L') extended headers for one entry |
+| H3-ok | `x`, entry, `x`, entry | | 0 | |
+| H4, H4b | typeflag `\0` / `0` named `d/` | | 2, 2 | a regular-file type with a directory name |
+| H4-ok | typeflag `5` named `d/` | | 0 | |
+| X2, X3, X3b (session 1) | links planted with metadata unlike their targets | 1 (found) | 2 (refused) | still red, now earlier |
+| C1, C1b, C1c, C2 | synthetic: CR + `::warning`, ESC, DEL in a path; CR in a symlink target | | 2 each, no raw control character in the output | a control character in the name "x\r::warning…" |
+| WB1 | `mkdir dist/d && ln -s .. dist/d/l && ln -s d/l/../../etc/passwd dist/m` (`/srv/ascrum/m` reads root's passwd line) | 0 | **1** | /srv/ascrum/m … resolves to /etc/passwd, outside /srv/ascrum |
+| WB1b | symlink loop `dist/a` ⇄ `dist/b` | 0 | 1 | resolve: too many symlinks (added could not run) |
+| WB1c | dangling `dist/n -> nowhere` | 0 | 1 | does not resolve in the image |
+| WB2 | `location /leak/ { alias /; autoindex on; }` appended to the include | 0 | **1** | not one add_header or proxy_hide_header directive (line 14) |
+| WB2b | `add_header X-A "a" always; location /p/ { proxy_pass http://169.254.169.254/; }` on one line | 0 | 1 | the same (line 14) |
+| WB2c | `include /srv/ascrum/x.conf;` | 0 | 1 | the same |
+| WB2d | `add_header X-Leak "$host" always;` | 0 | 1 | the same |
+| AB3 | `chmod -R a+w node_modules` in the API deps stage (190 o+w entries in /app) | 0 | **1** | writable by others (mode 666/777) under /app, one per entry |
+| AB3b | `chown -R 1000:1000 node_modules` in the deps stage | 0 | 1 | owned by 1000:1000 under /app, not 0:0 (218 lines) |
+| WB4 | `chmod -R a+w dist` in the web build stage | 0 | **1** | writable by others under /srv/ascrum (9 lines) |
+| AB6 | `.pnpm` directories `x\r::warning title=forged::AB6` and `y\r##[add-mask]AB6` | 0, **raw CR in the log** | 1, no raw CR | a control character in the name "…x\r::warning…"; nothing else checked |
+| WB3 | `dist/z\r::warning title=forged::WB3.map` | 1, **raw CR in the FAIL line** | 1, no raw CR | the same, in the web image |
+| -06 | `vercmp` on the 32 session-1 pairs plus 10 new ones, against `apk version -t` in the built web image | `1.30.7_rc` = `_rc0` (apk: <) | refused (exit 2) for the 14 pairs with a numberless suffix; the other 28 equal apk's | |
+| clean | the freshly built images (gates below) | | 0 | 28 pnpm symlinks pass; include: 6 add_header lines |
+
+Earlier cases re-run with the new scripts. "old" is `origin/migration`, as in sessions 1 and 2.
+
+| Case | old | new |
+|---|---|---|
+| clean | 0 | 0 |
+| P1 capability on a node copy in `/usr/local/bin` (n3 does `setuid(0)` as uid 1000) | 0 | 1 |
+| P1b the same inside `/app` | 1 | 1 |
+| P2 a lying `find` plus a setuid `n2` (euid 0) | 0 | 1 |
+| P2b setuid `n2` | 1 | 1 |
+| P3 an apk wrapper in `/usr/local/bin` (web) | 0 | 1 |
+| P4 the wrapper in the site root, put first by `ENV PATH` | 0 | 1 |
+| P5 `libz.so.1` in `node_modules` | 0 | 1 |
+| P6 image built from other text than the Dockerfile read | 0 | 1 |
+| S0–S8 (`scan-images.sh`, on the fresh images) | S6 0 (fooled), S7 0, S8 1 | S0 0, S1 1, S2 1, S3 0, S4 1, S5 0, S6 1, S7 0, S8 0: the same as session 2 |
+| C1–C5 (`check-scan-coverage.sh`, on this session's reports) | | clean 0; C1–C5 1 each; clean again 0 |
+
+**Mistakes and wrong turns:**
+- **Session 1 got hard links backwards.** I wrote that "a hard link takes its target's inode (mode, owner,
+  content, xattrs)" and coded it that way. containerd does the opposite: it applies the link header's
+  metadata to the inode, so the target changes too. T1 was a setuid binary the reader called clean. I
+  assumed the semantics instead of loading a crafted layer and running `docker export`, which is how T1 shows
+  it in one command. The sentence is corrected in place.
+- The symlink rule in session 1 was a lexical join. I knew `resolve()` existed in the same file and did
+  not use it there.
+- -06: I first made a numberless suffix sort below the same suffix with 0, which matched apk on
+  `_rc`/`_rc0`. The new pairs then showed `1.0_rc_p` > `1.0_rc0_p` in apk, the other way. So I refuse it
+  instead. Four of session 1's 32 pairs (`1.4_alpha`, `1.4_rc`, `1.4_cvs`, `1.4_hg`) are now refused
+  rather than compared.
+- The first `no-control-regex` lint error: a regex with `\x00-\x1f` is refused by eslint, so the test became
+  a character-code check. The lint rule was not touched.
+- Twice the harness refused a compound command as "too complex to verify that it stays inside the
+  worktree": a python heredoc followed by `git diff`, and a `cp`/`git show` chain. Its message asks for plain,
+  separate commands, so I ran the same steps as scratch script files and single commands. Nothing was
+  retried to get around a guard on its content.
+
+**Gates (session 3, unpiped, each exit code printed by the scratch runner):**
+
+First the images were rebuilt with `docker compose --profile prod-check build --no-cache` (exit 0), then:
+- `docker/check-images.sh ascrum-api:p5host ascrum-web:p5host`: exit 0. The new line reads
+  `ascrum-web:p5host: /etc/nginx/ascrum/security-headers.conf is 6 add_header lines and their
+  proxy_hide_header lines only (read on the host)`. `added` covered 245 paths under the API's roots, with
+  every one of the 28 pnpm symlinks resolving inside `/app`, and 14 paths and 19 packaged files in the web
+  image. The log has no CR.
+- `docker/scan-images.sh …`: exit 0. API: 12 OS and 15 language packages, 0 findings. Web: 70 OS packages,
+  with 6 and 10 findings, all nginx and inside the window. The state is `open: installed nginx 1.30.6-r1 is
+  below 1.30.7-r0, and today (2026-11-27) is not after 2026-12-31`.
+- `docker/check-scan-coverage.sh … <this run's reports>`: exit 0 (API 12/15, web 70/0, identical sets).
+- `pnpm lint`: exit 0. `pnpm typecheck`: exit 0. `pnpm test`: exit 0, `Tests  443 passed (443)`.
+
+**Item status after session 3:** -01 (1)–(4), -02, -04, -05 and -06 are fixed as recommended; -06 is
+refused, not matched. -03 is checked as the owner chose (header lines only, plus the generator's
+`proxy_hide_header`), and the questions file records the narrowed Q-2 residual. -09 is documented. -07,
+-08 and -10 are unchanged (logged follow-ups).

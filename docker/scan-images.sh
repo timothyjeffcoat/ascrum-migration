@@ -95,8 +95,14 @@ reports=$(cd "$reports" && pwd)
 mkdir "$work/empty"
 cd "$work/empty"
 findings=0
+# Image-derived text (Trivy reads package names, versions and the OS name from the image) reaches these
+# lines. In a message each control character, newline and CR included, becomes "?"; in the finding
+# lists (one per line, from jq's @tsv, which already escapes tab, newline and CR) every other control
+# character does. So no such text can start a log line or a workflow command (DEV-p5-image-host-05).
+printable() { printf '%s' "$*" | LC_ALL=C tr '\000-\010\012-\037\177' '?'; }
+printable_lines() { LC_ALL=C tr '\000-\010\013-\037\177' '?'; }
 fail() {
-  echo "scan-images FAIL: $*" >&2
+  echo "scan-images FAIL: $(printable "$*")" >&2
   findings=$((findings + 1))
 }
 
@@ -185,9 +191,9 @@ check_report() {
   blocking=$(sed '/^$/d' <<< "$blocking")
   if [[ -n $blocking ]]; then
     fail "$image ($pass): $(wc -l <<< "$blocking") finding(s) that fail the scan:"
-    awk -F'\t' '{ printf "  %s\t%s\t%s\t%s\n", $3, $4, $5, $6 }' <<< "$blocking" | sort >&2
+    awk -F'\t' '{ printf "  %s\t%s\t%s\t%s\n", $3, $4, $5, $6 }' <<< "$blocking" | sort | printable_lines >&2
   fi
-  echo "$image ($pass): $os, $pkgs OS packages (as apk lists them), $(jq '[.Results[]? | select(.Class == "lang-pkgs") | .Packages[]?] | length' "$report") language packages; $(sed '/^$/d' <<< "$all" | wc -l) finding(s), $( [[ -n $blocking ]] && wc -l <<< "$blocking" || echo 0) failing"
+  echo "$image ($pass): $(printable "$os"), $pkgs OS packages (as apk lists them), $(jq '[.Results[]? | select(.Class == "lang-pkgs") | .Packages[]?] | length' "$report") language packages; $(sed '/^$/d' <<< "$all" | wc -l) finding(s), $( [[ -n $blocking ]] && wc -l <<< "$blocking" || echo 0) failing"
 }
 # apk's installed packages (name<TAB>version), read on the host from the image's layers: `docker save`,
 # then docker/image-fs.ts checks the digests against the engine's diff_ids and rebuilds the final
@@ -243,7 +249,7 @@ scan "$2" web
   echo "  Every other finding, in either image, fails the scan now."
   if ((${#windowed[@]} > 0)); then
     echo "  Reported inside the window (NOT failing, NOT fixed):"
-    printf '    %s\n' "${windowed[@]}" | sort
+    printf '    %s\n' "${windowed[@]}" | sort | printable_lines
   else
     echo "  Nothing reported inside the window."
   fi

@@ -56,8 +56,12 @@ command -v "$gitleaks" > /dev/null || {
   exit 2
 }
 
+# Image-derived text (a path, a package name, a USER) reaches these lines. Each control character,
+# newline and CR included, becomes "?", so no such text can start a new log line or a workflow
+# command (DEV-p5-image-host-05). The reader already refuses control characters in paths.
+printable() { printf '%s' "$*" | LC_ALL=C tr '\000-\010\012-\037\177' '?'; }
 fail() {
-  echo "check-images FAIL: $*" >&2
+  echo "check-images FAIL: $(printable "$*")" >&2
   findings=$((findings + 1))
 }
 
@@ -106,7 +110,7 @@ check_user() {
     return
   fi
   [[ $uid != 0 ]] || fail "$image: USER '$user' is uid 0 in the image's /etc/passwd"
-  echo "$image: USER=$user, which is uid $uid in its /etc/passwd"
+  echo "$image: USER=$(printable "$user"), which is uid $uid in its /etc/passwd"
 }
 
 # No setuid or setgid file anywhere in the image's final filesystem (DEV-p5-image-scan-12: a
@@ -129,7 +133,7 @@ findings_of() {
   shift
   out=$(image_fs "$@") && rc=0 || rc=$?
   if ((rc == 0)); then
-    [[ -z $out ]] || echo "$image: $out"
+    [[ -z $out ]] || echo "$image: $(printable "$out")"
     return 0
   elif ((rc == 1)); then
     while IFS= read -r line; do fail "$image: $line"; done <<< "$out"
@@ -671,7 +675,7 @@ check_apk() {
   if [[ $mode == floors ]]; then apk_named=("${floors[@]%%>=*}"); else apk_named=("${removed[@]}" "${API_ALSO_REMOVED[@]}"); fi
   check_runtime_changes "$image" "$dockerfile" "$model" "$base_model" "$(IFS=,; echo "${apk_named[*]}")"
   if ((findings == before)); then
-    echo "$image: $summary"
+    echo "$image: $(printable "$summary")"
     if [[ $mode == floors ]]; then
       echo "$image: /etc/apk repositories, keys and config identical to $base; world is the base's plus the ${#floors[@]} floors"
     else
@@ -874,6 +878,32 @@ hits=$(grep -E '(^|/)node_modules/' "$work/web.txt" | head -5 || true)
 hits=$(grep -E '^srv/ascrum/.*(\.tsx?|\.map|\.less|mockServiceWorker\.js)$' "$work/web.txt" || true)
 [[ -z $hits ]] || fail "$web_image: sources or dev files in the site root: $hits"
 check_apk "$web_image" docker/web.Dockerfile floors "$work/web.model.json" "$work/web-base.model.json"
+# The header include (DEV-p5-image-host-03; owner's answer: header lines only). The build stage writes
+# /etc/nginx/ascrum/security-headers.conf with docker/web/security-headers.ts, and nginx includes it inside
+# `server {}`, so anything else in it is server config from the build stage: an appended
+# `location /leak/ { alias /; autoindex on; }` listed the whole filesystem, and a `proxy_pass` could reach
+# into the VPC. Read from the image's layers on the host (symlinks followed, as nginx opens it), every line
+# must be blank, a comment, or one directive the generator writes: `add_header <name> "<value>" always;` or
+# `proxy_hide_header <name>;` (it drops the API's copy of a header; it opens nothing). No `{`, `}`,
+# `include`, variable or escape, and nothing after the `;`. Only line numbers are printed, never the text.
+check_header_include() {
+  local image=$1 model=$2 conf=etc/nginx/ascrum/security-headers.conf bad count
+  if ! image_fs cat "$model" "$conf" > "$work/security-headers.conf"; then
+    fail "$image: could not read /$conf from its layers"
+    return
+  fi
+  count=$(grep -cE '^add_header ' "$work/security-headers.conf" || true)
+  bad=$(LC_ALL=C grep -nvE '^[[:blank:]]*(#.*)?$|^add_header [A-Za-z0-9-]+ "[^"$\\[:cntrl:]]+" always;$|^proxy_hide_header [A-Za-z0-9-]+;$' \
+    "$work/security-headers.conf" | cut -d: -f1 | tr '\n' ' ' || true)
+  if [[ -n $bad ]]; then
+    fail "$image: /$conf has lines that are not one add_header or proxy_hide_header directive (line ${bad% })"
+  elif ((count == 0)); then
+    fail "$image: /$conf has no add_header line, so the site would send no security header"
+  else
+    echo "$image: /$conf is $count add_header lines and their proxy_hide_header lines only (read on the host)"
+  fi
+}
+check_header_include "$web_image" "$work/web.model.json"
 
 if [[ $findings -gt 0 ]]; then
   echo "check-images: $findings finding(s)" >&2

@@ -107,3 +107,19 @@ Relayed by the orchestrator; the owner said "yes" to the orchestrator's recommen
   wanted now.
 - **Q-p5-image-host-3: (a), but not in this cluster.** The orchestrator runs it as a separate infra follow-up
   (`linuxParameters.capabilities.drop: ['ALL']`). This cluster does not touch `infra/`.
+
+## Owner answer, round 2 of #90 (2026-11-26): DEV-p5-image-host-03
+
+Relayed by the orchestrator. The build stage writes `/etc/nginx/ascrum/security-headers.conf`, which nginx
+includes inside `server {}` (the security reviewer's WB2 appended a `location` that listed `/`). The owner
+chose to **check the file, header lines only**, rather than widen the accepted residual of Q-2 to "server
+config from the build stage". This narrows the Q-2 residual: it still covers the content of JavaScript and
+static files inside the COPY roots, and no longer covers nginx config.
+
+As implemented (session 3): `check-images.sh` reads the file from the image's layers on the host, and every
+line must be blank, a comment, or exactly one directive the generator (`docker/web/security-headers.ts`)
+writes. That is `add_header <name> "<value>" always;` or `proxy_hide_header <name>;`, with no `{`, `}`,
+`include`, variable or escape, and nothing after the `;`. `proxy_hide_header` is allowed because the
+generator writes one per header (it drops the API's copy so the header is never doubled), so its real output
+could not pass without it. It opens no location and proxies nothing. If the owner meant `add_header` and
+nothing else, the generator would have to change first, which is outside this cluster.
