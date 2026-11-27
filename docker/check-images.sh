@@ -6,7 +6,13 @@
 #     every pulled compose image pinned by version and digest (DEV-p5-containers-09, -12); no `# syntax=`
 #     frontend; compose builds exactly these two Dockerfiles from the repo root, with no build options
 #     (DEV-p5-image-scan-13);
-#   - no setuid or setgid file in either image (DEV-p5-image-scan-12);
+#   - no setuid or setgid file, no file capability and no other extended attribute in either image
+#     (DEV-p5-image-scan-12, -14);
+#   - what each runtime stage adds to its pinned base, read from the image itself (DEV-p5-image-scan-10):
+#     the image sits on the base's layers, its own history is exactly the runtime stage's RUN/COPY/WORKDIR
+#     lines, its COPY layers write only under the image's own roots, nothing outside those roots is added or
+#     changed except files of the packages the apk line names (checked against apk's own checksums), no
+#     package is added, and the base's ENV, PATH and ENTRYPOINT are unchanged;
 #   - no secret in any layer's command, build argument, ENV or label: the image history and config are
 #     scanned with Gitleaks, no ENV name looks like a credential (DEV-p5-containers-09), and no value
 #     holds a URL with a password (DEV-p5-containers-13);
@@ -20,10 +26,19 @@
 #
 #   docker/check-images.sh <api image> <web image>        (from the repo root)
 #
-# Needs docker, jq and Gitleaks: $GITLEAKS, or `gitleaks` on the PATH, at the version pinned in
-# .github/actions/setup-gitleaks (which the e2e-compose and secrets jobs both use). A missing tool fails the
-# check; it is never skipped. The start-up check runs its own throwaway PostgreSQL on a private network,
-# publishes no port, and removes everything it started.
+# Facts about an image's files are read on the host, never from a binary inside the image
+# (p5-image-host; DEV-p5-image-scan-15: the image's own `find` could be a wrapper that lies). `docker save`
+# hands over the image's config and layer tarballs as data, docker/image-fs.ts (Node, on the host) checks
+# their digests against the engine's, parses every tar header (PAX extended attributes and whiteouts
+# included) and rebuilds the final filesystem; the file list, modes, attributes, USER's uid, apk's
+# database, /etc/apk and the package versions all come from that. Two checks still run the image, because
+# running it is what they test: the import smoke test (main.ts must load in the image) and the start-up
+# check (it must start and answer /healthz). Neither is trusted for a fact the host can read.
+#
+# Needs docker, jq, GNU tar, Node 24 (the same `node` the job's setup-web installs) and Gitleaks: $GITLEAKS,
+# or `gitleaks` on the PATH, at the version pinned in .github/actions/setup-gitleaks (which the e2e-compose
+# and secrets jobs both use). A missing tool fails the check; it is never skipped. The start-up check runs
+# its own throwaway PostgreSQL on a private network, publishes no port, and removes everything it started.
 #
 # Exits non-zero and names every finding when a check fails.
 set -euo pipefail
@@ -46,39 +61,82 @@ fail() {
   findings=$((findings + 1))
 }
 
-# Every path in the image's filesystem, as the container would see it.
-files_of() {
-  local id
-  id=$(docker create "$1")
-  docker export "$id" | tar -t
-  docker rm "$id" > /dev/null
+for tool in docker jq tar node; do
+  command -v "$tool" > /dev/null || {
+    echo "check-images: $tool not found" >&2
+    exit 2
+  }
+done
+# docker/image-fs.ts runs under Node's type stripping and uses its zstd decompressor: Node 24 (web/.nvmrc).
+node_major=$(node -p 'process.versions.node.split(".")[0]')
+if ((node_major < 24)); then
+  echo "check-images: docker/image-fs.ts needs Node 24 or later; node is $(node --version)" >&2
+  exit 2
+fi
+image_fs() { node docker/image-fs.ts "$@"; }
+
+# The image as data (DEV-p5-image-scan-14, -15): its config and layer tarballs from `docker save`, read by
+# docker/image-fs.ts into a model of its final filesystem. The diff_ids the engine reports for the image
+# are passed in, and the reader requires the saved config to carry exactly those and every layer to hash
+# to its diff_id, so the model is the image the rest of this script inspects and runs. A model that cannot
+# be built stops the script: nothing below can be checked without it.
+model_of() {
+  local image=$1 out=$2 dir ids
+  dir=$(mktemp -d "$work/save.XXXXXX")
+  ids=$(docker image inspect --format '{{range $i, $l := .RootFS.Layers}}{{if $i}},{{end}}{{$l}}{{end}}' "$image")
+  if ! docker save "$image" | tar -x --no-same-owner --no-same-permissions -C "$dir" -f - ||
+    ! image_fs read "$dir" "$ids" "$out"; then
+    echo "check-images FAIL: $image: could not read the image's layers on the host (above); nothing else can be checked" >&2
+    exit 1
+  fi
+  echo "$image: read on the host from docker save ($(jq '.diffIds | length' "$out") layers, digests checked)"
+  rm -rf "$dir"
 }
 
-# Non-root: the configured USER, and the uid a container actually gets.
+# Non-root: the configured USER, and the uid a container gets for it, which the engine looks up in the
+# image's own /etc/passwd. That file is read here from the model, not through the image's `id`.
 check_user() {
-  local image=$1 user uid
+  local image=$1 model=$2 user uid
   user=$(docker image inspect --format '{{.Config.User}}' "$image")
   case "$user" in
     '' | root | 0 | root:* | 0:*) fail "$image: USER is '${user:-<unset>}', which runs as root" ;;
   esac
-  uid=$(docker run --pull never --rm --entrypoint id "$image" -u)
-  [[ $uid != 0 ]] || fail "$image: a container runs as uid 0"
-  echo "$image: USER=$user, runs as uid $uid"
+  if ! uid=$(image_fs uid "$model" "$user"); then
+    fail "$image: could not resolve USER '$user' in its /etc/passwd"
+    return
+  fi
+  [[ $uid != 0 ]] || fail "$image: USER '$user' is uid 0 in the image's /etc/passwd"
+  echo "$image: USER=$user, which is uid $uid in its /etc/passwd"
 }
 
-# No setuid or setgid file anywhere in the image's own filesystem (DEV-p5-image-scan-12: a
-# `COPY --chmod=4755` of node ran with euid 0 for the non-root user). Both clean images have none, so the
-# rule is exactly none. Run as uid 0 so no directory is unreadable; any error from find fails the check.
-check_setuid() {
-  local image=$1 found
-  if ! found=$(docker run --pull never --rm --network none --user 0 --entrypoint find "$image" \
-    / -xdev -type f '(' -perm -4000 -o -perm -2000 ')' 2>&1); then
-    fail "$image: could not list setuid and setgid files: $found"
-  elif [[ -n $found ]]; then
-    fail "$image: setuid or setgid files: $(tr '\n' ' ' <<< "$found")"
-  else
-    echo "$image: no setuid or setgid file"
+# No setuid or setgid file anywhere in the image's final filesystem (DEV-p5-image-scan-12: a
+# `COPY --chmod=4755` of node ran with euid 0 for the non-root user), no file capability (-14: a setcap'd
+# copy from an earlier stage keeps its `security.capability` xattr through COPY and can setuid(0) with no
+# setuid bit), and no other extended attribute: neither clean image has any, so the rule is exactly none.
+# Read from the tar headers' modes and PAX `SCHILY.xattr.*` records on the host, with whiteouts applied
+# (-15: the image's own `find` used to answer this, and a wrapper `find` said "none").
+check_special() {
+  local image=$1 model=$2
+  if findings_of "$image" special "$model"; then
+    echo "$image: no setuid or setgid file, no file capability, no extended attribute (tar headers, on the host)"
   fi
+}
+
+# Runs an image-fs check: exit 0 is clean, exit 1 prints one finding per line (each one fails here), and
+# anything else (the reader's own error, on stderr) fails as "could not check". Returns 0 only when clean.
+findings_of() {
+  local image=$1 out rc line
+  shift
+  out=$(image_fs "$@") && rc=0 || rc=$?
+  if ((rc == 0)); then
+    [[ -z $out ]] || echo "$image: $out"
+    return 0
+  elif ((rc == 1)); then
+    while IFS= read -r line; do fail "$image: $line"; done <<< "$out"
+  else
+    fail "$image: image-fs $1 could not run (exit $rc; its error is above)"
+  fi
+  return 1
 }
 
 # No .env file, and no test file or test folder, anywhere in the image.
@@ -332,16 +390,6 @@ APK_NAME='^[a-z0-9][a-z0-9+._-]*$'
 # What the API image must not hold (owner's answer to Q-p5-image-scan-1 (a)), and a main file of each.
 API_REMOVED=(apk-tools libapk ssl_client libssl3 libcrypto3 zlib)
 API_REMOVED_FILES=(/sbin/apk /usr/bin/ssl_client /usr/lib/libssl.so.3 /usr/lib/libcrypto.so.3 /usr/lib/libz.so.1)
-# Every path under /etc/apk with its type and content hash (as root, so nothing is unreadable), then
-# world's entries. A failed run prints nothing usable and fails the comparison.
-APK_STATE='cd /etc/apk || exit 1
-find . ! -path ./world | sort | while IFS= read -r f; do
-  if [ -L "$f" ]; then echo "link $f -> $(readlink "$f")"
-  elif [ -f "$f" ]; then h=$(sha256sum < "$f") || exit 1; echo "file ${h%% *} $f"
-  else echo "dir $f"; fi
-done
-echo "world:"
-tr " " "\n" < world | sed "/^$/d" | sort'
 # The runtime stage's RUN instructions, by allowlist (DEV-p5-image-scan-05, the security review's C1:
 # `RUN ap''k --allow-untrusted -X … add …` built and passed, because the shell joins `ap''k` into `apk`
 # after the text check had already looked for the word `apk`). A text check cannot list every way a shell
@@ -471,7 +519,7 @@ check_runtime_runs() {
   fi
 }
 check_apk() {
-  local image=$1 dockerfile=$2 mode=$3 before=$findings line keyword rest word words apk_lines=0 versions='' base verb
+  local image=$1 dockerfile=$2 mode=$3 model=$4 base_model=$5 before=$findings line keyword rest word words apk_lines=0 versions='' base verb
   local -a floors=() removed=()
   case $mode in
     floors) verb=add ;;
@@ -532,22 +580,28 @@ check_apk() {
     ((${#floors[@]} > 0)) ||
       fail "$dockerfile: no apk add '<package>>=<version>' floors found; if the base image now has the fixes, remove this check with the step"
     if ((${#floors[@]} > 0)); then
-      if ! versions=$(docker run --pull never --rm --network none --entrypoint sh "$image" -c '
-        for floor in "$@"; do
-          name=${floor%%>=*}; want=${floor#*>=}
-          have=$(awk -v p="P:$name" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed)
-          op=""
-          [ -z "$have" ] || op=$(apk version -t "$have" "$want" 2>&1)
-          printf "%s\t%s\t%s\t%s\n" "$name" "${have:-<not installed>}" "$(echo $op)" "$want"
-        done' sh "${floors[@]}" 2>&1); then
-        fail "$image: could not read its OS package versions: $versions"
+      # The installed versions from apk's database in the model, compared on the host with apk's own
+      # version order (image-fs vercmp), not by the image's `apk version -t` (DEV-p5-image-scan-15).
+      local installed_versions floor fname fwant fhave fop
+      versions=''
+      if ! installed_versions=$(image_fs apk-installed "$model"); then
+        fail "$image: could not read its OS package versions from apk's installed database"
       else
+        for floor in "${floors[@]}"; do
+          fname=${floor%%>=*}
+          fwant=${floor#*>=}
+          fhave=$(awk -F'\t' -v n="$fname" '$1 == n { print $2 }' <<< "$installed_versions")
+          fop=''
+          if [[ -n $fhave && $fhave != *$'\n'* ]]; then fop=$(image_fs vercmp "$fhave" "$fwant" 2>&1) || fop="error: $fop"; fi
+          versions+="$fname"$'\t'"${fhave:-<not installed>}"$'\t'"$fop"$'\t'"$fwant"$'\n'
+        done
+        versions=${versions%$'\n'}
         local confirmed=0 name have op want
         while IFS=$'\t' read -r name have op want; do
           if [[ $op == '>' || $op == '=' ]]; then
             confirmed=$((confirmed + 1))
           else
-            fail "$image: $name $have is not shown at or above $want (apk version -t printed '$op')"
+            fail "$image: $name $have is not shown at or above $want (the version comparison gave '$op')"
           fi
         done <<< "$versions"
         ((confirmed == ${#floors[@]})) ||
@@ -557,9 +611,11 @@ check_apk() {
     summary="OS packages at or above their floors: $(tr '\t\n' ' ;' <<< "$versions")"
   else
     ((${#removed[@]} > 0)) || fail "$dockerfile: no 'apk del --no-cache <package> …' line found"
+    # apk's database and the files' presence, from the model (DEV-p5-image-scan-15: through the image's
+    # own `cat` and `sh` these could be faked by a wrapper).
     local installed pkg file present
-    if ! installed=$(docker run --pull never --rm --network none --entrypoint cat "$image" /lib/apk/db/installed 2>&1); then
-      fail "$image: could not read apk's installed database: $installed"
+    if ! installed=$(image_fs cat "$model" lib/apk/db/installed); then
+      fail "$image: could not read apk's installed database from its layers"
     elif ! grep -qx 'P:busybox' <<< "$installed" || ! grep -qx 'P:musl' <<< "$installed"; then
       fail "$image: apk's installed database does not list busybox and musl, so it cannot show what is absent"
     else
@@ -567,22 +623,21 @@ check_apk() {
         ! grep -qxF "P:$pkg" <<< "$installed" || fail "$image: $pkg is installed; it must be removed (Q-p5-image-scan-1 (a))"
       done
     fi
-    if ! present=$(docker run --pull never --rm --network none --entrypoint sh "$image" -c \
-      'for f in "$@"; do if [ -e "$f" ] || [ -L "$f" ]; then echo "$f"; fi; done; echo end' sh "${API_REMOVED_FILES[@]}" 2>&1) ||
-      [[ $(tail -1 <<< "$present") != end ]]; then
-      fail "$image: could not look for the removed packages' files: $present"
+    if ! present=$(image_fs exists "$model" "${API_REMOVED_FILES[@]}"); then
+      fail "$image: could not look for the removed packages' files"
     else
-      for file in $(sed '$d' <<< "$present"); do fail "$image: $file is in the image; its package must be removed"; done
+      for file in $present; do fail "$image: $file is in the image; its package must be removed"; done
     fi
     summary="absent: ${API_REMOVED[*]} (installed database and files)"
   fi
-  # The package sources in the image itself, against its runtime base (pinned and pulled above).
+  # The package sources in the image itself, against its runtime base (pinned and pulled above), both read
+  # from their layers on the host.
   base=${runtime_base[$dockerfile]}
   local image_state base_state expected
-  if ! image_state=$(docker run --pull never --rm --network none --user 0 --entrypoint sh "$image" -c "$APK_STATE" 2>&1); then
-    fail "$image: could not read /etc/apk: $image_state"
-  elif ! base_state=$(docker run --pull never --rm --network none --user 0 --entrypoint sh "$base" -c "$APK_STATE" 2>&1); then
-    fail "$base: could not read /etc/apk: $base_state"
+  if ! image_state=$(image_fs apk-state "$model"); then
+    fail "$image: could not read /etc/apk from its layers"
+  elif ! base_state=$(image_fs apk-state "$base_model"); then
+    fail "$base: could not read /etc/apk from its layers"
   elif ! grep -q '^file [0-9a-f]\{64\} \./repositories$' <<< "$base_state" ||
     ! grep -q '^file [0-9a-f]\{64\} \./keys/' <<< "$base_state"; then
     fail "$base: /etc/apk has no repositories file or no keys, so the comparison would prove nothing: $base_state"
@@ -611,6 +666,10 @@ check_apk() {
   local apk_env
   apk_env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | cut -d= -f1 | grep -i '^APK_' || true)
   [[ -z $apk_env ]] || fail "$image: ENV sets apk's own variables: $(tr '\n' ' ' <<< "$apk_env")"
+  # What the runtime stage added to its base, with the packages this apk line may change or remove.
+  local -a apk_named=()
+  if [[ $mode == floors ]]; then apk_named=("${floors[@]%%>=*}"); else apk_named=("${removed[@]}" "${API_ALSO_REMOVED[@]}"); fi
+  check_runtime_changes "$image" "$dockerfile" "$model" "$base_model" "$(IFS=,; echo "${apk_named[*]}")"
   if ((findings == before)); then
     echo "$image: $summary"
     if [[ $mode == floors ]]; then
@@ -621,11 +680,107 @@ check_apk() {
   fi
 }
 
+# --- What the runtime stage adds to its base (DEV-p5-image-scan-10) ----------------------------------
+# The text checks above cover the runtime stage's lines only; an earlier stage can build anything and hand
+# it over by COPY (-10: a wrapper `apk` put on the PATH, -15: a lying `find`, -14: a setcap'd binary). So
+# the built image itself is compared with its pinned base, both read on the host:
+#   - history: the base's layers (by diff_id) and history are a prefix of the image's, and the image's own
+#     history entries that change the filesystem are exactly the runtime stage's RUN, COPY and WORKDIR
+#     lines, in order, as BuildKit records them (`RUN /bin/sh -c <command> # buildkit`, `COPY <sources>
+#     <destination> # buildkit` without the flags, `WORKDIR <path>`). The history is what was actually run,
+#     so a SHELL hook, a heredoc or a continuation that the text reader got wrong shows up as a mismatch;
+#   - files: every path the image adds or changes against the base (kind, mode, owner, content, link target,
+#     xattrs) must be under one of the image's COPY roots (RUNTIME_COPY_ROOTS: what the image is for), one
+#     of apk's own state files, or a file of a package the apk line names, with apk's own checksum. Under
+#     the roots: no ELF binary or shared library, and no symlink out of the root. Each COPY or WORKDIR layer
+#     writes only under the roots. So a file an earlier stage made reaches the image only inside the roots,
+#     and only as data, never as a tool on the PATH or a replaced library;
+#   - packages: none added (a floor must name a package the base has, which also settles
+#     DEV-p5-image-scan-02), and only the packages the apk line names change version or leave. The API's
+#     `apk del` also purges ca-certificates-bundle, which only apk-tools needed (its Dockerfile comment),
+#     so that one is named in API_ALSO_REMOVED;
+#   - config: the base's ENV values (PATH among them) and ENTRYPOINT are unchanged, and the only ENV names
+#     the image adds are the ones in RUNTIME_ENV_NAMES (N13 put a wrapper's folder first on the PATH).
+# Each list here is a reviewed edit when the Dockerfile's runtime stage changes; a Dependabot FROM bump
+# changes none of them.
+declare -A RUNTIME_COPY_ROOTS=(
+  [docker/api.Dockerfile]='app'
+  [docker/web.Dockerfile]='srv/ascrum etc/nginx/ascrum etc/nginx/templates'
+)
+declare -A RUNTIME_ENV_NAMES=(
+  [docker/api.Dockerfile]='NODE_ENV PORT'
+  [docker/web.Dockerfile]='API_UPSTREAM ROUTE_STUB_CONTROL NGINX_ENVSUBST_FILTER'
+)
+API_ALSO_REMOVED=(ca-certificates-bundle)
+
+# The runtime stage's RUN, COPY and WORKDIR lines (everything after the last FROM), as BuildKit writes
+# them into the image's history. Anything this does not reproduce exactly fails the comparison.
+expected_history() {
+  local line keyword rest word
+  local -a words out
+  while IFS= read -r line; do
+    read -r keyword rest <<< "$line"
+    case ${keyword^^} in
+      RUN) printf 'RUN /bin/sh -c %s # buildkit\n' "$rest" ;;
+      COPY | ADD)
+        read -ra words <<< "$rest"
+        out=()
+        for word in "${words[@]}"; do [[ $word == --* ]] || out+=("$word"); done
+        printf '%s %s # buildkit\n' "${keyword^^}" "${out[*]}"
+        ;;
+      WORKDIR) printf 'WORKDIR %s\n' "$rest" ;;
+    esac
+  done < <(instructions "$1" | awk 'toupper($1) == "FROM" { n = 0 } { l[++n] = $0 } END { for (i = 2; i <= n; i++) print l[i] }')
+}
+
+check_runtime_changes() {
+  local image=$1 dockerfile=$2 model=$3 base_model=$4 apk_named=$5 base before=$findings expected
+  local -a roots
+  base=${runtime_base[$dockerfile]}
+  read -ra roots <<< "${RUNTIME_COPY_ROOTS[$dockerfile]:-}"
+  if ((${#roots[@]} == 0)); then
+    fail "$dockerfile: no COPY roots in RUNTIME_COPY_ROOTS"
+    return
+  fi
+  expected="$work/expected-history-$(basename "$dockerfile").txt"
+  expected_history "$dockerfile" > "$expected"
+  findings_of "$image" layers "$base_model" "$model" "$expected" || true
+  findings_of "$image" added "$base_model" "$model" "$apk_named" "${roots[@]}" || true
+  # Config against the base: every base ENV entry unchanged, only the listed names added, same ENTRYPOINT.
+  local image_env base_env extra
+  image_env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | sed '/^$/d' | LC_ALL=C sort)
+  base_env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$base" | sed '/^$/d' | LC_ALL=C sort)
+  extra=$(comm -13 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | LC_ALL=C sort)
+  if [[ -n $(comm -23 <(echo "$base_env") <(echo "$image_env")) ]]; then
+    fail "$image: ENV changes or drops the base's entries: $(comm -23 <(echo "$base_env") <(echo "$image_env") | cut -d= -f1 | tr '\n' ' ')"
+  fi
+  if [[ $extra != "$(tr ' ' '\n' <<< "${RUNTIME_ENV_NAMES[$dockerfile]:-}" | sed '/^$/d' | LC_ALL=C sort)" ]]; then
+    fail "$image: ENV adds $(tr '\n' ' ' <<< "$extra")but the runtime stage may add only ${RUNTIME_ENV_NAMES[$dockerfile]:-nothing}"
+  fi
+  if [[ $(docker image inspect --format '{{json .Config.Entrypoint}}' "$image") != "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$base")" ]]; then
+    fail "$image: ENTRYPOINT differs from its base's"
+  fi
+  if ((findings == before)); then
+    echo "$image: on its base's $(jq '.diffIds | length' "$base_model") layers; its own history is exactly the runtime stage's $(wc -l < "$expected") RUN/COPY/WORKDIR lines; adds or changes nothing outside ${roots[*]} except checksum-verified files of ${apk_named//,/ }; base ENV and ENTRYPOINT unchanged"
+  fi
+}
+
+# --- Both images and their runtime bases, read on the host ------------------------------------------
+# The bases are pulled by their pinned digest (checked above) so they can be read the same way.
+for dockerfile in docker/api.Dockerfile docker/web.Dockerfile; do
+  base=${runtime_base[$dockerfile]}
+  docker image inspect "$base" > /dev/null 2>&1 || docker pull -q "$base" > /dev/null
+done
+model_of "$api_image" "$work/api.model.json"
+model_of "${runtime_base[docker/api.Dockerfile]}" "$work/api-base.model.json"
+model_of "$web_image" "$work/web.model.json"
+model_of "${runtime_base[docker/web.Dockerfile]}" "$work/web-base.model.json"
+
 # --- API ---------------------------------------------------------------------------------------
-check_user "$api_image"
-check_setuid "$api_image"
+check_user "$api_image" "$work/api.model.json"
+check_special "$api_image" "$work/api.model.json"
 check_secrets "$api_image" docker/api.Dockerfile
-files_of "$api_image" > "$work/api.txt"
+image_fs list "$work/api.model.json" > "$work/api.txt"
 check_common "$api_image" "$work/api.txt"
 
 # Outside node_modules, /app holds exactly what the API runs: an allowlist, so a new kind of file
@@ -693,7 +848,7 @@ check_startup() {
 check_startup "$api_image"
 
 # Alpine's OpenSSL, zlib and apk are gone, and the package sources are the base's (the section above).
-check_apk "$api_image" docker/api.Dockerfile removed
+check_apk "$api_image" docker/api.Dockerfile removed "$work/api.model.json" "$work/api-base.model.json"
 
 # Dev dependencies: none of api/package.json's devDependencies is installed (pnpm keeps every installed
 # package as node_modules/.pnpm/<name>@<version>, scoped names with + for /).
@@ -706,10 +861,10 @@ done < <(jq -r '.devDependencies // {} | keys[]' api/package.json)
 echo "$api_image: installed packages: $(grep -oE '^app/api/node_modules/\.pnpm/[^/]+/$' "$work/api.txt" | sed -E 's|.*/\.pnpm/||; s|/$||' | grep -v '^node_modules$' | sort | tr '\n' ' ')"
 
 # --- web ---------------------------------------------------------------------------------------
-check_user "$web_image"
-check_setuid "$web_image"
+check_user "$web_image" "$work/web.model.json"
+check_special "$web_image" "$work/web.model.json"
 check_secrets "$web_image" docker/web.Dockerfile
-files_of "$web_image" > "$work/web.txt"
+image_fs list "$work/web.model.json" > "$work/web.txt"
 check_common "$web_image" "$work/web.txt"
 # A static build behind nginx: no node_modules at all, so no dependency of any kind.
 hits=$(grep -E '(^|/)node_modules/' "$work/web.txt" | head -5 || true)
@@ -717,7 +872,7 @@ hits=$(grep -E '(^|/)node_modules/' "$work/web.txt" | head -5 || true)
 # The site root holds only build output: no sources, source maps, or the MSW worker (dev only).
 hits=$(grep -E '^srv/ascrum/.*(\.tsx?|\.map|\.less|mockServiceWorker\.js)$' "$work/web.txt" || true)
 [[ -z $hits ]] || fail "$web_image: sources or dev files in the site root: $hits"
-check_apk "$web_image" docker/web.Dockerfile floors
+check_apk "$web_image" docker/web.Dockerfile floors "$work/web.model.json" "$work/web-base.model.json"
 
 if [[ $findings -gt 0 ]]; then
   echo "check-images: $findings finding(s)" >&2
