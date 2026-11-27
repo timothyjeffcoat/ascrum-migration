@@ -723,3 +723,129 @@ The e2e-compose job's image steps, from the worktree root, on fresh images
 - `bash -n docker/check-images.sh`: OK. shellcheck is not installed here, and CI does not run it.
 - Not run: the rest of the e2e-compose job (compose up, `pnpm e2e:compose`, the client-address and health
   checks) and web `pnpm verify`. This PR changes nothing they exercise beyond the three scripts above.
+
+## 2026-11-27, session 6 (worker): DEV-p5-image-host-07, after the owner's answer to Q-p5-image-host-4
+
+Same branch and PR (#94). The owner chose (a) without the `verify` change, as relayed by the orchestrator.
+The answer is recorded in `spec/questions/p5-image-host.md` (59482ea). Owned paths added for this round:
+`docker/image-fs.test.ts`, its generator `docker/image-fs-craft.ts`, and one step in the `test` job of
+`.github/workflows/ci.yml`. Nothing else in `.github/` or `web/` changed, and no config changed.
+
+### What was added (149825b, 3e2a358)
+
+- `docker/image-fs-craft.ts` writes `docker save` folders: index.json, manifest.json, a config blob and
+  layer blobs, each named by its SHA-256. It hand-builds the tar headers (ustar with its checksum, PAX `x`
+  and `g`, GNU `L` and `K`) and gzips with `node:zlib`, so each case gets exactly one malformed detail.
+  It uses Node's standard library only.
+- `docker/image-fs.test.ts` uses `node:test` and `node:assert/strict`. It runs the reader as
+  `check-images.sh` does (`node docker/image-fs.ts read <folder> <diff_ids> <model>`, and `added` for
+  the COPY-layer cases), and asserts the exit code and a stable part of the message.
+- CI: one step in the `test` job, `node --test 'docker/*.test.ts'`, with `working-directory: .` (the
+  workflow's default is `web/`). It pins nothing new and uses the Node 24 that setup-web already installs.
+- Lint and typecheck pick both files up with no config change. `eslint --format json` on them reports 0
+  errors, 0 warnings and no "ignored" message. `tsc -p ../docker/tsconfig.json --listFilesOnly` lists
+  `docker/image-fs-craft.ts` and `docker/image-fs.test.ts`.
+- Not image content: both build contexts are allowlists. `docker/api.Dockerfile.dockerignore` starts with
+  `*` and re-includes only `web/package.json`, `api/package.json`, `api/pnpm-lock.yaml`,
+  `api/migrations/*.sql`, `api/src/*.ts`, `web/stub/*.ts` and `docker/api/import-graph.ts`, and it
+  excludes `**/*.test.ts` again. `docker/web.Dockerfile.dockerignore` starts with `*` and re-includes only
+  `web/` (minus its tests and outputs), `docker/web/security-headers.ts` and
+  `docker/web/default.conf.template`. Neither file lets `docker/image-fs*` into a build, so no
+  `.dockerignore` edit is needed. `check-images.sh` reads images and Dockerfiles, never the `docker/`
+  folder. On images rebuilt after the change (tag `p5f7`), `check-images.sh` passes (below), and its `/app`
+  allowlist would have flagged any stray file.
+
+### Cases (36 tests, all passing; exit code and message fragment asserted for each)
+
+`read` (exit 2 unless noted):
+- **Control:** two layers, one gzip and one raw tar, exit 0, `read 2 layers, 9 paths in the final
+  filesystem`. They hold a directory, a file, a symlink, a valid hard link, a PAX long path with `mtime`
+  and an xattr, a GNU long name, a whiteout and an opaque directory that remove lower files. `list` shows
+  both long names and neither removed file. `special` reports the xattr (exit 1).
+- **Whiteouts and overlay metadata:**
+  - a whiteout with data: `whiteout 'app/.wh.a.txt' is not an empty file`;
+  - a whiteout that is a directory: the same message;
+  - `.wh..wh.plnk`: `is an overlay metadata file this reader does not know`.
+- **Links:**
+  - a hard link to nothing: `hard link 'app/hard' points at 'app/missing', which is not a file`;
+  - a hard link with a different mode: `… different from its target 'app/a'`;
+  - a symlink with no target: `has no target`;
+  - an ESC in a symlink target: `has a control character`.
+- **PAX and GNU headers:**
+  - PAX `comment` and `GNU.sparse.major`: `PAX key '…' is not understood by this reader`;
+  - a `g` header: `a global PAX header`;
+  - two `x` and two `L` headers: `two 'x' extended headers for one entry`, and the same for `'L'`;
+  - GNU `L` with a PAX `path`, and `K` with a PAX `linkpath`: `an entry has both a GNU long name or link
+    and a PAX path or linkpath`;
+  - a record without a key: `a PAX record without a key`;
+  - PAX `uid=-1`: `PAX uid '-1' is not a number`.
+- **Types:** FIFO `6`, character device `3`, block device `4`, contiguous `7`, GNU sparse `S`, each
+  `entry 'app/node' has tar type '<t>', which a layer here may not use`. A directory carrying data gives
+  `dir entry 'app/d/' carries 1 bytes of data`.
+- **Names (#90 rounds 2 and 3):**
+  - a NUL in a PAX path: `a NUL byte in the name`;
+  - typeflag `\0` and `0` with a trailing `/`: `is a regular-file type with a directory name`;
+  - 0x01, LF, CR, ESC and DEL in a path: `a control character in the name`;
+  - `..` and an empty segment: `has an empty, '.' or '..' segment`;
+  - a PAX path that is not UTF-8: `a name that is not valid UTF-8`;
+  - an entry under a file: `is under 'app/f', which is a file`.
+- **Tar structure:**
+  - a changed byte after the checksum: `a header checksum does not match`;
+  - a size field `0000000009x` (checksum valid): `'0000000009x' is not an octal number`;
+  - magic `xstar`: `unknown tar magic`;
+  - a non-zero block after the two zero blocks: `data after the end-of-archive marker`;
+  - no end marker: `the archive has no end-of-archive marker`;
+  - one zero block mid-archive: `a single zero block in the middle of the archive`.
+- **Blobs:**
+  - a blob stored under another digest: `layer 0: the blob's SHA-256 is <hex>, not its name`;
+  - a wrong diff_id: `layer 0: the uncompressed tar is sha256:…, the config says sha256:bbb…`;
+  - a bzip2 and an xz blob: `layer 0: neither gzip, zstd nor a ustar archive`;
+  - diff_ids that are not the engine's: `are not the image's sha256:`.
+
+`added` (a base with an empty apk database, then the image with one `COPY dist/ /app # buildkit` layer,
+root `app`):
+- control: writes only under `app`, exit 0, no finding;
+- an opaque directory: exit 1, `layer 1 (COPY dist/ /app # buildkit): opaque /app is outside the COPY
+  roots`;
+- a whiteout: exit 1, `… whiteout /app/old.js is outside the COPY roots`;
+- a write to `/etc/evil`: exit 1, `… entry /etc/evil is outside the COPY roots`.
+
+**Not covered, with the reason:** "nested extended headers" cannot be reached. `header()` runs only once
+an extended header's data is fully read, and `finishData()` has cleared `meta` by then (a size-0 header
+clears it at once). The guard is defensive. I did not change the reader to make it reachable (out of
+scope), and the reviewer may want it removed or kept. The question's context listed it among the branches;
+that was my mistake in the question.
+
+### Breakage proof (each weakening planted alone in `docker/image-fs.ts` by a scratch script, run, then restored with `git checkout -- docker/image-fs.ts`)
+
+| Plant | Result | Red test |
+|---|---|---|
+| accept any PAX key | pass 35, fail 1 | a PAX key the reader does not understand is refused |
+| skip the blob-digest check | pass 35, fail 1 | a layer blob whose SHA-256 is not its name is refused |
+| allow FIFO (`'6': 'file'`) | pass 35, fail 1 | a FIFO (tar type '6') is refused |
+| skip the diff_id check | pass 35, fail 1 | an uncompressed tar whose digest is not the diff_id is refused |
+| accept a whiteout with data | pass 35, fail 1 | a whiteout that is not an empty file is refused |
+
+After each restore `git status --short` was empty. The final run is below.
+
+### Mistakes and wrong turns
+
+- The brief suggested `node --test docker/`, and I tried it first. On Node 24.22.3 a directory argument is
+  loaded as a module: `Error: Cannot find module '…/docker'`, `ℹ fail 1`. Node's test runner expands
+  globs itself, so the step runs `node --test 'docker/*.test.ts'`.
+- My first malformed-PAX case wrote `9 nokey\n`, an 8-byte record, so the reader refused it as `a PAX
+  record that overruns or lacks its newline` and the test (which expected "without a key") was red. I
+  corrected the length to 8. The test had caught my generator's error, not a reader bug.
+- No guard refused a command this session.
+
+### Gates (this session; Node 24.22.3; unpiped)
+
+- `node --test 'docker/*.test.ts'` (the CI step's command, from the worktree root): exit 0, `ℹ tests 36`,
+  `ℹ pass 36`, `ℹ fail 0`.
+- web `pnpm lint`: exit 0. web `pnpm typecheck`: exit 0.
+- infra `pnpm test` (its `workflows.test.ts` reads the workflow files): exit 0, `Tests  250 passed (250)`.
+- `docker compose --profile prod-check build` (tag `p5f7`): exit 0. `docker/check-images.sh ascrum-api:p5f7
+  ascrum-web:p5f7`: exit 0, 0 `FAIL` lines, and `installed packages are exactly api/pnpm-lock.yaml's
+  production tree (14 in .pnpm; top level: pg)`.
+- Not re-run: `scan-images.sh` and `check-scan-coverage.sh`. Nothing that reaches an image changed this
+  session; both passed in session 5.
