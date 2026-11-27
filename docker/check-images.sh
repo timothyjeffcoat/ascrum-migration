@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # AC-CTR-02 and the image checks around it. Checks the built images themselves (their config, history and
 # every file in them), plus the static pins they are built from:
-#   - non-root; no dev dependencies, test files or .env files (AC-CTR-02);
+#   - non-root; no dev dependencies, test files or .env files (AC-CTR-02); the API's installed packages are
+#     exactly api/pnpm-lock.yaml's production tree, as pnpm lists it from the lockfile (DEV-p5-image-host-10);
 #   - every image docker/*.Dockerfile uses (FROM, COPY --from, RUN --mount from; any keyword case) and
 #     every pulled compose image pinned by version and digest (DEV-p5-containers-09, -12); no `# syntax=`
 #     frontend; compose builds exactly these two Dockerfiles from the repo root, with no build options
@@ -35,9 +36,9 @@
 # running it is what they test: the import smoke test (main.ts must load in the image) and the start-up
 # check (it must start and answer /healthz). Neither is trusted for a fact the host can read.
 #
-# Needs docker, jq, GNU tar, Node 24 (the same `node` the job's setup-web installs) and Gitleaks: $GITLEAKS,
-# or `gitleaks` on the PATH, at the version pinned in .github/actions/setup-gitleaks (which the e2e-compose
-# and secrets jobs both use). A missing tool fails the check; it is never skipped. The start-up check runs
+# Needs docker, jq, GNU tar, Node 24 and pnpm (the same `node` and `pnpm` the job's setup-web installs) and
+# Gitleaks: $GITLEAKS, or `gitleaks` on the PATH, at the version pinned in .github/actions/setup-gitleaks
+# (which the e2e-compose and secrets jobs both use). A missing tool fails the check; it is never skipped. The start-up check runs
 # its own throwaway PostgreSQL on a private network, publishes no port, and removes everything it started.
 #
 # Exits non-zero and names every finding when a check fails.
@@ -65,7 +66,7 @@ fail() {
   findings=$((findings + 1))
 }
 
-for tool in docker jq tar node; do
+for tool in docker jq tar node pnpm; do
   command -v "$tool" > /dev/null || {
     echo "check-images: $tool not found" >&2
     exit 2
@@ -864,8 +865,35 @@ while read -r dev; do
   pattern="^app/api/node_modules/(\.pnpm/${dev//\//\\+}@|${dev}/)"
   ! grep -qE "$pattern" "$work/api.txt" || fail "$api_image: dev dependency $dev is installed"
 done < <(jq -r '.devDependencies // {} | keys[]' api/package.json)
-# And what is installed is exactly the production tree: pg and the packages pg depends on.
-echo "$api_image: installed packages: $(log_safe "$(grep -oE '^app/api/node_modules/\.pnpm/[^/]+/$' "$work/api.txt" | sed -E 's|.*/\.pnpm/||; s|/$||' | grep -v '^node_modules$' | sort | tr '\n' ' ')")"
+# And what is installed is exactly the production tree: pg and the packages pg depends on
+# (DEV-p5-image-host-10: this line had only printed the list, and extra `.pnpm` directories passed). The
+# expected tree comes from api/pnpm-lock.yaml alone, through pnpm itself: `pnpm list --lockfile-only --prod`
+# reads the lockfile without node_modules and gives each package's path in the virtual store, so its
+# `.pnpm/<dir>` names (peer suffixes included, e.g. pg-pool@3.14.0_pg@8.23.1) are the ones the Dockerfile's
+# `pnpm install --prod --frozen-lockfile` creates. It is the pnpm packageManager pins (setup-web in CI, the
+# Dockerfile through corepack), and nothing from the image takes part. Both ways must match: every `.pnpm`
+# directory in the image is in the lockfile's production tree and every one of those is in the image, and
+# the top-level packages under node_modules are exactly the production dependencies api/package.json names.
+# An empty or unreadable expected list fails; it never passes as "nothing expected".
+installed=$(grep -oE '^app/api/node_modules/\.pnpm/[^/]+/$' "$work/api.txt" | sed -E 's|.*/\.pnpm/||; s|/$||' |
+  grep -v '^node_modules$' | LC_ALL=C sort || true)
+top_level=$(grep -oE '^app/api/node_modules/(@[^/]+/)?[^/.][^/]*/?$' "$work/api.txt" |
+  sed -E 's|^app/api/node_modules/||; s|/$||' | grep -v '^@[^/]*$' | LC_ALL=C sort || true)
+if ! pnpm --dir api list --lockfile-only --prod --depth Infinity --json > "$work/prod-tree.json" 2> "$work/prod-tree.err"; then
+  fail "$api_image: pnpm could not list api/pnpm-lock.yaml's production tree: $(tail -5 "$work/prod-tree.err")"
+else
+  production=$(jq -r '[.. | objects | .path? // empty | strings | capture("/node_modules/\\.pnpm/(?<d>[^/]+)/") | .d] | unique[]' \
+    "$work/prod-tree.json" | LC_ALL=C sort || true)
+  direct=$(jq -r '[.[0] | (.dependencies // {}), (.optionalDependencies // {}) | keys[]] | unique[]' "$work/prod-tree.json" |
+    LC_ALL=C sort || true)
+  if [[ -z $production || -z $direct ]]; then
+    fail "$api_image: pnpm listed no production packages for api/pnpm-lock.yaml, so the installed tree cannot be compared"
+  elif [[ $installed != "$production" || $top_level != "$direct" ]]; then
+    fail "$api_image: installed packages are not api/pnpm-lock.yaml's production tree. In the image only: $(comm -23 <(echo "$installed") <(echo "$production") | tr '\n' ' ')$(comm -23 <(echo "$top_level") <(echo "$direct") | sed 's|^|node_modules/|' | tr '\n' ' ')missing from the image: $(comm -13 <(echo "$installed") <(echo "$production") | tr '\n' ' ')$(comm -13 <(echo "$top_level") <(echo "$direct") | sed 's|^|node_modules/|' | tr '\n' ' ')"
+  else
+    echo "$api_image: installed packages are exactly api/pnpm-lock.yaml's production tree ($(wc -l <<< "$production") in .pnpm; top level: $(paste -sd ' ' <<< "$direct")): $(log_safe "$(paste -sd ' ' <<< "$installed")")"
+  fi
+fi
 
 # --- web ---------------------------------------------------------------------------------------
 check_user "$web_image" "$work/web.model.json"
