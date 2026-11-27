@@ -212,6 +212,15 @@ describe('demo stack: the API container', () => {
     })
   })
 
+  it('Q-p5-image-host-3 (a): the API container drops every Linux capability and keeps the init process', () => {
+    // The only container on ECS: the web is S3 + CloudFront, and there is one task definition (above).
+    expect(taskDefinition.Properties?.ContainerDefinitions).toHaveLength(1)
+    const linux = container?.LinuxParameters as { Capabilities?: { Add?: unknown; Drop?: unknown } }
+    expect(linux).toEqual({ InitProcessEnabled: true, Capabilities: { Drop: ['ALL'] } })
+    expect(linux.Capabilities?.Add).toBeUndefined()
+    expect(container).not.toHaveProperty('Privileged')
+  })
+
   it('S-p5-4: the start script builds DATABASE_URL in the container, percent-encoding any password', () => {
     const password = `p@ss:w/rd%41#?&"'$\`!*()[]{}<>|\\;= ~`
     const script = API_START_SCRIPT.replace('exec node api/src/main.ts', 'printf %s "$DATABASE_URL"')
