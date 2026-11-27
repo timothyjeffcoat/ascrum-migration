@@ -113,7 +113,11 @@ jobs:
       - name: Build the images
         working-directory: .
         run: docker compose --profile prod-check build
-      - name: AC-CTR-02 images (non-root, no dev deps, tests or .env), pins, no secrets in layers, the API loads and starts
+      # Every fact about the images' files (modes, file capabilities, apk's database, what the runtime stage
+      # added to its base) is read on the host from `docker save` by docker/image-fs.ts, on the Node 24 that
+      # setup-web installed; no binary from the images answers for them (p5-image-host, DEV-p5-image-scan-10,
+      # -14, -15).
+      - name: AC-CTR-02 images (non-root, no dev deps, tests or .env), pins, no secrets in layers, the API loads and starts; setuid, capabilities and runtime-stage additions read on the host
         working-directory: .
         run: docker/check-images.sh ascrum-api:ci ascrum-web:ci
       # spec §6 image-scan, owner's answers to Q-p5-image-cves-2 (a), Q-p5-image-scan-2 (a)+(c) and -3 (a):
@@ -131,6 +135,12 @@ jobs:
         env:
           SCAN_REPORT_DIR: ${{ runner.temp }}/trivy-reports
         run: docker/scan-images.sh ascrum-api:ci ascrum-web:ci
+      # DEV-p5-image-scan-04 (b): the scan's reports must hold exactly the OS packages in apk's database and
+      # the package.json packages in each image, both read on the host. A scan that silently read less
+      # fails here instead of passing with no findings.
+      - name: Image scan coverage (every OS and language package Trivy read), checked on the host
+        working-directory: .
+        run: docker/check-scan-coverage.sh ascrum-api:ci ascrum-web:ci "$RUNNER_TEMP/trivy-reports"
       - if: failure()
         uses: actions/upload-artifact@v7
         with:

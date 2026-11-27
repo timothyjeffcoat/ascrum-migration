@@ -9,8 +9,9 @@
 #
 #   docker/scan-images.sh <api image> <web image>        (from the repo root; the images must be local)
 #
-# Needs docker, jq and Trivy: $TRIVY, or `trivy` on the PATH, at the version pinned in
-# .github/actions/setup-trivy. A missing tool fails the scan; it is never skipped.
+# Needs docker, jq, GNU tar, Node 24 (for docker/image-fs.ts) and Trivy: $TRIVY, or `trivy` on the PATH,
+# at the version pinned in .github/actions/setup-trivy. A missing tool fails the scan; it is never skipped.
+# No binary from the scanned images is run (owner's answer to Q-p5-image-host-1 (b)).
 #
 # ECR's scan-on-push gate (infra/scripts/imageScan.ts) stays the final check on the image that is
 # deployed. This scan runs on the PR, one AWS run earlier, and also covers the web image, which ECR never
@@ -20,8 +21,8 @@
 # nginx.org through the pinned nginx-unprivileged base, and its fixes (1.30.7) are in no such image yet. So,
 # for the web image only, findings in the package named exactly `nginx` are reported but do not fail, while
 # the window is open. It closes by itself, with no edit to this file:
-#   - when the web image's installed nginx is at or above WINDOW_CLOSES_AT_NGINX (apk's own comparison, in
-#     the image; anything but a clean `<` closes it), or
+#   - when the web image's installed nginx is at or above WINDOW_CLOSES_AT_NGINX (apk's version order, read on
+#     the host from the image's layers by docker/image-fs.ts; anything but a clean `<` closes it), or
 #   - after WINDOW_EXPIRES (UTC), whatever nginx is installed.
 # Once closed, nginx findings fail like any other. Every other package in the web image, and everything in
 # the API image, is gated in full all the time. Each run prints the window's state, the nginx CVEs it
@@ -32,7 +33,7 @@
 #   - the vulnerability DB cannot be downloaded (it is fetched on every run, into an empty cache, so there
 #     is no older copy to fall back on), or the downloaded DB is more than 3 days old;
 #   - Trivy exits non-zero on either image (an image it cannot read, a crash, a timeout);
-#   - a report does not show an Alpine OS with every package apk lists in the image;
+#   - a report does not show an Alpine OS with every package apk lists in the image (counted on the host);
 #   - any finding of either pass outside the open nginx window.
 # No ignore list without an owner answer: every TRIVY_* variable is dropped, Trivy runs in an empty folder
 # with --config '' and --ignorefile '' (so no trivy.yaml or .trivyignore is read), and no VEX source,
@@ -56,12 +57,33 @@ command -v "$trivy" > /dev/null || {
   exit 2
 }
 trivy=$(command -v "$trivy")
-for tool in docker jq; do
+for tool in docker jq tar node; do
   command -v "$tool" > /dev/null || {
     echo "scan-images: $tool not found" >&2
     exit 2
   }
 done
+# The two facts this script needs from the images (apk's package count, the installed nginx version) are
+# read on the host by docker/image-fs.ts from `docker save`, never by a binary inside the image it scans
+# (owner's answer to Q-p5-image-host-1 (b); DEV-p5-image-scan-15: a wrapper `grep` or `apk` copied in from
+# an earlier stage could make the count agree or keep the nginx window open). Node 24, as check-images.sh.
+node_major=$(node -p 'process.versions.node.split(".")[0]')
+if ((node_major < 24)); then
+  echo "scan-images: docker/image-fs.ts needs Node 24 or later; node is $(node --version)" >&2
+  exit 2
+fi
+image_fs_ts="$(cd "$(dirname "$0")" && pwd)/image-fs.ts"
+[[ -f $image_fs_ts ]] || {
+  echo "scan-images: $image_fs_ts not found" >&2
+  exit 2
+}
+image_fs() { node "$image_fs_ts" "$@"; }
+# Image-derived text (Trivy reads package names, versions and the OS name from the image; the window's
+# state carries the installed version) is printed only through log_safe or log_safe_lines
+# (DEV-p5-image-host-05, -13 / sec-09; the rules are in the file). Sourced here, before the script leaves its
+# folder.
+# shellcheck source=docker/log-safe.sh
+source "$(cd "$(dirname "$0")" && pwd)/log-safe.sh"
 while read -r name; do unset "$name"; done < <(compgen -e | grep '^TRIVY_' || true)
 # Exactly the release .github/actions/setup-trivy pins (DEV-p5-image-scan-04 (a)): move both together.
 PINNED_TRIVY_VERSION=0.76.2
@@ -80,7 +102,7 @@ mkdir "$work/empty"
 cd "$work/empty"
 findings=0
 fail() {
-  echo "scan-images FAIL: $*" >&2
+  echo "scan-images FAIL: $(log_safe "$*")" >&2
   findings=$((findings + 1))
 }
 
@@ -114,24 +136,31 @@ echo "Trivy $(jq -r .Version <<< "$db"), vulnerability DB built $updated, downlo
 # --- The nginx window: open or closed, decided from the web image and the date ----------------------
 window_open=no
 window_reason=''
+# The installed version comes from apk's database as read on the host (installed_of, below), and the
+# comparison is apk's version order in docker/image-fs.ts (checked against apk-tools 3.0.9, p5-image-host
+# worklog). An unreadable database, a missing package, a version the comparison refuses or anything but a
+# clean `<` closes the window, as before.
 window_state() {
-  local image=$1 today have op
+  local image=$1 installed=$2 today have op
   today=$(date -u +%F)
   if [[ $today > $WINDOW_EXPIRES ]]; then
     window_reason="expired: today ($today) is after $WINDOW_EXPIRES"
     return
   fi
-  if ! have=$(docker run --pull never --rm --network none --entrypoint sh "$image" -c \
-    'awk -v p="P:$1" '\''$0 == p { found = 1 } found && /^V:/ { print substr($0, 3); exit }'\'' /lib/apk/db/installed' \
-    sh "$WINDOW_PACKAGE" 2>&1); then
-    window_reason="closed: could not read the installed $WINDOW_PACKAGE version ($have)"
+  if [[ ! -s $installed ]]; then
+    window_reason="closed: could not read the installed $WINDOW_PACKAGE version (apk's database was not read)"
     return
   fi
+  have=$(awk -F'\t' -v p="$WINDOW_PACKAGE" '$1 == p { print $2 }' "$installed")
   if [[ -z $have ]]; then
     window_reason="closed: $WINDOW_PACKAGE is not installed in $image"
     return
   fi
-  op=$(docker run --pull never --rm --network none --entrypoint apk "$image" version -t "$have" "$WINDOW_CLOSES_AT_NGINX" 2>&1 || true)
+  if [[ $have == *$'\n'* ]]; then
+    window_reason="closed: apk's database lists $WINDOW_PACKAGE more than once"
+    return
+  fi
+  op=$(image_fs vercmp "$have" "$WINDOW_CLOSES_AT_NGINX" 2>&1 || true)
   if [[ $op == '<' ]]; then
     window_open=yes
     window_reason="open: installed $WINDOW_PACKAGE $have is below $WINDOW_CLOSES_AT_NGINX, and today ($today) is not after $WINDOW_EXPIRES"
@@ -162,31 +191,47 @@ check_report() {
   blocking=$(sed '/^$/d' <<< "$blocking")
   if [[ -n $blocking ]]; then
     fail "$image ($pass): $(wc -l <<< "$blocking") finding(s) that fail the scan:"
-    awk -F'\t' '{ printf "  %s\t%s\t%s\t%s\n", $3, $4, $5, $6 }' <<< "$blocking" | sort >&2
+    awk -F'\t' '{ printf "  %s\t%s\t%s\t%s\n", $3, $4, $5, $6 }' <<< "$blocking" | sort | log_safe_lines >&2
   fi
-  echo "$image ($pass): $os, $pkgs OS packages (as apk lists them), $(jq '[.Results[]? | select(.Class == "lang-pkgs") | .Packages[]?] | length' "$report") language packages; $(sed '/^$/d' <<< "$all" | wc -l) finding(s), $( [[ -n $blocking ]] && wc -l <<< "$blocking" || echo 0) failing"
+  echo "$image ($pass): $(log_safe "$os"), $pkgs OS packages (as apk lists them), $(jq '[.Results[]? | select(.Class == "lang-pkgs") | .Packages[]?] | length' "$report") language packages; $(sed '/^$/d' <<< "$all" | wc -l) finding(s), $( [[ -n $blocking ]] && wc -l <<< "$blocking" || echo 0) failing"
+}
+# apk's installed packages (name<TAB>version), read on the host from the image's layers: `docker save`,
+# then docker/image-fs.ts checks the digests against the engine's diff_ids and rebuilds the final
+# filesystem. Fails (returns 1, file left empty) if anything cannot be read.
+installed_of() {
+  local image=$1 out=$2 dir ids
+  : > "$out"
+  dir=$(mktemp -d "$work/save.XXXXXX")
+  ids=$(docker image inspect --format '{{range $i, $l := .RootFS.Layers}}{{if $i}},{{end}}{{$l}}{{end}}' "$image") || return 1
+  docker save "$image" | tar -x --no-same-owner --no-same-permissions -C "$dir" -f - || return 1
+  image_fs read "$dir" "$ids" "$dir.json" > /dev/null || return 1
+  image_fs apk-installed "$dir.json" > "$out.tmp" || return 1
+  mv "$out.tmp" "$out"
+  rm -rf "$dir" "$dir.json"
 }
 scan() {
-  local image=$1 label=$2 apk_pkgs in_window=no
-  if ! apk_pkgs=$(docker run --pull never --rm --network none --entrypoint sh "$image" -c "grep -c '^P:' /lib/apk/db/installed"); then
-    fail "$image: could not count the packages in /lib/apk/db/installed"
+  local image=$1 label=$2 apk_pkgs in_window=no installed="$work/$2-installed.tsv"
+  if ! installed_of "$image" "$installed" || ! apk_pkgs=$(grep -c . "$installed"); then
+    : > "$installed"
+    fail "$image: could not read apk's installed database from the image's layers"
+    [[ $label != web ]] || window_state "$image" "$installed"
     return
   fi
   if [[ $label == web ]]; then
-    window_state "$image"
+    window_state "$image" "$installed"
     in_window=$window_open
   fi
   local common=(--cache-dir "$cache" --config '' --ignorefile '' --no-progress --disable-telemetry
     --skip-version-check --skip-db-update --image-src docker --scanners vuln --list-all-pkgs --format json
     --exit-code 0)
   if ! "$trivy" image "${common[@]}" --pkg-types os,library --severity HIGH,CRITICAL \
-    --output "$reports/$label.json" "$image"; then
+    --output "$reports/$label.json" "$image" 2> >(log_safe_lines >&2); then
     fail "$image (HIGH/CRITICAL pass): Trivy could not scan it (its log is above)"
   else
     check_report "$image" "$label" 'HIGH/CRITICAL pass' "$reports/$label.json" "$apk_pkgs" "$in_window"
   fi
   if ! "$trivy" image "${common[@]}" --pkg-types os --ignore-unfixed \
-    --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --output "$reports/$label-os-fixed.json" "$image"; then
+    --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --output "$reports/$label-os-fixed.json" "$image" 2> >(log_safe_lines >&2); then
     fail "$image (fixed OS pass): Trivy could not scan it (its log is above)"
   else
     check_report "$image" "$label" 'fixed OS pass' "$reports/$label-os-fixed.json" "$apk_pkgs" "$in_window"
@@ -199,12 +244,12 @@ scan "$2" web
 {
   echo "=============================================================================================="
   echo "NGINX WINDOW (owner's answer to Q-p5-image-scan-2 (c)), web image only, package '$WINDOW_PACKAGE' only:"
-  echo "  state: ${window_reason:-not evaluated (the web image could not be read)}"
+  echo "  state: $(log_safe "${window_reason:-not evaluated (the web image could not be read)}")"
   echo "  closes when the web image's installed nginx >= $WINDOW_CLOSES_AT_NGINX, or after $WINDOW_EXPIRES (UTC)."
   echo "  Every other finding, in either image, fails the scan now."
   if ((${#windowed[@]} > 0)); then
     echo "  Reported inside the window (NOT failing, NOT fixed):"
-    printf '    %s\n' "${windowed[@]}" | sort
+    printf '    %s\n' "${windowed[@]}" | sort | log_safe_lines
   else
     echo "  Nothing reported inside the window."
   fi
@@ -216,6 +261,7 @@ scan "$2" web
 gha_data() {
   local s
   s=$(printf '%s' "$1" | LC_ALL=C tr -cd '\r\n -~')
+  s=${s//'##['/'##('} # the runner's old command form, as log_safe (DEV-p5-image-host-13)
   s=${s//'%'/%25}
   s=${s//$'\r'/%0D}
   s=${s//$'\n'/%0A}
