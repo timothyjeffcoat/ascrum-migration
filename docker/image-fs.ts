@@ -930,15 +930,19 @@ function added(base: Model, model: Model, allowed: string[], roots: string[]): s
     )
   }
   const removed = Object.keys(base.files).filter((p) => model.files[p] === undefined).length
-  // Per layer: what each of the image's own COPY or WORKDIR layers wrote.
+  // Per layer: what each of the image's own COPY or WORKDIR layers wrote. A layer records every parent
+  // directory of what it wrote; one the base already has with the same mode and owner is only that record.
   const ours = model.history.slice(base.history.length).filter((h) => !h.empty_layer)
   for (const [i, h] of ours.entries()) {
     const index = base.diffIds.length + i
     if (!/^(COPY|WORKDIR) /.test(h.created_by)) continue
     for (const c of model.layers[index] ?? []) {
+      const b = base.files[c.path]
+      const parentRecord = c.op === 'entry' && c.entry?.kind === 'dir' && b?.kind === 'dir' && same(b, c.entry)
       const ok =
-        (c.op === 'entry' || c.op === 'hardlink') &&
-        (roots.some((r) => isUnder(c.path, r)) || (c.entry?.kind === 'dir' && ancestorOfRoot(c.path)))
+        parentRecord ||
+        ((c.op === 'entry' || c.op === 'hardlink') &&
+          (roots.some((r) => isUnder(c.path, r)) || (c.entry?.kind === 'dir' && ancestorOfRoot(c.path))))
       if (!ok) findings.push(`layer ${index} (${h.created_by}): ${c.op} /${c.path} is outside the COPY roots`)
     }
   }

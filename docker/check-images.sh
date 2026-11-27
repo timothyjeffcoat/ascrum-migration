@@ -687,7 +687,7 @@ check_apk() {
 #   - history: the base's layers (by diff_id) and history are a prefix of the image's, and the image's own
 #     history entries that change the filesystem are exactly the runtime stage's RUN, COPY and WORKDIR
 #     lines, in order, as BuildKit records them (`RUN /bin/sh -c <command> # buildkit`, `COPY <sources>
-#     <destination> # buildkit` without the flags, `WORKDIR <path>`). The history is what was actually run,
+#     <destination> # buildkit` with --from= left out, `WORKDIR <path>`). The history is what was actually run,
 #     so a SHELL hook, a heredoc or a continuation that the text reader got wrong shows up as a mismatch;
 #   - files: every path the image adds or changes against the base (kind, mode, owner, content, link target,
 #     xattrs) must be under one of the image's COPY roots (RUNTIME_COPY_ROOTS: what the image is for), one
@@ -725,7 +725,8 @@ expected_history() {
       COPY | ADD)
         read -ra words <<< "$rest"
         out=()
-        for word in "${words[@]}"; do [[ $word == --* ]] || out+=("$word"); done
+        # BuildKit leaves out --from= (the stage is not recorded) and keeps the other flags (--chmod=4755 shows).
+        for word in "${words[@]}"; do [[ ${word,,} == --from=* ]] || out+=("$word"); done
         printf '%s %s # buildkit\n' "${keyword^^}" "${out[*]}"
         ;;
       WORKDIR) printf 'WORKDIR %s\n' "$rest" ;;
@@ -878,4 +879,4 @@ if [[ $findings -gt 0 ]]; then
   echo "check-images: $findings finding(s)" >&2
   exit 1
 fi
-echo "check-images: AC-CTR-02 (non-root, no dev dependencies, test files or .env), pins, compose builds, no setuid or setgid files, no secrets in layers or config, the API loads and starts, web OS package floors, API without apk/OpenSSL/zlib, package sources in both images"
+echo "check-images: AC-CTR-02 (non-root, no dev dependencies, test files or .env), pins, compose builds, no setuid, setgid or capability files, runtime-stage additions against the bases, no secrets in layers or config, the API loads and starts, web OS package floors, API without apk/OpenSSL/zlib, package sources in both images (file facts read on the host)"
