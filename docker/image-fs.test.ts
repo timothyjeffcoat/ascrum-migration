@@ -1,13 +1,16 @@
 // DEV-p5-image-host-07 (owner's answer to Q-p5-image-host-4 (a)): the host-side image reader's fail-closed
 // branches. CI runs this file by name in the `test` job (`node --test docker/image-fs.test.ts`, which fails
-// when the file is missing, and the step also fails on any skipped or todo test: DEV-p5-image-host-18). The
+// when the file is missing; the step also fails on any skip or todo, of a test or a suite, and unless the
+// run's test count equals the `it(` calls at line starts in this file, so write each test out with its own
+// `it(`, never in a loop: DEV-p5-image-host-18). The
 // clean images never reach these branches, so without this file nothing would notice one of them turning
 // into "skip and carry on". Each case is a `docker save` folder built by docker/image-fs-craft.ts with
 // exactly one thing wrong; the reader runs as check-images.sh runs it (`node docker/image-fs.ts read <folder>
 // <diff_ids> <model>`), and the test asserts the exit code and a stable part of the message. Clean control
 // cases must exit 0, so a refusal is known to come from the crafted detail and not from a broken generator.
 // Also here: the output escaping of the reader and of docker/log-safe.sh (-16), and the API's
-// node_modules against the lockfile's production tree (`pnpm-store`, -17).
+// node_modules against the lockfile's production tree and where its links point (`pnpm-store`, -17, -24,
+// -25).
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -179,17 +182,14 @@ describe('DEV-p5-image-host-07: the image reader (docker/image-fs.ts read)', () 
   })
 
   describe('entry types', () => {
-    for (const [type, what] of [
-      ['6', 'a FIFO'],
-      ['3', 'a character device'],
-      ['4', 'a block device'],
-      ['7', 'a contiguous file'],
-      ['S', 'a GNU sparse file'],
-    ] as const) {
-      it(`DEV-p5-image-host-07: ${what} (tar type '${type}') is refused`, () => {
-        refused([{ name: 'app/node', type }], `entry 'app/node' has tar type '${type}', which a layer here may not use`)
-      })
-    }
+    // One `it(` per test, written out: the CI step counts them in this file (DEV-p5-image-host-18).
+    const refusedType = (type: string) =>
+      refused([{ name: 'app/node', type }], `entry 'app/node' has tar type '${type}', which a layer here may not use`)
+    it("DEV-p5-image-host-07: a FIFO (tar type '6') is refused", () => refusedType('6'))
+    it("DEV-p5-image-host-07: a character device (tar type '3') is refused", () => refusedType('3'))
+    it("DEV-p5-image-host-07: a block device (tar type '4') is refused", () => refusedType('4'))
+    it("DEV-p5-image-host-07: a contiguous file (tar type '7') is refused", () => refusedType('7'))
+    it("DEV-p5-image-host-07: a GNU sparse file (tar type 'S') is refused", () => refusedType('S'))
     it('DEV-p5-image-host-07: a directory or symlink that carries data is refused', () => {
       refused([{ name: 'app/d/', type: '5', data: 'x' }], "dir entry 'app/d/' carries 1 bytes of data")
     })
@@ -639,5 +639,114 @@ describe('DEV-p5-image-host-17: installed packages (docker/image-fs.ts pnpm-stor
     const result = store([], () => false, [{ name: 'ascrum-api' }])
     assert.equal(result.code, 2)
     assert.ok(result.stderr.includes('no production packages, so nothing can be compared'), result.stderr)
+  })
+
+  // DEV-p5-image-host-24 (sec-r3-02): where the links point. `a` and `b` stand for pg and xtend in the
+  // security review's shapes M1-M4; `app/api/lib/evil/` and `app/api/src/` are real directories outside
+  // node_modules.
+  const OUTSIDE: TarEntry[] = [
+    { name: 'app/api/lib/', type: '5' },
+    { name: 'app/api/lib/evil/', type: '5' },
+    { name: 'app/api/lib/evil/index.js', data: 'x' },
+    { name: 'app/api/src/', type: '5' },
+  ]
+  const relink = (name: string, target: string): [TarEntry[], (name: string) => boolean] => [
+    [...OUTSIDE, l(name, target)],
+    under(name),
+  ]
+  it('DEV-p5-image-host-24 (M1): a hoisted link under a new name into a store package is a finding', () => {
+    finding(
+      store([l('.pnpm/node_modules/evil', '../a@1.0.0/node_modules/a')]),
+      `/${NM}/.pnpm/node_modules/evil: a symlink in pnpm's hoisted links that does not resolve to evil's store directory`,
+    )
+    finding(
+      store([l('.pnpm/node_modules/b2', '../b@2.0.0/node_modules/b')]),
+      `/${NM}/.pnpm/node_modules/b2: a symlink in pnpm's hoisted links that does not resolve to b2's store directory`,
+    )
+  })
+  it('DEV-p5-image-host-24 (M2): a link beside a package that is not its dependency, or points outside, is a finding', () => {
+    finding(
+      store([...OUTSIDE, l('.pnpm/a@1.0.0/node_modules/evil', '/app/api/src')]),
+      `/${NM}/.pnpm/a@1.0.0/node_modules/evil: a symlink beside a that the lockfile does not list as its dependency`,
+    )
+    finding(
+      store([l('.pnpm/a@1.0.0/node_modules/@s/c', '../../../@s+c@1.0.0/node_modules/@s/c')]),
+      `/${NM}/.pnpm/a@1.0.0/node_modules/@s/c: a symlink beside a that the lockfile does not list as its dependency`,
+    )
+    finding(
+      store(...relink('.pnpm/a@1.0.0/node_modules/b', '../../../../lib/evil')),
+      `/${NM}/.pnpm/a@1.0.0/node_modules/b: a symlink that does not resolve to b's store directory`,
+    )
+    finding(
+      store(...relink('.pnpm/a@1.0.0/node_modules/b', '/app/api/src')),
+      `/${NM}/.pnpm/a@1.0.0/node_modules/b: a symlink that does not resolve to b's store directory`,
+    )
+  })
+  it('DEV-p5-image-host-24 (M3): a scope that is a symlink is a finding, hoisted or beside a package', () => {
+    finding(
+      store([d('.pnpm/a@1.0.0/node_modules/a/lib'), l('.pnpm/node_modules/@evil', '../a@1.0.0/node_modules/a/lib')]),
+      `/${NM}/.pnpm/node_modules/@evil: a scope that is a symlink, not a directory`,
+    )
+    finding(
+      store([...OUTSIDE, l('.pnpm/a@1.0.0/node_modules/@evil', '/app/api/lib')]),
+      `/${NM}/.pnpm/a@1.0.0/node_modules/@evil: a scope that is a symlink, not a directory`,
+    )
+  })
+  it('DEV-p5-image-host-24 (M4): a link into a directory inside a store package is a finding', () => {
+    const inside = [d('.pnpm/a@1.0.0/node_modules/a/evil'), f('.pnpm/a@1.0.0/node_modules/a/evil/index.js')]
+    finding(
+      store([...inside, l('.pnpm/b@2.0.0/node_modules/evil', '../../a@1.0.0/node_modules/a/evil')]),
+      `/${NM}/.pnpm/b@2.0.0/node_modules/evil: a symlink beside b that the lockfile does not list as its dependency`,
+    )
+    finding(
+      store([...inside, l('.pnpm/node_modules/b', '../a@1.0.0/node_modules/a/evil')], under('.pnpm/node_modules/b')),
+      `/${NM}/.pnpm/node_modules/b: a symlink in pnpm's hoisted links that does not resolve to b's store directory`,
+    )
+  })
+  it('DEV-p5-image-host-24: links outside node_modules, relative or absolute, and a loop, are findings', () => {
+    finding(
+      store(...relink('.pnpm/node_modules/b', '../../../lib/evil')),
+      `/${NM}/.pnpm/node_modules/b: a symlink in pnpm's hoisted links that does not resolve to b's store directory`,
+    )
+    finding(
+      store(...relink('a', '/app/api/lib/evil')),
+      `/${NM}/a: a symlink that does not resolve to a's store directory`,
+    )
+    finding(store(...relink('a', 'a')), `/${NM}/a: a symlink that does not resolve to a's store directory`)
+  })
+
+  // DEV-p5-image-host-25 (sec-r3-03): branches the reviewer's plants showed untested.
+  it('DEV-p5-image-host-25 (T1): a real directory inside a scope in .pnpm/node_modules/ is a finding', () => {
+    finding(
+      store([d('.pnpm/node_modules/@evil'), d('.pnpm/node_modules/@evil/x'), f('.pnpm/node_modules/@evil/x/index.js')]),
+      `/${NM}/.pnpm/node_modules/@evil/x: a dir in pnpm's hoisted links, not a symlink`,
+    )
+  })
+  it('DEV-p5-image-host-25 (T6): a top-level dot entry of the wrong kind is a finding', () => {
+    finding(store([d('.modules.yaml')], under('.modules.yaml')), `/${NM}/.modules.yaml: a dir, not a file`)
+  })
+  it('DEV-p5-image-host-25 (T13): a node_modules folder at any depth inside a package is a finding', () => {
+    finding(
+      store([
+        d('.pnpm/b@2.0.0/node_modules/b/lib'),
+        d('.pnpm/b@2.0.0/node_modules/b/lib/node_modules'),
+        d('.pnpm/b@2.0.0/node_modules/b/lib/node_modules/evil'),
+      ]),
+      `/${NM}/.pnpm/b@2.0.0/node_modules/b/lib/node_modules: a node_modules folder inside b`,
+    )
+  })
+  it('DEV-p5-image-host-25: a listing that puts two packages in one store directory is refused, exit 2', () => {
+    const tree = [
+      { name: 'ascrum-api', dependencies: { a: { path: P('a@1.0.0', 'a') }, x: { path: P('a@1.0.0', 'x') } } },
+    ]
+    const result = store([], () => false, tree)
+    assert.equal(result.code, 2)
+    assert.ok(result.stderr.includes('store directory a@1.0.0 holds two packages'), result.stderr)
+  })
+  it('DEV-p5-image-host-25: node_modules that is not a directory is a finding', () => {
+    finding(
+      store([{ name: NM, data: 'x' }], (name) => name.startsWith(NM)),
+      `/${NM}: not a directory in the image`,
+    )
   })
 })
