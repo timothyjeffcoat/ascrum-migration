@@ -493,6 +493,27 @@ describe('AC-AWS-04: the final leftover check', () => {
       expect(lineFor(report, TASK_DEF)).not.toContain(ACCOUNT)
     })
 
+    it('DEV-p5-infra-49: a refused or throttled DescribeSecret is never gone; the secret stays LEFTOVER with its reason', async () => {
+      const cases = [
+        [
+          `An error occurred (AccessDeniedException) when calling the DescribeSecret operation: User: arn:aws:sts::${ACCOUNT}:assumed-role/x is not authorized to perform: secretsmanager:DescribeSecret`,
+          '(describe refused: AccessDeniedException)',
+        ],
+        [
+          `An error occurred (ThrottlingException) when calling the DescribeSecret operation (reached max retries: 2): Rate exceeded for ${ACCOUNT}`,
+          '(describe failed: ThrottlingException)',
+        ],
+      ] as const
+      for (const [stderr, reason] of cases) {
+        const report = await failingOne({ stacks: {}, tagged: tagged(SECRET) }, 'describe-secret', stderr)
+        expect(report.ok, reason).toBe(false)
+        expect(report.gone, reason).toEqual([])
+        expect(report.remaining, reason).toEqual([SECRET])
+        expect(lineFor(report, SECRET), reason).toContain(reason)
+        expect(lineFor(report, SECRET), reason).not.toContain(ACCOUNT)
+      }
+    })
+
     it('DEV-p5-infra-37: a DescribeSecret error other than not-found says "describe failed" and the secret is still LEFTOVER', async () => {
       const report = await failingOne(
         { stacks: {}, tagged: tagged(SECRET) },
