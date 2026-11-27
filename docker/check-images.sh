@@ -2,7 +2,8 @@
 # AC-CTR-02 and the image checks around it. Checks the built images themselves (their config, history and
 # every file in them), plus the static pins they are built from:
 #   - non-root; no dev dependencies, test files or .env files (AC-CTR-02); the API's installed packages are
-#     exactly api/pnpm-lock.yaml's production tree, as pnpm lists it from the lockfile (DEV-p5-image-host-10);
+#     exactly api/pnpm-lock.yaml's production tree, as pnpm lists it from the lockfile, in pnpm's layout and
+#     nothing else under node_modules (DEV-p5-image-host-10, -17);
 #   - every image docker/*.Dockerfile uses (FROM, COPY --from, RUN --mount from; any keyword case) and
 #     every pulled compose image pinned by version and digest (DEV-p5-containers-09, -12); no `# syntax=`
 #     frontend; compose builds exactly these two Dockerfiles from the repo root, with no build options
@@ -867,34 +868,23 @@ while read -r dev; do
   pattern="^app/api/node_modules/(\.pnpm/${dev//\//\\+}@|${dev}/)"
   ! grep -qE "$pattern" "$work/api.txt" || fail "$api_image: dev dependency $dev is installed"
 done < <(jq -r '.devDependencies // {} | keys[]' api/package.json)
-# And what is installed is exactly the production tree: pg and the packages pg depends on
-# (DEV-p5-image-host-10: this line had only printed the list, and extra `.pnpm` directories passed). The
+# And what is installed is exactly the production tree, in pnpm's layout (DEV-p5-image-host-10, -17). The
 # expected tree comes from api/pnpm-lock.yaml alone, through pnpm itself: `pnpm list --lockfile-only --prod`
 # reads the lockfile without node_modules and gives each package's path in the virtual store, so its
 # `.pnpm/<dir>` names (peer suffixes included, e.g. pg-pool@3.14.0_pg@8.23.1) are the ones the Dockerfile's
 # `pnpm install --prod --frozen-lockfile` creates. It is the pnpm packageManager pins (setup-web in CI, the
-# Dockerfile through corepack), and nothing from the image takes part. Both ways must match: every `.pnpm`
-# directory in the image is in the lockfile's production tree and every one of those is in the image, and
-# the top-level packages under node_modules are exactly the production dependencies api/package.json names.
-# An empty or unreadable expected list fails; it never passes as "nothing expected".
-installed=$(grep -oE '^app/api/node_modules/\.pnpm/[^/]+/$' "$work/api.txt" | sed -E 's|.*/\.pnpm/||; s|/$||' |
-  grep -v '^node_modules$' | LC_ALL=C sort || true)
-top_level=$(grep -oE '^app/api/node_modules/(@[^/]+/)?[^/.][^/]*/?$' "$work/api.txt" |
-  sed -E 's|^app/api/node_modules/||; s|/$||' | grep -v '^@[^/]*$' | LC_ALL=C sort || true)
+# Dockerfile through corepack), and nothing from the image takes part. The image's side is read on the host
+# from the layers (`image-fs.ts pnpm-store`, which states the layout rules): the store directories are
+# exactly the lockfile's, each holds only its own package and symlinks, `.pnpm/node_modules/` holds only
+# symlinks, and the top level holds only pnpm's three dot entries and a symlink per production dependency.
+# So a package Node could load from anywhere under node_modules must be one the lockfile names (-17: real
+# directories in `.pnpm/node_modules/` or beside a store package, a non-directory store name, a non-directory
+# scope and a dot-named directory had passed the earlier name comparison). An empty or unreadable expected
+# list fails; it never passes as "nothing expected".
 if ! pnpm --dir api list --lockfile-only --prod --depth Infinity --json > "$work/prod-tree.json" 2> "$work/prod-tree.err"; then
   fail "$api_image: pnpm could not list api/pnpm-lock.yaml's production tree: $(tail -5 "$work/prod-tree.err")"
 else
-  production=$(jq -r '[.. | objects | .path? // empty | strings | capture("/node_modules/\\.pnpm/(?<d>[^/]+)/") | .d] | unique[]' \
-    "$work/prod-tree.json" | LC_ALL=C sort || true)
-  direct=$(jq -r '[.[0] | (.dependencies // {}), (.optionalDependencies // {}) | keys[]] | unique[]' "$work/prod-tree.json" |
-    LC_ALL=C sort || true)
-  if [[ -z $production || -z $direct ]]; then
-    fail "$api_image: pnpm listed no production packages for api/pnpm-lock.yaml, so the installed tree cannot be compared"
-  elif [[ $installed != "$production" || $top_level != "$direct" ]]; then
-    fail "$api_image: installed packages are not api/pnpm-lock.yaml's production tree. In the image only: $(LC_ALL=C comm -23 <(echo "$installed") <(echo "$production") | tr '\n' ' ')$(LC_ALL=C comm -23 <(echo "$top_level") <(echo "$direct") | sed 's|^|node_modules/|' | tr '\n' ' ')missing from the image: $(LC_ALL=C comm -13 <(echo "$installed") <(echo "$production") | tr '\n' ' ')$(LC_ALL=C comm -13 <(echo "$top_level") <(echo "$direct") | sed 's|^|node_modules/|' | tr '\n' ' ')"
-  else
-    echo "$api_image: installed packages are exactly api/pnpm-lock.yaml's production tree ($(wc -l <<< "$production") in .pnpm; top level: $(paste -sd ' ' <<< "$direct")): $(log_safe "$(paste -sd ' ' <<< "$installed")")"
-  fi
+  findings_of "$api_image" pnpm-store "$work/api.model.json" app/api/node_modules "$work/prod-tree.json" || true
 fi
 
 # --- web ---------------------------------------------------------------------------------------

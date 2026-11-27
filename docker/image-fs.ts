@@ -19,6 +19,8 @@
 //   node docker/image-fs.ts layers <base.json> <model.json> <expected history file>
 //   node docker/image-fs.ts added <base.json> <model.json> <packages the apk line names> <root>...
 //   node docker/image-fs.ts header-include <model.json> <path>  the nginx header include: header lines only
+//   node docker/image-fs.ts pnpm-store <model.json> <node_modules> <pnpm list --json file>
+//                                                             installed packages = the lockfile's production tree
 //
 // Fails closed: an unreadable or unknown blob, a digest that does not match, a compression it does not
 // know, a tar entry type or PAX key it does not know, a malformed header, a path with `..`, an entry under
@@ -297,6 +299,9 @@ class TarParser {
     const padded = (n: number) => (512 - (n % 512)) % 512
 
     if (typeflag === 'x' || typeflag === 'L' || typeflag === 'K') {
+      // Unreachable today (DEV-p5-image-host-19): header() runs only once the previous extended header's
+      // data is fully read, and finishData() clears `meta` at that point (at once for a size-0 header), so
+      // no test can reach it. Kept as defence in depth, in case a later change ends that data lazily.
       if (this.meta) fatal(`${this.what}: nested extended headers`)
       if (this.pending.has(typeflag)) fatal(`${this.what}: two '${typeflag}' extended headers for one entry`)
       this.pending.add(typeflag)
@@ -1051,6 +1056,159 @@ function headerInclude(model: Model, path: string): { findings: string[]; adds: 
   return { findings, adds, hides }
 }
 
+// The API's installed packages against the lockfile's production tree (DEV-p5-image-host-10, -17). The
+// expected tree is `pnpm list --lockfile-only --prod --depth Infinity --json` (check-images.sh runs it on
+// the host): every package's `path` names its virtual-store directory and its own name in it
+// (`…/.pnpm/<dir>/node_modules/<name>`). The image's side is the model's entries under `nm`, with their
+// kinds as the layers recorded them (no symlink followed). pnpm's layout, and nothing else, may be there:
+//   - top level: `.pnpm/` (a directory), `.modules.yaml` and `.pnpm-workspace-state-v1.json` (files), and
+//     one symlink per production dependency, into that package's store directory; a scope `@s` is a
+//     directory holding only such symlinks. Any other dot entry, file, directory or symlink is a finding;
+//   - `.pnpm/`: `lock.yaml` (a file), `node_modules/` (pnpm's hoisted links: symlinks only, scopes as
+//     directories of symlinks), and the store directories, exactly the lockfile's set. A non-directory
+//     store name (a symlink `.pnpm/x@1`) is a finding;
+//   - `.pnpm/<dir>/` holds only `node_modules/`, which holds the package's own directory (its scope as a
+//     directory when scoped) and symlinks to its dependencies; no other real directory or file, and no
+//     `node_modules` folder inside the package itself.
+// So no package can sit anywhere Node's lookup would find it unless the lockfile names it (sec-01: real
+// directories in `.pnpm/node_modules/` and in a store directory's `node_modules/` had passed).
+const PNPM_TOP_DOT = new Map([
+  ['.pnpm', 'dir'],
+  ['.modules.yaml', 'file'],
+  ['.pnpm-workspace-state-v1.json', 'file'],
+])
+function pnpmStore(model: Model, nm: string, tree: unknown): { findings: string[]; summary: string } {
+  // The expected side: store directory → its package's name, and the production dependencies.
+  const store = new Map<string, string>()
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) for (const n of node) walk(n)
+    else if (node !== null && typeof node === 'object') {
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'path' && typeof value === 'string') {
+          const m = /\/node_modules\/\.pnpm\/([^/]+)\/node_modules\/(.+)$/.exec(value)
+          if (!m) continue
+          const [dir, name] = [m[1] as string, m[2] as string]
+          if (store.has(dir) && store.get(dir) !== name) fatal(`pnpm list: store directory ${dir} holds two packages`)
+          store.set(dir, name)
+        } else walk(value)
+      }
+    }
+  }
+  walk(tree)
+  const root = (Array.isArray(tree) ? tree[0] : undefined) as
+    { dependencies?: Record<string, unknown>; optionalDependencies?: Record<string, unknown> } | undefined
+  const direct = new Set([...Object.keys(root?.dependencies ?? {}), ...Object.keys(root?.optionalDependencies ?? {})])
+  if (store.size === 0 || direct.size === 0) fatal('pnpm list: no production packages, so nothing can be compared')
+
+  const findings: string[] = []
+  const kind = (path: string): string | undefined => model.files[path]?.kind
+  const children = (dir: string): string[] =>
+    Object.keys(model.files)
+      .filter((p) => parentOf(p) === dir)
+      .map(baseName)
+      .sort(sortC)
+  const at = (...parts: string[]) => [nm, ...parts].join('/')
+  if (kind(nm) !== 'dir') return { findings: [`/${nm}: not a directory in the image`], summary: '' }
+  // A production dependency's link must resolve to its own package directory in the store.
+  const linksInto = (path: string, name: string): boolean => {
+    const real = resolve(model, path, true)
+    return [...store].some(([dir, n]) => n === name && real === at('.pnpm', dir, 'node_modules', name))
+  }
+  // A folder of pnpm's links: every entry a symlink, a scope a directory of symlinks.
+  const onlyLinks = (dir: string, why: string) => {
+    for (const c of children(dir)) {
+      const p = `${dir}/${c}`
+      if (c.startsWith('@') && kind(p) === 'dir') {
+        for (const s of children(p)) {
+          if (kind(`${p}/${s}`) !== 'symlink')
+            findings.push(`/${p}/${s}: a ${kind(`${p}/${s}`)} in ${why}, not a symlink`)
+        }
+      } else if (kind(p) !== 'symlink') findings.push(`/${p}: a ${kind(p)} in ${why}, not a symlink`)
+    }
+  }
+
+  // Top level.
+  const top = new Set<string>()
+  for (const c of children(nm)) {
+    const p = at(c)
+    if (c.startsWith('.')) {
+      const want = PNPM_TOP_DOT.get(c)
+      if (want === undefined) findings.push(`/${p}: a ${kind(p)} pnpm does not write at the top of node_modules`)
+      else if (kind(p) !== want) findings.push(`/${p}: a ${kind(p)}, not a ${want}`)
+      continue
+    }
+    const names = c.startsWith('@')
+      ? kind(p) === 'dir'
+        ? children(p).map((s) => `${c}/${s}`)
+        : (findings.push(`/${p}: a scope that is a ${kind(p)}, not a directory`), [])
+      : [c]
+    for (const name of names) {
+      top.add(name)
+      const q = at(name)
+      if (!direct.has(name)) findings.push(`/${q}: a top-level package the lockfile's production tree does not name`)
+      else if (kind(q) !== 'symlink') findings.push(`/${q}: a ${kind(q)}, not pnpm's symlink into the store`)
+      else if (!linksInto(q, name)) findings.push(`/${q}: a symlink that does not resolve to ${name}'s store directory`)
+    }
+  }
+  for (const name of [...direct].sort(sortC)) {
+    if (!top.has(name)) findings.push(`/${at(name)}: production dependency ${name} is missing`)
+  }
+
+  // The virtual store.
+  const pnpmDir = at('.pnpm')
+  const seen = new Set<string>()
+  for (const c of kind(pnpmDir) === 'dir' ? children(pnpmDir) : []) {
+    const p = `${pnpmDir}/${c}`
+    if (c === 'lock.yaml') {
+      if (kind(p) !== 'file') findings.push(`/${p}: a ${kind(p)}, not a file`)
+    } else if (c === 'node_modules') {
+      if (kind(p) !== 'dir') findings.push(`/${p}: a ${kind(p)}, not a directory`)
+      else onlyLinks(p, "pnpm's hoisted links")
+    } else if (!store.has(c)) {
+      findings.push(`/${p}: a ${kind(p)} in the store the lockfile's production tree does not name`)
+    } else if (kind(p) !== 'dir') {
+      findings.push(`/${p}: a ${kind(p)}, not a store directory`)
+    } else {
+      seen.add(c)
+      const own = store.get(c) as string
+      for (const x of children(p)) if (x !== 'node_modules') findings.push(`/${p}/${x}: not pnpm's node_modules folder`)
+      const inner = `${p}/node_modules`
+      const ownPath = `${inner}/${own}`
+      if (kind(ownPath) !== 'dir') findings.push(`/${ownPath}: ${own}'s own directory is missing or not a directory`)
+      for (const x of children(inner)) {
+        const q = `${inner}/${x}`
+        if (x.startsWith('@') && kind(q) === 'dir') {
+          for (const s of children(q)) {
+            const r = `${q}/${s}`
+            if (r !== ownPath && kind(r) !== 'symlink')
+              findings.push(`/${r}: a ${kind(r)} beside ${own}, not a symlink`)
+          }
+        } else if (q !== ownPath && kind(q) !== 'symlink')
+          findings.push(`/${q}: a ${kind(q)} beside ${own}, not a symlink`)
+      }
+      for (const path of Object.keys(model.files)) {
+        if (
+          path.startsWith(`${ownPath}/`) &&
+          path
+            .slice(ownPath.length + 1)
+            .split('/')
+            .includes('node_modules')
+        ) {
+          findings.push(`/${path}: a node_modules folder inside ${own}`)
+        }
+      }
+    }
+  }
+  for (const dir of [...store.keys()].sort(sortC)) {
+    if (!seen.has(dir) && kind(`${pnpmDir}/${dir}`) === undefined)
+      findings.push(`/${pnpmDir}/${dir}: missing from the image`)
+  }
+  return {
+    findings,
+    summary: `/${nm}: exactly the lockfile's production tree in pnpm's layout: ${store.size} store directories (${[...store.keys()].sort(sortC).join(' ')}), top level ${[...direct].sort(sortC).join(' ')}`,
+  }
+}
+
 // --- CLI ------------------------------------------------------------------------------------------
 const [command, ...args] = process.argv.slice(2)
 const report = (findings: string[]) => {
@@ -1108,6 +1266,16 @@ try {
         ),
       )
       break
+    case 'pnpm-store': {
+      const { findings, summary } = pnpmStore(
+        load(args[0] as string),
+        normalise(args[1] ?? '', 'node_modules'),
+        JSON.parse(readFileSync(args[2] as string, 'utf8')) as unknown,
+      )
+      report(findings)
+      if (findings.length === 0) console.log(printable(summary))
+      break
+    }
     case 'header-include': {
       const { findings, adds, hides } = headerInclude(load(args[0] as string), normalise(args[1] ?? '', 'path'))
       report(findings)
