@@ -2117,3 +2117,47 @@ The infra job's four steps (`.github/workflows/ci.yml`, job `infra`), from `infr
 - `pnpm typecheck`: exit 0 (tsc, no output).
 - `pnpm test`: exit 0, "Test Files  12 passed (12)", "Tests  250 passed (250)" (243 before, plus 7).
 - `pnpm synth`: exit 0, "Successfully synthesized to …/infra/cdk.out".
+
+## 2026-11-27, Phase 5 follow-up PR, round 3 (worker): DEV-p5-infra-54, -55
+
+The owner approved both rows ("yes do both"). I pulled the reviewer's commits to f112c1b. The two
+`spec/deviations.md` rows are the contract. `infra/scripts/fakeAws.ts` is an owned path for this round
+only. Commit: cc90426.
+
+### What changed
+
+- **-55, the fake's DescribeClusters answer.**
+  - `fakeAws.ts` now answers as ECS does: `{ clusters: [{ clusterArn, status }], failures: [] }` for a cluster
+    it knows, and `{ clusters: [], failures: [{ arn, reason }] }` for `MISSING` or `failure:<reason>`. The
+    `clusterStatus` doc comment says so.
+  - `withClusterArns` (the test-side wrapper that added the missing fields) is gone from
+    `leftovers.test.ts`. `check()` and the "asked one by one" test call `fakeAws(world).aws` directly.
+  - A new `DEV-p5-infra-55` test goes through the fake: INACTIVE and MISSING are gone; ACTIVE and
+    `failure:SOMETHING_ELSE` stay leftovers.
+- **-54, a test that pins `=== 'INACTIVE'`.** The new `DEV-p5-infra-54` test checks that PROVISIONING,
+  DEPROVISIONING, FAILED, DRAINING, an unknown `SOMETHING_NEW` and a missing status are all *not* gone.
+  `leftovers.ts` is unchanged.
+
+### Red/green proofs (each plant restored with `git checkout`, then re-run)
+
+- `clusterAnswerSaysGone` planted with `!== 'ACTIVE'` instead of `=== 'INACTIVE'`: `1 failed | 70 passed`.
+  The failing test is the -54 test. Restored: 71/71.
+- The fake planted back to the old answer shape (no `clusterArn`, no `failures`): `3 failed | 68 passed`
+  (AC-AWS-04 inactive clusters, DEV-p5-infra-55, and live run 6 one by one). So the realistic shape is what
+  those tests read. Restored: 71/71.
+
+### Commands refused by the worktree guard
+
+None in this part. The one refusal of the round, on a docker test-file append, is in the p5-image-host
+worklog.
+
+### Gates (this session; Node 24.22.3; AWS files at `/dev/null` for synth; unpiped)
+
+From `infra/`, after all of the round's commits (including the `ci.yml` step change, which
+`workflows.test.ts` reads):
+- `pnpm lint`: exit 0, "All matched files use Prettier code style!"
+- `pnpm typecheck`: exit 0.
+- `pnpm test`: exit 0, "Test Files  12 passed (12)", "Tests  252 passed (252)" (250 before, plus 2).
+- `AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null pnpm synth`: exit 0, "Successfully
+  synthesized to …/infra/cdk.out".
+- No `aws` and no `cdk deploy/destroy/bootstrap` were run.

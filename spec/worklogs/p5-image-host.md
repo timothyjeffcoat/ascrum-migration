@@ -849,3 +849,160 @@ After each restore `git status --short` was empty. The final run is below.
   production tree (14 in .pnpm; top level: pg)`.
 - Not re-run: `scan-images.sh` and `check-scan-coverage.sh`. Nothing that reaches an image changed this
   session; both passed in session 5.
+
+## 2026-11-27, session 7 (worker): round 3 of #94 (DEV-p5-image-host-16..19, -21, -22)
+
+The owner approved the reviewer's rows ("yes do both"). I pulled to f112c1b. The rows in
+`spec/deviations.md` are the contract; I did not edit that file.
+
+Commits:
+- 6526926: -22.
+- ad82e9b: -17, -19.
+- 60466bc: tests for -16, -17, -21.
+- 308302e: -18.
+
+(The infra rows -54 and -55, cc90426, are in the p5-infra worklog.)
+
+### What changed
+
+- **-22, `comm` in the C locale.** `check-images.sh` sorts with `LC_ALL=C sort`, but ran `comm` in the
+  caller's locale. Every `comm` now runs as `LC_ALL=C comm`: lines 764–766 (the base comparison, formerly
+  761–763) and the production-tree comparison (formerly 892, removed with -17 below).
+  - Repro under `LC_ALL=en_US.UTF-8`, base `a=1 c=1`, image `B=1 a=1 c=1`:
+    - Before: the "only in image" list was `[B a ]` and the changed list `[a=1 ]`, with "comm: file 2 is
+      not in sorted order".
+    - After: `[B ]` and `[]`.
+- **-17, the production tree, strict.** The old `find`/`comm` block in `check-images.sh` is replaced by a
+  new reader command, `node docker/image-fs.ts pnpm-store <model.json> <node_modules> <pnpm list --json
+  file>`. Its facts come from the host-side model, as before. Its rules:
+  - Top-level dot entries come from an allowlist: `.pnpm` (dir), `.modules.yaml` and
+    `.pnpm-workspace-state-v1.json` (files). I confirmed these against the real `ascrum-api` image: those
+    three and nothing else. Nothing else legitimate appeared, so there was nothing to report.
+  - A top-level `@scope` must be a directory.
+  - Top-level packages are exactly the direct production dependencies. Each is a symlink that resolves to
+    its own store directory.
+  - `.pnpm/lock.yaml` must be a file, and `.pnpm/node_modules/` holds only symlinks.
+  - Every other `.pnpm/<name>` must be a *directory* that the lockfile's production tree names, and each
+    such directory the tree names must exist.
+  - `.pnpm/<d>/` holds only `node_modules/`. In it, the package's own real directory (scoped included) and
+    otherwise only symlinks. There is no `node_modules` folder inside the package itself.
+  - An empty tree is fatal (exit 2), since nothing could be compared.
+
+  The script header now says "…in pnpm's layout and nothing else under node_modules (DEV-p5-image-host-10,
+  -17)". A clean run prints `…: exactly the lockfile's production tree in pnpm's layout: 14 store
+  directories (…), top level pg`.
+- **-19.** A comment at the nested-extended-header guard in `image-fs.ts` says it is unreachable today.
+  `header()` runs only after the previous extended header's data is fully read, and `finishData()` clears
+  `meta` then (at once for a size-0 header). The guard is kept as defence in depth. No behaviour change.
+- **-16, -21 tests,** in `docker/image-fs.test.ts`.
+  - `image-fs-craft.ts` gained `withChecksum()` and `saveFolder` options (`configName`, `manifestLayers`,
+    `manifestCount`, `indexCount`) so the tests can craft these folders.
+  - -16: two reader refusals quote a crafted PAX key and a crafted path (NBSP before `::warning::`, plus
+    `##[`). Their stderr has the escaped form and no `::` and no `##[`.
+  - -16: node:test cases run `bash -c 'source docker/log-safe.sh; …'` on raw bytes. They check
+    `log_safe_lines` on NBSP, U+2003, U+3000, U+2028, ASCII blanks, runs of 3–5 colons, a mid-line `::`,
+    `##[`, and control bytes, and `log_safe` on multi-line text.
+  - -21: the config-blob digest, the `blobs/sha256/<64 hex>` path guard (`../`, `sha512`, uppercase hex)
+    plus a missing blob, the manifest layer count against diff_ids, the 16 MiB extended-header cap, and the
+    other gaps: index.json or manifest.json listing 0 or 2 images, an archive ending inside an entry,
+    base-256 numbers (valid, negative, too large), and malformed PAX record lengths.
+- **-18, the CI step.**
+  - It now runs `node --test` on `docker/image-fs.test.ts` by name, with the spec reporter to stdout and a
+    TAP copy in `$RUNNER_TEMP`. It then fails unless the TAP summary (its last 8 lines) has `# skipped 0`,
+    `# todo 0` and `# tests` of at least 1.
+  - A failing test fails the step first (default `bash -e`), so the summary check hides nothing.
+  - It is still exactly one step in the `test` job, and there is no lint-config change. The test file's
+    header comment now describes this.
+
+### Red/green proofs (each plant restored with `git checkout` or moved back; 57/57 after each)
+
+The plants were made with a scratch script, outside the repo. Results of `node --test
+docker/image-fs.test.ts`:
+
+| Plant | Result | Red tests |
+|---|---|---|
+| `printable`'s `::` rule back to the leading-only `.replace(/^([ \t]*)::/, …)` | 55 pass, 2 fail | both -16 reader cases |
+| `printable`'s `##[` escape removed | 55/2 | both -16 reader cases |
+| `log_safe_lines` sed back to the leading-blank-only rule | 55/2 | both -16 log-safe cases |
+| `log_safe_lines` second `::` pass dropped | 55/2 | both -16 log-safe cases |
+| `log_safe_lines` `##[` sed removed | 55/2 | both -16 log-safe cases |
+| config digest fatal disabled | 56/1 | -21 config blob |
+| path guard `if (m === undefined)` | 56/1 | -21 layer ref |
+| manifest layer-count check disabled | 56/1 | -21 manifest count |
+| 16 MiB cap disabled | 56/1 | -21 extended header |
+| I5: `.pnpm/node_modules` links-only check off | 56/1 | -17 (I5) |
+| I6: "beside own" check fires only for files | 56/1 | -17 (I6) |
+| I7: a non-directory `.pnpm/<name>` skipped | 56/1 | -17 (I7) |
+| I8: the scope-not-a-directory finding removed | 56/1 | -17 (I8) |
+| I9: unknown top-level dot entries skipped | 56/1 | -17 (I9) |
+
+Not breakage-proved one by one: the -21 "message-search" cases (index/manifest count, archive end,
+base-256, PAX lengths). The row asks for at least the first four, which are above.
+
+**-17 in a real build.**
+- I made a temporary, uncommitted edit to the `deps` stage of `docker/api.Dockerfile`, after `pnpm
+  install`, planting I5–I9:
+  - `.pnpm/node_modules/evil/` (a real directory);
+  - `.pnpm/pg@8.23.1/node_modules/evil2/`;
+  - `.pnpm/evil@1.0.0` as a symlink;
+  - `@evil` as a file;
+  - `.evil/`.
+- I built it as `p5f8bad` (exit 0) and ran `check-images.sh` on it: exit 1, with exactly five `FAIL`
+  lines, one per shape:
+  - `/app/api/node_modules/.evil: a dir pnpm does not write at the top of node_modules`
+  - `/app/api/node_modules/@evil: a scope that is a file, not a directory`
+  - `/app/api/node_modules/.pnpm/evil@1.0.0: a symlink in the store the lockfile's production tree does
+    not name`
+  - `/app/api/node_modules/.pnpm/node_modules/evil: a dir in pnpm's hoisted links, not a symlink`
+  - `/app/api/node_modules/.pnpm/pg@8.23.1/node_modules/evil2: a dir beside pg, not a symlink`
+- I restored the Dockerfile with `git checkout` and removed both `p5f8bad` tags.
+
+**-18, the CI step,** run as CI runs it. I copied the step's `run:` body verbatim from `ci.yml` into a
+scratch file and ran it with `bash -e`, `RUNNER_TEMP` set to the scratchpad and Node 24:
+- Clean: exit 0, 57 tests.
+- `{ skip: true }` on one test: exit 1. The message is printed, with the summary showing `# skipped 1`.
+- `{ todo: true }` on one test: exit 1, `# todo 1`.
+- File moved away: exit 1, "Could not find 'docker/image-fs.test.ts'".
+- A real failure (the p-colon plant): exit 1, from node itself (`ℹ fail 2`), before the summary check.
+
+### Commands refused by the worktree guard (word for word)
+
+1. Appending the new test blocks with a heredoc (`cat >> docker/image-fs.test.ts <<'EOF' …`) chained with a
+   `sed -i` on the import line was refused: "This agent is isolated in the worktree <worktree>, but this
+   command is too complex to verify that it stays inside the worktree. Refusing to run it — a
+   worktree-isolated agent's git operations must target its own worktree. Split it into plain, separate
+   commands and run them from <worktree>." Nothing in it ran. I made both changes with the editor tool
+   instead (an append after the file's last line, and the import line), not by another shell form.
+
+### Wrong turns
+
+- My first CI-step draft sent the spec reporter to `/dev/null`. Node 24 then crashes on `fsync` (`EINVAL`)
+  and exits 1 even when every test passes. The spec reporter now goes to `stdout`.
+- My draft also grepped for `# skip 0`. The TAP summary line is `# skipped 0`, so that check would have
+  failed every run. I caught both on the first local run, before committing.
+- My first I9 plant only changed the branch (`=== 'never'`), which still left a finding with another
+  message. I changed it to skip unknown dot entries entirely (the real pre-fix behaviour) before running it.
+- The new tests passed on their first run, so the plants above are what show that each test can fail.
+
+### Gates (this session; Node 24.22.3; unpiped; each exit code from the tool)
+
+- `node --test docker/image-fs.test.ts`: exit 0, `ℹ tests 57`, `ℹ pass 57`, `ℹ fail 0`, `ℹ skipped 0`,
+  `ℹ todo 0` (36 before, plus 21).
+- web `pnpm lint`: exit 0, "All matched files use Prettier code style!". web `pnpm typecheck`: exit 0.
+- infra lint, typecheck, test (`Tests  252 passed (252)`) and synth (AWS files at `/dev/null`): all exit 0.
+  The details are in the p5-infra worklog.
+- `docker compose --profile prod-check build` (tag `p5f8`): exit 0.
+- `docker/check-images.sh ascrum-api:p5f8 ascrum-web:p5f8`: exit 0, 0 `FAIL` lines, and `…/app/api/
+  node_modules: exactly the lockfile's production tree in pnpm's layout: 14 store directories (…), top level
+  pg`. The secret scanner (pinned gitleaks 8.30.1, checksum-verified in round 1) was supplied through its
+  `GITLEAKS` variable on the command itself, as CI does, not on `PATH` (the cleaner course DEV-p5-image-host-20
+  suggested). No guard refused it.
+- `docker/scan-images.sh ascrum-api:p5f8 ascrum-web:p5f8` (pinned Trivy 0.76.2, `SCAN_REPORT_DIR` in the
+  scratchpad): exit 0, "scan-images: no failing finding in either image (…)".
+- `docker/check-scan-coverage.sh ascrum-api:p5f8 ascrum-web:p5f8 <reports>`: exit 0, "ascrum-api:p5f8:
+  Trivy read exactly the 12 OS packages … and the 15 package.json packages …", "ascrum-web:p5f8: … 70 OS
+  packages … 0 package.json packages …", "check-scan-coverage: the scan read every OS and language package
+  in both images (…)".
+- `bash -n docker/check-images.sh`: OK.
+- Not run: the rest of the e2e-compose job (compose up, `pnpm e2e:compose`) and web `pnpm verify`. Nothing
+  they exercise changed beyond the scripts above.
