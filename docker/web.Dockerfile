@@ -23,7 +23,7 @@
 # The one root step is the OS package floor below; the image's USER goes back to 101 right after it.
 
 # --- build: the production bundle and the generated header config ----------------------------------
-FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS build
+FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS build
 WORKDIR /build/web
 COPY web/package.json web/pnpm-lock.yaml ./
 # pnpm at the version in web/package.json "packageManager", through corepack. No pnpm-workspace.yaml
@@ -42,7 +42,7 @@ RUN COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm build \
  && rm dist/mockServiceWorker.js
 
 # --- runtime -----------------------------------------------------------------------------------
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03 AS runtime
+FROM nginxinc/nginx-unprivileged:1.31.7-alpine3.24@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e AS runtime
 ENV API_UPSTREAM=http://api:3000 \
     ROUTE_STUB_CONTROL=off \
     NGINX_ENVSUBST_FILTER=^(API_UPSTREAM|ROUTE_STUB_CONTROL)$
