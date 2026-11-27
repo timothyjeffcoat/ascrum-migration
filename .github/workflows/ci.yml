@@ -40,10 +40,23 @@ jobs:
       - uses: ./.github/actions/setup-web
       - run: pnpm test
       # DEV-p5-image-host-07 (Q-p5-image-host-4 (a)): the image reader's fail-closed branches, on crafted
-      # `docker save` folders. Node's own test runner, on the Node 24 setup-web installed; no Docker.
-      - name: Image reader tests (docker/image-fs.ts)
+      # `docker save` folders, and log-safe.sh's escaping. Node's own test runner, on the Node 24 setup-web
+      # installed; no Docker. DEV-p5-image-host-18: the file is named, so a missing or renamed file fails
+      # (a glob that matches nothing passes), and a skipped or todo test, or a run with no test, fails the
+      # step from the TAP summary (node:test reports both with exit 0). A failing test fails it first.
+      - name: Image reader tests (docker/image-fs.test.ts), none skipped
         working-directory: .
-        run: node --test 'docker/*.test.ts'
+        run: |
+          tap="$RUNNER_TEMP/image-fs.tap"
+          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination="$tap" docker/image-fs.test.ts
+          # The run's summary is the TAP file's last 8 lines (tests, suites, pass, fail, cancelled, skipped,
+          # todo, duration_ms); a test's own `#` output earlier in the file cannot stand in for it.
+          summary=$(tail -n 8 "$tap")
+          grep -qx '# skipped 0' <<< "$summary" && grep -qx '# todo 0' <<< "$summary" && grep -qxE '# tests [1-9][0-9]*' <<< "$summary" || {
+            echo "image reader tests: a test was skipped or todo, or none ran"
+            echo "$summary"
+            exit 1
+          }
 
   build:
     runs-on: ubuntu-latest
