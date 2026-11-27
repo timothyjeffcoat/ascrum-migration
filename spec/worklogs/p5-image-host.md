@@ -1013,10 +1013,10 @@ The owner approved one more round. I pulled to b8e8a92 (`git pull --ff-only`) an
 -25 as they stood. I did not edit `spec/deviations.md`.
 
 Commits:
-- af51a5c: -24, plus the 813 and 361 `sort` fixes.
-- 92f1ab6: tests for -24, -25 and -18 (one `it(` per test).
-- 2b65515: the CI step.
-- 3254355: a -24 case added after a plant survived.
+- 0599f52: -24, plus the 813 and 361 `sort` fixes.
+- bbcfd2c: tests for -24, -25 and -18 (one `it(` per test).
+- afa3315: the CI step.
+- 37c6459: a -24 case added after a plant survived.
 
 ### What changed
 
@@ -1113,7 +1113,13 @@ in the scratchpad, on Node 24. Each plant was restored afterwards:
 - `t.skip()`: exit 1 (`# skipped 1`, `ok 16 - … # SKIP`);
 - a failing test (the T6 plant): exit 1 from node, before the check;
 - a throw at load: exit 1 from node ("planted: a throw while loading");
-- file renamed (`git mv` and back): exit 1, "Could not find 'docker/image-fs.test.ts'".
+- file renamed (`git mv` and back): exit 1, "Could not find 'docker/image-fs.test.ts'";
+- a todo suite holding a failing test (the todo-suite plant plus the T6 reader plant; run after pulling the
+  reviewer's 43d62dd, which names this shape): node exit 0 with `ℹ fail 0`, and the step exits 1 on the
+  directive `not ok 16 - DEV-p5-image-host-25 (T6): … # TODO`.
+
+The reviewer's 43d62dd, pulled before the push, logs DEV-p5-image-host-26 for line 813. That is the
+`LC_ALL=C sort` fix above (af51a5c, rebased as 0599f52).
 
 ### Commands refused by the worktree guard (word for word)
 
@@ -1131,7 +1137,7 @@ in the scratchpad, on Node 24. Each plant was restored afterwards:
   ran. The tar-type loop made five tests from one `it(`. I unrolled the loop rather than weaken the count.
 - The "subdirectory of the right package" plant first survived (exit 0, 67/67). M4's shapes are caught by
   the name or edge checks before the target check. I added two cases (a hoisted `b` and a `b` beside `a`,
-  both into `b/lib`). The same plant is then red (66/1). Committed separately as 3254355.
+  both into `b/lib`). The same plant is then red (66/1). Committed separately as 37c6459.
 
 ### Gates (this session; Node 24.22.3; unpiped; each exit code from the tool)
 
