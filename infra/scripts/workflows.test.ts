@@ -141,6 +141,37 @@ describe('spec §6 image-scan: the gate before the service exists', () => {
   })
 })
 
+describe("live run 10: AWS's copy of the running task definition, checked and kept in the evidence", () => {
+  const TASK_STEP = 'The live task definition drops every capability, runs init and user 1000:1000'
+
+  it('live run 10: the step runs once a task answers over HTTPS, before the smoke test, and nothing can mask its exit code', () => {
+    const deploy = job(DEPLOY, 'deploy')
+    const names = deploy.steps.map((s) => s.name ?? '')
+    const task = step(DEPLOY, 'deploy', TASK_STEP)
+    expect(task.run?.trim()).toBe('node infra/scripts/taskDefinition.ts "$IMAGE_TAG" "$EVIDENCE/task-definition.json"')
+    expect(task.if).toBeUndefined()
+    expect(task.env).toBeUndefined()
+    expect(task['working-directory']).toBeUndefined()
+    expect(names.indexOf(TASK_STEP)).toBe(names.indexOf('Wait until the demo answers over HTTPS') + 1)
+    expect(names.indexOf(TASK_STEP)).toBeLessThan(names.findIndex((n) => n.startsWith('AC-AWS-03 smoke test')))
+    // Nothing else runs the script.
+    expect(workflowText(DEPLOY).match(/node infra\/scripts\/taskDefinition\.ts/g)).toHaveLength(1)
+  })
+
+  it('spec §11: the account-id scrub runs after it on always() and covers its .json file, and the file is uploaded', () => {
+    const names = job(DEPLOY, 'deploy').steps.map((s) => s.name ?? s.uses ?? '')
+    const scrub = step(DEPLOY, 'deploy', 'Keep account ids out of the evidence (spec §11)')
+    expect(scrub.if).toBe('always()')
+    expect(scrub.run).toContain(`-name '*.json'`)
+    expect(scrub.run).toContain('find "$EVIDENCE" -type f')
+    expect(names.indexOf(scrub.name ?? '')).toBeGreaterThan(names.indexOf(TASK_STEP))
+    const upload = step(DEPLOY, 'deploy', 'AC-AWS-07 keep the deploy evidence')
+    expect(upload.if).toBe('always()')
+    expect(upload.with?.path).toBe('infra/evidence')
+    expect(workflowText(DEPLOY)).toContain('EVIDENCE: infra/evidence')
+  })
+})
+
 describe('AC-AWS-07: one evidence artifact, complete or visibly not', () => {
   const evidence = () => job(DEPLOY, 'evidence')
   const names = () => evidence().steps.map((s) => s.name ?? s.uses ?? '')

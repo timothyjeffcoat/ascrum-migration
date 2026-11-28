@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { liveAnswers, liveContainer, TAG } from './fakeTaskDefinition.ts'
 import { REPO_ROOT, step, WORKFLOW_FILES } from './workflowFiles.ts'
 
 type Rule = { match: string; code?: number; stdout?: unknown; stdoutRaw?: string; stderr?: string }
@@ -354,6 +355,67 @@ describe('spec §6 image-scan: the scan step, as the workflow runs it', () => {
       status: 'UNSCANNABLE_MEDIA_TYPE',
       mediaType: 'application/vnd.oci.image.index.v1+json',
     })
+  })
+})
+
+// Live run 10's caveat, as the deploy job runs it: the step's own run text with a fake `aws` on PATH.
+describe('live run 10: the live task definition step, as the workflow runs it', () => {
+  const taskStep = step(
+    WORKFLOW_FILES.deploy,
+    'deploy',
+    'The live task definition drops every capability, runs init and user 1000:1000',
+  )
+  const rules = (answers = liveAnswers()): Rule[] => [
+    { match: 'cloudformation list-stack-resources --stack-name AscrumDemo ', stdout: answers.resources },
+    { match: 'ecs describe-services --cluster ascrum-demo --services ', stdout: answers.services },
+    { match: 'ecs describe-task-definition --task-definition ', stdout: answers.taskDefinition },
+  ]
+  const run = (stepRules: Rule[]) => {
+    const evidence = mkdtempSync(join(tmpdir(), 'ascrum-task-evidence-'))
+    const result = runStep(taskStep.run, stepRules, { env: { IMAGE_TAG: TAG, EVIDENCE: evidence } })
+    return { ...result, file: readFileSync(join(evidence, 'task-definition.json'), 'utf8') }
+  }
+
+  it("live run 10: AWS's matching copy passes and is kept, without the environment, the secrets or an account id", () => {
+    const { status, output, file } = run(rules())
+    expect(status, output).toBe(0)
+    expect(output).toContain('live task definition ascrum-demo-api:7: user 1000:1000, capabilities drop ALL')
+    const record = JSON.parse(file) as { container: Record<string, unknown> }
+    expect(record.container).toMatchObject({
+      user: '1000:1000',
+      readonlyRootFilesystem: true,
+      linuxParameters: { capabilities: { add: [], drop: ['ALL'] }, initProcessEnabled: true },
+    })
+    expect(file).not.toMatch(/\b\d{12}\b/)
+    expect(file).not.toMatch(/environment|secrets|DB_PASSWORD|never-kept/)
+  })
+
+  it('live run 10: a copy without the capability drop, the init process or the user fails the step and is still kept', () => {
+    const bad = liveContainer({ user: '0', linuxParameters: { capabilities: { drop: [] }, initProcessEnabled: false } })
+    const { status, output, file } = run(rules(liveAnswers(bad)))
+    expect(status, output).toBe(1)
+    expect(output).toContain('::error::live task definition ascrum-demo-api:7: user is 0, not 1000:1000')
+    expect(output).toContain(
+      '::error::live task definition ascrum-demo-api:7: capabilities.drop is not exactly ["ALL"]',
+    )
+    expect(output).toContain('::error::live task definition ascrum-demo-api:7: initProcessEnabled is not true')
+    expect(JSON.parse(file)).toMatchObject({ container: { user: '0' } })
+  })
+
+  it('sec-05: a refused describe-services fails the step with one cleaned line, and the evidence says why', () => {
+    const refused: Rule = {
+      match: 'ecs describe-services',
+      code: 254,
+      stderr: refusedStderr('DescribeServices'),
+    }
+    const [resources, , definition] = rules()
+    const { status, output, file } = run([resources as Rule, refused, definition as Rule])
+    expectClean(status, output, 'describe-services --cluster ascrum-demo --services')
+    expect(output).toContain('AccessDeniedException')
+    expect(output).not.toContain('describe-task-definition')
+    expect(JSON.parse(file)).toMatchObject({ error: expect.stringContaining('AccessDeniedException') })
+    expect(file).not.toMatch(/\b\d{12}\b/)
+    expect(file).not.toContain('second line')
   })
 })
 
