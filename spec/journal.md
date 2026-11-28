@@ -1528,3 +1528,33 @@ Counted, not estimated, against `migration` at `6f6afaf` (after #93) and read-on
 
 **Moment (article candidate)**
 - "The first try at proving the latest code on AWS was refused in ten seconds, because one of twelve checks on the commit had not finished yet. Nothing was created. Fifteen minutes later the same commit was deployed, tested over HTTPS and torn down, with the slimmer image's first cloud scan clean and nothing left behind."
+
+## 2026-11-27: AWS's own copy of the task definition, and a test count that still needs a reader (p5-followups-2, PR #99, review)
+- **What.** One PR for three items the owner approved on 2026-11-27.
+  - **Live run 10's caveat.** After the deploy, the workflow saves a filtered record of the task definition the running API service uses, as AWS stores it. The record holds `linuxParameters`, `user`, `readonlyRootFilesystem`, `privileged` and the image, and never the environment, the secrets or the command. The run fails closed on a wrong value, before the smoke test (`infra/scripts/taskDefinition.ts`). It needs no new IAM permission.
+  - **DEV-p5-image-host-27.** review.md's gate `rg` check now covers `docker/` and `infra/`, node:test's skip and todo forms, and the routes that balance the image-fs test count.
+  - **DEV-p5-image-host-28.** New tests make `linkLands`' store-directory rule matter, with `docker/image-fs.ts` unchanged.
+- **Two rounds, each with a security second review.** Neither found anything blocking.
+  - **Round 1 (`4195ad4`).** The reviewer planted 29 changes in `taskDefinition.ts`, each alone. 23 went red and 6 survived 81/81 (-56): untested checks on the deployment, the task definition's status and `readonlyRootFilesystem`, all correct by reading. The security review found the same six (sec-05). It also showed that a root sidecar, or `privileged: true` on `api`, passed (sec-01, -57), and so did an image from any registry with the right name and tag (sec-02, -58). The reviewer found that the step named the cluster by name. The only DescribeServices call proven live passes the cluster's ARN (-59). Both reviewers listed shapes the new `rg` missed (sec-03, sec-04; -29, -30). The reviewer added one more route: a test inside a function nobody calls, balanced by a subtest.
+  - **Round 2 (`dc0c5c7`).** The image must now equal `$REPOSITORY_URI:$IMAGE_TAG`, the URI the push used. The task definition must hold `api` and nothing else, and must not be privileged. `--cluster` is the ARN, built by the leftover check's own function. The `rg` grew from 13 alternatives to 23 (4 in the old two-folder command), and review.md lists what it still misses. The security re-check found three small items: no evidence file when the arguments are bad (sec-06, -60), a string `"true"` for `privileged` (sec-07, -61, impossible with AWS's booleans) and five more `rg` misses (sec-08, -31). The reviewer added two: a cluster check loosened to `includes` survives (-62), and subtests with a variable title escape the `rg` (-32).
+- **Numbers (reviewer, measured).**
+  - **Round 1.** `taskDefinition.ts`: 29 plants, 23 red (1 to 5 tests each), 6 survived. Workflow: 4 plants (`|| true`, `continue-on-error`, the evidence path, the scrub's `always()`), all red. `linkLands`: 4 plants, all red (4, 2, 2 and 1 tests). `rg` probes: 13, of which 3 were caught.
+  - **Round 2.** The six round-1 survivors are each 1 red of 97. 13 new plants: 11 red, 1 equivalent, 1 survivor (-62). `rg` probes: 27 of the reviewer's, 21 caught; the 6 misses are listed in review.md or logged in -32. The security re-check's five shapes were all missed, as it reported. Its 26 breakages were red or equivalent.
+  - **Deviations.** #99 adds 11 rows (209 in all), none blocking. -27, -28, -56..-59 and -30 are fixed. -29 is fixed in part (the eslint and vitest half is an owner decision). -60..-62, -31 and -32 are open.
+- **Not proven live.**
+  - That the image AWS stores equals `$REPOSITORY_URI:$IMAGE_TAG`. By reading it does: both are `<account>.dkr.ecr.<region>.<URLSuffix>/ascrum-demo-api`, from the same account and region.
+  - The `ecs:cluster` condition with this call (the form matches run 10's leftover check).
+  - The real DescribeTaskDefinition answer (`add` absent or `[]`, the `user` string). The next deploy run is the first proof.
+- **Process.**
+  - In round 2, the reviewer's branch moved to `dc0c5c7` while its files stayed at `fe2ec2b`. It noticed this because the workflow still showed the old step line. It checked that the files equalled its own pushed commit, then reset to `dc0c5c7` (no local work was lost) before running any gate.
+  - The worktree guard refused several of the reviewer's compound commands: a `source`, a `git -C ..`, a `HOME=` and some loops. The reviewer split them or dropped the refused part, as each refusal said.
+- **Gate results (reviewer, round 2, AWS credential files at `/dev/null`).**
+  - infra: lint, typecheck, test (301/301) and synth, each exit 0.
+  - web: lint and typecheck (they cover `docker/`), each exit 0.
+  - The CI image-fs step, run verbatim: exit 0, `# tests 73`, skipped 0, todo 0.
+  - The gate `rg`, run verbatim: exactly the 5 stated hits.
+  - CI 12/12 green on `dc0c5c7`.
+- **Decision.** Pending: the owner chooses between a short round 3 for -60..-62, -31 and -32, and verifying now with them open.
+
+**Moment (article candidate)**
+- "In the first version, the check that the cloud runs the right image accepted any registry, as long as the name and the tag matched. In the second, the image must be byte for byte the one the pipeline pushed a few minutes earlier. Meanwhile the search for skipped tests grew from 4 patterns to 23, and both reviewers still wrote the same sentence: a pattern catches accidents, and only reading the diff catches a deliberate one."
