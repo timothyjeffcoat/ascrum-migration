@@ -148,7 +148,14 @@ describe("live run 10: AWS's copy of the running task definition, checked and ke
     const deploy = job(DEPLOY, 'deploy')
     const names = deploy.steps.map((s) => s.name ?? '')
     const task = step(DEPLOY, 'deploy', TASK_STEP)
-    expect(task.run?.trim()).toBe('node infra/scripts/taskDefinition.ts "$IMAGE_TAG" "$EVIDENCE/task-definition.json"')
+    // DEV-p5-infra-58: the image must equal the URI the push step used, the registry stack's output.
+    expect(task.run?.trim()).toBe(
+      'node infra/scripts/taskDefinition.ts "$REPOSITORY_URI" "$IMAGE_TAG" "$EVIDENCE/task-definition.json"',
+    )
+    expect(step(DEPLOY, 'deploy', 'Push the API image').run).toContain('docker push "$REPOSITORY_URI:$IMAGE_TAG"')
+    expect(step(DEPLOY, 'deploy', 'Deploy the registry stack').run).toContain(
+      `echo "REPOSITORY_URI=$(jq -r '.AscrumDemoRegistry.ApiRepositoryUri' "$RUNNER_TEMP/registry.json")" >> "$GITHUB_ENV"`,
+    )
     expect(task.if).toBeUndefined()
     expect(task.env).toBeUndefined()
     expect(task['working-directory']).toBeUndefined()

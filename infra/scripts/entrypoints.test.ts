@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { liveAnswers, liveContainer, TAG } from './fakeTaskDefinition.ts'
+import { CLUSTER_ARN, liveAnswers, liveContainer, REPOSITORY_URI, SERVICE_ARN, TAG } from './fakeTaskDefinition.ts'
 import { REPO_ROOT, step, WORKFLOW_FILES } from './workflowFiles.ts'
 
 type Rule = { match: string; code?: number; stdout?: unknown; stdoutRaw?: string; stderr?: string }
@@ -367,12 +367,14 @@ describe('live run 10: the live task definition step, as the workflow runs it', 
   )
   const rules = (answers = liveAnswers()): Rule[] => [
     { match: 'cloudformation list-stack-resources --stack-name AscrumDemo ', stdout: answers.resources },
-    { match: 'ecs describe-services --cluster ascrum-demo --services ', stdout: answers.services },
+    { match: `ecs describe-services --cluster ${CLUSTER_ARN} --services `, stdout: answers.services },
     { match: 'ecs describe-task-definition --task-definition ', stdout: answers.taskDefinition },
   ]
   const run = (stepRules: Rule[]) => {
     const evidence = mkdtempSync(join(tmpdir(), 'ascrum-task-evidence-'))
-    const result = runStep(taskStep.run, stepRules, { env: { IMAGE_TAG: TAG, EVIDENCE: evidence } })
+    const result = runStep(taskStep.run, stepRules, {
+      env: { REPOSITORY_URI, IMAGE_TAG: TAG, EVIDENCE: evidence },
+    })
     return { ...result, file: readFileSync(join(evidence, 'task-definition.json'), 'utf8') }
   }
 
@@ -410,12 +412,38 @@ describe('live run 10: the live task definition step, as the workflow runs it', 
     }
     const [resources, , definition] = rules()
     const { status, output, file } = run([resources as Rule, refused, definition as Rule])
-    expectClean(status, output, 'describe-services --cluster ascrum-demo --services')
+    expectClean(status, output, 'describe-services --cluster arn:aws:ecs:eu-west-1:***:cluster/ascrum-demo --services')
     expect(output).toContain('AccessDeniedException')
     expect(output).not.toContain('describe-task-definition')
     expect(JSON.parse(file)).toMatchObject({ error: expect.stringContaining('AccessDeniedException') })
     expect(file).not.toMatch(/\b\d{12}\b/)
     expect(file).not.toContain('second line')
+  })
+
+  it('DEV-p5-infra-56 (sec-05): a failure reason with control characters and "::" reaches neither the output nor the file raw', () => {
+    const [resources, , definition] = rules()
+    const forged: Rule = {
+      match: 'ecs describe-services',
+      stdout: { services: [], failures: [{ arn: SERVICE_ARN, reason: 'MISSING\u001b[2J\n::error::forged\r' }] },
+    }
+    const { status, output, file } = run([resources as Rule, forged, definition as Rule])
+    expect(status, output).toBe(1)
+    expect(output).not.toContain('\u001b')
+    expect(output.split('\n').filter((line) => line.startsWith('::error::forged'))).toEqual([])
+    const { error } = JSON.parse(file) as { error: string }
+    expect(error).toContain("describe-services did not answer for the demo's service (MISSING [2J ::error::forged )")
+    // printable(): only printable ASCII is kept in the evidence's error text.
+    expect(error).toMatch(/^[\x20-\x7e]*$/)
+  })
+
+  it("DEV-p5-infra-58: a repository URI that is not this region's ECR stops the step before any AWS call", () => {
+    const evidence = mkdtempSync(join(tmpdir(), 'ascrum-task-evidence-'))
+    const { status, output, calls } = runStep(taskStep.run, rules(), {
+      env: { REPOSITORY_URI: 'docker.io/attacker/ascrum-demo-api', IMAGE_TAG: TAG, EVIDENCE: evidence },
+    })
+    expect(status, output).toBe(1)
+    expect(output).toContain("::error::the repository URI is not ascrum-demo-api in this region's ECR.")
+    expect(calls).toBe('')
   })
 })
 

@@ -1,18 +1,19 @@
 // The live task definition in the deploy evidence (live run 10's caveat). Used by the deploy job of
 // deploy-demo.yml once the demo answers over HTTPS, so a task is running:
 //
-//   AWS_REGION=… node infra/scripts/taskDefinition.ts <image tag> <evidence json>
+//   AWS_REGION=… node infra/scripts/taskDefinition.ts <repository uri> <image tag> <evidence json>
 //
 // Live run 10 proved that the API runs on Fargate with the settings the code sets, but the evidence held
 // only the code's copy of them (infra/src/demoStack.ts). This script asks AWS which task definition the
 // demo's service runs, reads AWS's own copy of it, and keeps a small record: the service's deployment, the
-// family and revision, and the API container's name, image, `user`, `readonlyRootFilesystem` and
-// `linuxParameters`. It never keeps the environment, the secrets (not even their ARNs), the command or
+// family and revision, every container's name, and the API container's name, image, `user`,
+// `readonlyRootFilesystem`, `privileged` and `linuxParameters`. It never keeps the environment, the secrets (not even their ARNs), the command or
 // anything else of the container: only the fields named here are copied.
 //
-// It fails closed (exit 1) unless AWS's copy has every capability dropped and none added, the init
-// process on, user 1000:1000, a read-only root filesystem and this commit's image, and unless the service
-// runs exactly that one task definition. The record is written first, also when a check fails or a call
+// It fails closed (exit 1) unless AWS's copy has exactly one container, `api`, with every capability
+// dropped and none added, the init process on, user 1000:1000, a read-only root filesystem, not privileged,
+// and exactly this commit's image from the repository the workflow pushed to, and unless the service runs
+// exactly that one task definition. The record is written first, also when a check fails or a call
 // is refused, so a red run shows why. It is an account-id-free file: redact() runs on it here, and the
 // workflow's "Keep account ids out of the evidence" step runs after this one on every .json file.
 //
@@ -23,6 +24,7 @@
 import { writeFileSync } from 'node:fs'
 import { NAMES, STACK } from '../src/names.ts'
 import { awsCli, awsJson, commandData, printable, redact, runMain, type Aws } from './aws.ts'
+import { ecsResource } from './leftovers.ts'
 
 /** What AWS's copy must say (demoStack.ts; taskDefinition.test.ts ties these to the synthesised stack). */
 export const EXPECTED = {
@@ -52,6 +54,7 @@ type ContainerDefinition = {
   image?: string
   user?: string
   readonlyRootFilesystem?: boolean
+  privileged?: boolean
   linuxParameters?: LinuxParameters & Record<string, unknown>
 }
 type TaskDefinition = {
@@ -87,6 +90,7 @@ export type LiveRecord = {
     image: string | null
     user: string | null
     readonlyRootFilesystem: boolean | null
+    privileged: boolean | null
     linuxParameters: Record<string, unknown> | null
   } | null
 }
@@ -119,12 +123,26 @@ export async function liveTaskDefinition({ aws, region }: LiveOptions): Promise<
   if (!serviceArn) {
     throw new Error(`${EXPECTED.stack} has ${services.length} ECS services; expected exactly one with an ARN.`)
   }
+  // The cluster by its ARN, built from the service's ARN exactly as the leftover check builds it
+  // (leftovers.ts ecsResource): that is the DescribeServices form proven live (run 10) against the deploy
+  // role's `ecs:cluster` ArnEquals condition (LeftoverEcsServices; DEV-p5-infra-59).
+  const parsed = ecsResource(serviceArn)
+  if (
+    !parsed ||
+    parsed.kind !== 'service' ||
+    parsed.region !== region ||
+    !parsed.cluster.endsWith(`:cluster/${EXPECTED.cluster}`)
+  ) {
+    throw new Error(
+      `the demo stack's service is not a service in cluster ${EXPECTED.cluster} in ${region}: ${serviceArn}`,
+    )
+  }
 
   const described = (await awsJson(aws, [
     'ecs',
     'describe-services',
     '--cluster',
-    EXPECTED.cluster,
+    parsed.cluster,
     '--services',
     serviceArn,
     ...where,
@@ -176,6 +194,7 @@ export async function liveTaskDefinition({ aws, region }: LiveOptions): Promise<
       image: orNull(container.image),
       user: orNull(container.user),
       readonlyRootFilesystem: orNull(container.readonlyRootFilesystem),
+      privileged: orNull(container.privileged),
       // Kept whole: capabilities, the init process and the other kernel settings, none of which is a value
       // or a secret. Nothing outside linuxParameters is copied.
       linuxParameters: orNull(container.linuxParameters),
@@ -187,8 +206,26 @@ export async function liveTaskDefinition({ aws, region }: LiveOptions): Promise<
 const same = (a: unknown, b: readonly unknown[]): boolean =>
   Array.isArray(a) && a.length === b.length && a.every((value, i) => value === b[i])
 
+/**
+ * The image the deploy must run: exactly the repository URI the workflow pushed to (the registry stack's
+ * output, `$REPOSITORY_URI`) with this commit's tag (DEV-p5-infra-58). Exact equality rather than a pattern
+ * of ECR hosts: the URI names the account as well as the region, so another account's ECR repository of
+ * the same name cannot pass either. The URI itself must look like this region's ECR, so an empty or
+ * mistyped argument cannot make a match. Compared before any redaction.
+ */
+export function expectedImage(repositoryUri: string, imageTag: string, region: string): string {
+  const ecr = new RegExp(
+    `^[0-9]{12}\\.dkr\\.ecr\\.${region.replace(/[^a-z0-9-]/g, '_')}\\.amazonaws\\.com/${EXPECTED.repository}$`,
+  )
+  if (!/^[a-z0-9-]+$/.test(region) || !ecr.test(repositoryUri)) {
+    throw new Error(`the repository URI is not ${EXPECTED.repository} in this region's ECR.`)
+  }
+  if (!/^[0-9a-f]{40}$/.test(imageTag)) throw new Error('the image tag is not a commit SHA.')
+  return `${repositoryUri}:${imageTag}`
+}
+
 /** Every way AWS's copy differs from what the deploy must run; empty when it matches. */
-export function problems(record: LiveRecord, imageTag: string): string[] {
+export function problems(record: LiveRecord, image: string): string[] {
   const found: string[] = []
   const service = record.service
   if (!service) return ['no service was described']
@@ -207,8 +244,14 @@ export function problems(record: LiveRecord, imageTag: string): string[] {
   if (definition.arn !== service.taskDefinition) found.push('AWS answered for another task definition')
   if (definition.family !== EXPECTED.family) found.push(`the family is ${definition.family}, not ${EXPECTED.family}`)
   if (definition.status !== 'ACTIVE') found.push(`the task definition is ${definition.status}, not ACTIVE`)
+  // Only the API container may exist: a second one (a root sidecar with added capabilities) would run with
+  // none of the checks below (DEV-p5-infra-57).
+  if (!same(record.containers, [EXPECTED.container])) {
+    found.push(`the containers are ${record.containers.join(', ') || 'none'}, not exactly ${EXPECTED.container}`)
+  }
   const container = record.container
-  if (!container) return [...found, `no single container named ${EXPECTED.container} (${record.containers.join(', ')})`]
+  if (!container) return [...found, `no single container named ${EXPECTED.container}`]
+  if (container.privileged === true) found.push('the container is privileged')
   if (container.user !== EXPECTED.user) found.push(`user is ${container.user ?? 'unset'}, not ${EXPECTED.user}`)
   if (container.readonlyRootFilesystem !== EXPECTED.readonlyRootFilesystem) {
     found.push('the root filesystem is not read-only')
@@ -218,8 +261,10 @@ export function problems(record: LiveRecord, imageTag: string): string[] {
   const add = linux.capabilities?.add
   if (add !== undefined && !same(add, [])) found.push('capabilities.add is not empty')
   if (linux.initProcessEnabled !== EXPECTED.initProcessEnabled) found.push('initProcessEnabled is not true')
-  if (!container.image?.endsWith(`/${EXPECTED.repository}:${imageTag}`)) {
-    found.push(`the image is not this commit's ${EXPECTED.repository}:${imageTag}`)
+  if (container.image !== image) {
+    found.push(
+      `the image is not this commit's ${EXPECTED.repository}:${image.slice(image.lastIndexOf(':') + 1)} from the pushed repository`,
+    )
   }
   return found
 }
@@ -229,12 +274,13 @@ export const evidenceText = (value: unknown): string => `${redact(JSON.stringify
 
 if (import.meta.main) {
   await runMain(async () => {
-    const [imageTag, evidence] = process.argv.slice(2)
+    const [repositoryUri, imageTag, evidence] = process.argv.slice(2)
     const region = process.env.AWS_REGION
-    if (!imageTag || !evidence || !region) {
-      console.error('usage: AWS_REGION=… node taskDefinition.ts <image tag> <evidence json>')
+    if (!repositoryUri || !imageTag || !evidence || !region) {
+      console.error('usage: AWS_REGION=… node taskDefinition.ts <repository uri> <image tag> <evidence json>')
       process.exit(2)
     }
+    const image = expectedImage(repositoryUri, imageTag, region)
     let record: LiveRecord
     try {
       record = await liveTaskDefinition({ aws: awsCli, region })
@@ -247,7 +293,7 @@ if (import.meta.main) {
       throw error
     }
     writeFileSync(evidence, evidenceText(record))
-    const found = problems(record, imageTag)
+    const found = problems(record, image)
     const name = `${record.taskDefinition?.family ?? '?'}:${record.taskDefinition?.revision ?? '?'}`
     if (found.length > 0) {
       for (const problem of found) console.error(`::error::${commandData(`live task definition ${name}: ${problem}`)}`)

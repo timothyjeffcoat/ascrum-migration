@@ -188,11 +188,12 @@ jobs:
 
       # Live run 10's caveat: the evidence held only the code's copy of the API container's settings. This
       # keeps AWS's own copy, from the task definition the running service uses (no environment, no secrets),
-      # and fails the run unless it drops every capability, runs the init process and user 1000:1000, has a
-      # read-only root filesystem and this commit's image (infra/scripts/taskDefinition.ts). The account-id
+      # and fails the run unless `api` is its only container and drops every capability, runs the init
+      # process and user 1000:1000, has a read-only root filesystem, is not privileged and runs exactly
+      # $REPOSITORY_URI:$IMAGE_TAG, the image pushed above (infra/scripts/taskDefinition.ts). The account-id
       # step below scrubs the file as well.
       - name: The live task definition drops every capability, runs init and user 1000:1000
-        run: node infra/scripts/taskDefinition.ts "$IMAGE_TAG" "$EVIDENCE/task-definition.json"
+        run: node infra/scripts/taskDefinition.ts "$REPOSITORY_URI" "$IMAGE_TAG" "$EVIDENCE/task-definition.json"
 
       - name: Install Chromium
         working-directory: web
