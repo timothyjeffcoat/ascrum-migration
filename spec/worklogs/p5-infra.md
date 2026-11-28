@@ -2161,3 +2161,127 @@ From `infra/`, after all of the round's commits (including the `ci.yml` step cha
 - `AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null pnpm synth`: exit 0, "Successfully
   synthesized to …/infra/cdk.out".
 - No `aws` and no `cdk deploy/destroy/bootstrap` were run.
+
+## 2026-11-27, Phase 5 follow-ups 2 (worker): the live task definition in the deploy evidence
+
+Branch `convert/p5-followups-2` from `migration` at `77096e0`. Owner's go: "yes, start the worker on the
+three follow-ups" (2026-11-27). This entry covers item 1, live run 10's caveat; items 2 and 3
+(DEV-p5-image-host-27, -28) are in the p5-image-host worklog.
+
+### What was done
+
+- **New script `infra/scripts/taskDefinition.ts`**, run by a new deploy-job step, "The live task definition
+  drops every capability, runs init and user 1000:1000", right after "Wait until the demo answers over
+  HTTPS" (so a task is serving) and before the smoke test. Its three calls:
+  1. `cloudformation list-stack-resources --stack-name AscrumDemo`. The service has no fixed name, so its
+     ARN comes from the stack's one `AWS::ECS::Service`, as destroy.ts finds the web bucket.
+  2. `ecs describe-services --cluster ascrum-demo --services <arn>`, giving the service's task definition
+     and its deployments.
+  3. `ecs describe-task-definition --task-definition <that arn>`, which is AWS's own copy.
+- **No new permission.** Each call is already granted to the deploy role in `infra/src/bootstrapStack.ts`:
+  `cloudformation:ListStackResources` on the demo stacks (sid `DemoStacks`), `ecs:DescribeServices` bound
+  to the demo cluster (`LeftoverEcsServices`, which is why `--cluster` is passed by name), and
+  `ecs:DescribeTaskDefinition` on `*` (`ReadOnlyChecks`). `bootstrapStack.ts` is not touched.
+- **The record, `infra/evidence/task-definition.json`, is filtered.** It keeps:
+  - the stack and the cluster;
+  - the service's ARN, status, running and desired counts, task definition, and each deployment's status,
+    task definition, running count and rollout state;
+  - the task definition's ARN, family, revision and status;
+  - the names of all its containers;
+  - for the `api` container only: name, image, `user`, `readonlyRootFilesystem` and the whole
+    `linuxParameters` (capabilities, the init process and other kernel settings; none of them is a value
+    or a secret).
+
+  It never keeps the environment, the secrets (not even their ARNs), the command or any other field. The
+  JSON text goes through `redact()` before it is written. The existing "Keep account ids out of the
+  evidence" step runs after it on `always()` and covers `*.json`, and `workflows.test.ts` pins that order.
+- **Fail closed (decision).** The step exits 1, with one `::error::` line per problem, unless AWS's copy has
+  all of these:
+  - `capabilities.drop` exactly `["ALL"]` and `capabilities.add` absent or empty;
+  - `initProcessEnabled: true`;
+  - `user` `1000:1000`;
+  - `readonlyRootFilesystem: true`, which demoStack sets, so a `false` would be a regression;
+  - an image ending `/ascrum-demo-api:<this commit>`;
+  - family `ascrum-demo-api`, status ACTIVE.
+
+  The service must be ACTIVE and run at least one task. It must have exactly one deployment, PRIMARY, on
+  that same task definition, with a running task. Only then can the running task be this revision.
+  Why fail closed: the design rule is fail-closed, and a record that says the wrong thing would otherwise
+  sit quietly in a green run's evidence. A refused or empty AWS answer also fails the step, through
+  `runMain`, with one cleaned line. The file then holds `{"error": …}`, so the evidence still says why.
+  `EXPECTED` is tied to the synthesised stack by a test, so the stack and this check cannot drift apart.
+- **The evidence job's "every part of the evidence is in it" check is unchanged (decision).** That check
+  is about whole artifacts (MISSING.txt), and it names no single file: `smoke-output.txt` and
+  `image-scan.json` are not listed either. The new step already fails the deploy job when the record cannot
+  be made or does not match. A per-file check in the evidence job would add nothing on a green deploy, and
+  on a red one it would only repeat a failure the deploy job already shows (when the step never ran).
+- **Before the smoke test (decision).** A wrong live configuration is a deploy failure, so the run stops
+  there and goes to destroy. The smoke output is then missing, but the step's own record and its error say
+  why.
+- `infra/README.md`'s evidence list names the new file. The workflow's header comment mentions it.
+
+### Tests
+
+- `scripts/taskDefinition.test.ts` (28 tests), in-process fake:
+  - the exact three calls;
+  - the record's fields;
+  - no environment, secret or command in the file, and no 12-digit id;
+  - every mismatch above as its own case (19 cases), plus two `api` containers, another family or ARN, a
+    refused or empty answer (6 shapes), no task definition, and a null service;
+  - EXPECTED against the synthesised demo stack.
+- `scripts/entrypoints.test.ts` (+3): the step's own `run:` text in `bash -eo pipefail` with
+  `fakeAwsBin.ts` on PATH and fixtures from the new `scripts/fakeTaskDefinition.ts`:
+  - a match exits 0 and writes the record;
+  - a bad copy exits 1 with the three `::error::` lines and still writes the record;
+  - a refused `describe-services` exits 1 with one cleaned line, and the file says why without an
+    account id.
+- `scripts/workflows.test.ts` (+2): the step's exact command, no `if`/`env`/`working-directory`, placed right
+  after the readiness wait and before the smoke test; the scrub after it on `always()` covering `*.json`;
+  the upload on `always()` of `infra/evidence`.
+
+### Red/green proofs (each plant restored with `git checkout`, then re-run)
+
+Run: `node node_modules/vitest/vitest.mjs run scripts/taskDefinition.test.ts scripts/entrypoints.test.ts` (64 tests).
+
+| Plant in `taskDefinition.ts` | Result |
+|---|---|
+| init check removed | 3 failed |
+| `capabilities.drop` check removed | 5 failed |
+| `user` check removed | 4 failed |
+| whole container copied into the record (`...container`) | 3 failed |
+| `redact()` dropped from the evidence text | 2 failed |
+| "exactly one deployment" relaxed to "at least one" | 1 failed |
+| image check removed | 2 failed |
+
+### Not proven
+
+The live result. Agents hold no AWS credentials (spec §11), so the step has run against fakes only. These
+are unknown until the owner's next deploy run:
+- the real answer shapes, for example whether `capabilities.add` comes back as `[]` or absent (both are
+  accepted);
+- whether a fresh service lists exactly one deployment once the HTTPS wait passes (expected; if not, the
+  run is a false red, and the record shows the deployments);
+- that the three calls are allowed as granted.
+
+The record shows the image as URI and tag, not as a digest. DescribeTaskDefinition has no digest, and the
+running task's digest would need `ecs:ListTasks`, which the deploy role does not have. The tag is
+immutable, and `image-scan.json` holds the digest it names.
+
+### Commands refused by the worktree guard
+
+One, word for word: "This agent is isolated in the worktree …, but this command is too complex to verify
+that it stays inside the worktree. Refusing to run it — a worktree-isolated agent's git operations must
+target its own worktree. Split it into plain, separate commands and run them from …" (the worktree path is
+left out here). The refused command was a shell function that ran the seven plants in one loop, with a copy,
+a `perl` edit, the tests and a restore for each. It did not run. I committed first, then ran each plant as
+separate plain commands: `perl` edit, test run, `git checkout`. The second refusal of the session, on a
+heredoc append to the docker test file, is in the p5-image-host worklog.
+
+### Gates (this session; Node 24.22.3 written on PATH; AWS files at `/dev/null`; unpiped)
+
+- infra `AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null pnpm verify`: exit 0. It covers
+  lint ("All matched files use Prettier code style!"), typecheck, test ("Test Files  13 passed (13)",
+  "Tests  285 passed (285)", which is 252 before plus 33) and synth ("Successfully synthesized to
+  …/infra/cdk.out").
+- web `pnpm lint`: exit 0. web `pnpm typecheck`: exit 0.
+- No `aws` and no `cdk deploy/destroy/bootstrap` were run, and no AWS profile was used.

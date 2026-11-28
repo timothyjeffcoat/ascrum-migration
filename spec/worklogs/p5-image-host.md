@@ -1158,3 +1158,114 @@ The reviewer's 43d62dd, pulled before the push, logs DEV-p5-image-host-26 for li
   package.json packages, web 70 + 0, "the scan read every OS and language package in both images".
 - `bash -n docker/check-images.sh`: OK.
 - Not run: the rest of the e2e-compose job and web `pnpm verify`.
+
+## 2026-11-27, session 9 (worker): Phase 5 follow-ups 2, DEV-p5-image-host-27 and -28
+
+Branch `convert/p5-followups-2` from `migration` at `77096e0`. Owner's go: "yes, start the worker on the
+three follow-ups" (2026-11-27). Item 1, the live task definition, is in the p5-infra worklog.
+
+### DEV-p5-image-host-28: which store directory a link may use
+
+`docker/image-fs.test.ts` has 6 new tests at the end of the `pnpm-store` suite. `image-fs.ts` and
+`image-fs-craft.ts` are unchanged.
+- **The crafted tree.** A second tree, `VERSIONS_TREE`, has three store directories of `b`, and each one is
+  a lockfile package:
+  - `b@2.0.0`, which is `a`'s edge;
+  - `b@1.0.0`, another version, which is `@s/c`'s edge;
+  - `b@2.0.0_@s+c@1.0.0`, a peer-suffix variant, which is the project's own top-level `b`.
+- **Controls.** (1) Each link on the directory its edge names: exit 0, "5 store directories". (2) Positive
+  controls, as -28 asked: an absolute top-level target, and a two-hop chain (a's `b` → `.pnpm/node_modules/b`
+  → `b@2.0.0`) that lands correctly. Both pass.
+- **Findings.** Each test below is red if its link is accepted:
+  - a top-level link to another version;
+  - a top-level link to another peer-suffix variant;
+  - a link beside a package to another version (beside `a` and beside `@s/c`);
+  - a link beside a package to another peer-suffix variant.
+- **The count.** CI's step counts `^[[:space:]]*it\(` lines and hard-codes nothing, so `ci.yml` is
+  unchanged. 67 → 73.
+
+**Plants** (in `docker/image-fs.ts`, one at a time, each restored with `git checkout`; run with
+`node --test docker/image-fs.test.ts`):
+
+| Plant | Before (#94 review) | Now |
+|---|---|---|
+| L1: `(dirs === undefined \|\| dirs.has(d))` → `true` | 67/67 green | **exit 1, 4 failed** (the four -28 finding tests) |
+| `linkLands(q, name, dirs)` → `linkLands(q, name)` beside a package (sec-r4-01, line 1247) | 67/67 green | **exit 1, 2 failed** (the two beside-package tests) |
+| top-level `linkLands(q, name, edges.get('')?.get(name))` → `linkLands(q, name)` (sec-r4-01, line 1207) | 67/67 green | **exit 1, 2 failed** (the two top-level tests) |
+| 1207 and 1247 together | 67/67 green | **exit 1, 4 failed** |
+| `if (target.startsWith('/')) done.length = 0` → `if (false)` (sec-r4-01, line 639; not in the brief's list, done as well) | 67/67 green | **exit 1, 1 failed** (the absolute-target control) |
+
+### DEV-p5-image-host-27: the review `rg` check
+
+`.claude/rules/review.md`'s gate check is now one command, written as a code block so it can be pasted. It
+scans `web/src web/e2e docker infra`. The old alternatives are kept, and new ones are added for:
+- `skip:`/`todo:` keys and the `{ skip }`/`{ todo }` shorthand;
+- a test made in a callback or behind `=>`, `&&`, `||`, `?` or `if`;
+- `it`/`test`/`describe` assigned to another name;
+- a block comment that holds an `it(` line;
+- `test` imported from `node:test` by name, by default or namespace import, or by `require`/`import()`.
+
+`-U` (multiline) is needed for the wrapped forms. The run-time `t.skip(`/`t.todo(` were already caught by
+`\.(skip|todo)\b`.
+- **Decision: `describe` imported from `node:test` is not flagged.** The file imports it today, so every run
+  would hit. A `describe` with no tests cannot balance the count (-27's own reading), and a skipped or todo
+  suite is caught by the options alternatives. Only `test` is flagged as an import.
+- **Decision: `only:` is not a key alternative.** It hit English prose ("… only: …") in 8 places in docker/
+  and infra/. A node:test `only` option has no effect without `--test-only`, which CI does not pass.
+  `.only` stays caught.
+- **On the clean tree** (from the repo root), the command exits 0 with **5 hits, all benign**:
+  - `web/src/app/router.tsx:6, 8, 10, 11`: `import { routes as … }`. This is the old ` as [a-z]+ \}`
+    alternative, and these hits were already there before this change.
+  - `infra/vitest.config.ts:7`: the `allowOnly: false` comment, "a stray .only fails the run …".
+
+  No hit anywhere in `docker/`. I extracted the command from review.md and ran it exactly as written: same
+  output.
+
+**Plants** in `docker/image-fs.test.ts`, each round formatted with prettier `--write` and restored with
+`git checkout`:
+
+| Round | Shape | New command | Old command |
+|---|---|---|---|
+| A | `it('…', { skip: true }, …)` | caught | missed |
+| A | `it('…', (t) => { t.skip() })` | caught | caught |
+| A | `describe('…', { skip: true }, …)` | caught | missed |
+| A | `it('…', { todo: 'later' }, …)` | caught | missed |
+| A | `it('…', { skip }, …)` (shorthand) | caught | missed |
+| A | `t.todo()` | caught | caught |
+| B | reviewer's F2: `if (process.env.NEVER)` before the global-PAX-header test (prettier puts `it(` on the next line), `test` added to the import, `test('DEV-p5-image-host-07: filler', …)` appended | caught, on two lines: the import (18) and the `if` (151-152). The `test(` call itself does not match. | missed |
+| C | security re-review's sec-r4-02: that test inside `/* … */`, plus `;[0].forEach(() => it('extra', () => {}))` | caught: the comment (151-152) and the `=> it(` (156) | missed |
+| D | (not in the brief; my own probe) the guard written as `process.env.NEVER &&` + `it(`, and `const again = it` + `again('…: filler', …)` | missed by the first draft (exit 1, no hit). Two alternatives added (`&&`/`\|\|`/`?` before `it(`, and `= it` at a line end). The final command catches both (151-152, 155). | missed |
+
+The final command contains every alternative tested in rounds A-C, so those rounds still hold for it. I did
+not rerun them after round D.
+
+**Not caught (finding, recorded, not a reason to stop):** further indirection such as `[it][0](…)`, a
+`Reflect.apply(it, …)`, or a block comment that opens after code on the same line (`x() /*`). Any of these
+balances CI's count, and a regex cannot enumerate them. This is the -27 conclusion, and it stands: the
+`rg` check helps a reviewer find the known forms, and reading every test-file diff is still the control.
+review.md says so.
+
+### Commands refused by the worktree guard
+
+One here, word for word: "This agent is isolated in the worktree …, but this command is too complex to
+verify that it stays inside the worktree. Refusing to run it — a worktree-isolated agent's git operations
+must target its own worktree. Split it into plain, separate commands and run them from …" (the worktree
+path is left out here).
+- **What was refused:** a heredoc append of the round-A plants to `docker/image-fs.test.ts`, followed by
+  `git diff --stat` in the same command. Nothing ran.
+- **What I did instead:** following "split", I made the plant with the editor tool and ran `rg` and
+  `git checkout` as separate plain commands. Every later plant was made the same way.
+- The p5-infra worklog has the session's other refusal, on a plant loop.
+
+### Gates (this session; Node 24.22.3 written on PATH; unpiped)
+
+- **The CI step "Image reader tests (docker/image-fs.test.ts), every test run", run verbatim.** I copied
+  its `run:` body from `ci.yml`, unchanged, and ran it with `bash --noprofile --norc -eo pipefail`,
+  `RUNNER_TEMP` set to a scratch folder and `/usr/bin/grep`. Result: exit 0. The TAP summary shows
+  `# tests 73`, `# suites 12`, `# pass 73`, `# fail 0`, `# cancelled 0`, `# skipped 0`, `# todo 0`, and 73
+  `it(` lines are defined.
+- web `pnpm lint` (eslint over `. ../api ../docker` plus prettier `--check`): exit 0, "All matched files use
+  Prettier code style!". web `pnpm typecheck` (including `docker/tsconfig.json`): exit 0.
+- infra `pnpm verify` with the AWS files at `/dev/null`: exit 0, 285 tests (see the p5-infra entry).
+- **Not run:** `check-images.sh` and the image scans. No image code changed: `docker/image-fs.ts` is
+  unchanged, and only its tests were added.
