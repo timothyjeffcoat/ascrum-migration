@@ -1508,3 +1508,23 @@ Counted, not estimated, against `migration` at `6f6afaf` (after #93) and read-on
 - **Not yet proven.** Whether a link to an older version that is also in the lockfile would be caught (the code says yes; no test proves it, -28). The reader's checks have not been run against freshly built images in this review: the reviewer did not run `check-images.sh` (see -20). The live items from #92 are still due on the next deploy run.
 - **Gate results (reviewer, round 4, AWS credential files at `/dev/null`).** The CI reader step, run verbatim, exit 0 (67/67); `node --test` 67/67. infra lint, typecheck, test (252) and synth exit 0. web lint and typecheck exit 0. CI 12/12 green on `11c6f76` (`gh pr checks 94`).
 - **Decision.** No blocking findings. The owner approved it as verified, with -27 and -28 kept open for a later change. Not merged: the owner merges.
+
+## 2026-11-27: Live run 10: the gate refuses once, then the current code goes green (orchestrator)
+- **Why this run.** The production entry above named the gap: #86, #87, #88, #90, #92 and #94 had merged after the last live run (run 8, on `67c8ad3`). The owner started a deploy on `386c47b`, the head of `migration` after #97.
+- **The refused attempt (46074572573, 22:06 UTC).** The owner dispatched it about a minute after #97 merged. The gate failed in 10 s with "REFUSED: not every required check passed.": `e2e-compose` was still running on `386c47b`, and a check that has not finished counts as not passed (DEV-p5-infra-02). The other three jobs were skipped, and nothing reached AWS. The owner waited for CI to finish green (12/12) and dispatched again.
+- **Run 10 (46074711464, on `386c47b`).** Created 22:07:58 UTC, finished 22:23:12 UTC: **15 min 14 s**, every job green.
+  - **Gate:** 9 s; all 12 required checks had passed on the commit.
+  - **Image scan.** The API image from #88 (no apk, OpenSSL or zlib) was built, pushed and scanned by ECR for the first time: "image-scan: completed, no HIGH or CRITICAL finding." The saved scan result lists 0 findings of any severity.
+  - **Deploy:** the demo stack in "Deployment time: 407.48s" (the step took 422 s).
+  - **Smoke test** over HTTPS through CloudFront: "5 passed (15.4s)": HTTPS with the HTTP redirect, sign-in as a seed user and the projects list, the security headers plus HSTS, `POST /__stub/reset` answering 404, and the load balancer refusing anyone but CloudFront.
+  - **Destroy and leftover check:** 316 s and 11 s. "Demo stacks still present: none", 8 deleted ECS entries recognised as gone (the cluster, a service, a task and five task-definition revisions), the OIDC provider and the budget kept by design, then "Remaining: 0", "OK: nothing from the demo remains."
+- **What it proves about #92.** The deployed code sets every Linux capability dropped, `initProcessEnabled: true` and user `1000:1000` on the API container (`infra/src/demoStack.ts`), and the task started on Fargate and served the signed-in smoke test. So the API runs on Fargate with those settings. **The caveat:** the evidence does not save the live task definition, so nothing shows AWS's own copy of the three settings. Saving `describe-task-definition` output in the evidence would close that; it is queued as a small infra follow-up.
+- **Still not proven live**, after this run:
+  - the live error text for a refused or throttled DescribeSecret (nothing was refused or throttled);
+  - whether IAM checks the default VPC for a security group created without one (DEV-p5-infra-25);
+  - the budget alarm firing.
+- **Runs so far.** 11 deploy runs, 2026-11-25 to 2026-11-27: 8 `failure` (7 on AWS, plus this gate refusal, which never reached AWS), 2 `success` (runs 8 and 10), 1 `cancelled` on purpose. No run left anything running.
+- **Cost.** This run adds a few cents on 2026-11-27, mostly load-balancer hours. So the "$0.00 afterwards" check in the numbers entry now starts at 2026-11-28.
+
+**Moment (article candidate)**
+- "The first try at proving the latest code on AWS was refused in ten seconds, because one of twelve checks on the commit had not finished yet. Nothing was created. Fifteen minutes later the same commit was deployed, tested over HTTPS and torn down, with the slimmer image's first cloud scan clean and nothing left behind."
