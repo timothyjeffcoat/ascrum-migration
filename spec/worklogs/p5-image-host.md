@@ -1269,3 +1269,83 @@ path is left out here).
 - infra `pnpm verify` with the AWS files at `/dev/null`: exit 0, 285 tests (see the p5-infra entry).
 - **Not run:** `check-images.sh` and the image scans. No image code changed: `docker/image-fs.ts` is
   unchanged, and only its tests were added.
+
+## 2026-11-27, session 10 (worker): #99 round 2, DEV-p5-image-host-29 and -30 (review.md only)
+
+The owner sent #99 back ("yes, send it back to the worker"). Only `.claude/rules/review.md` changed for
+these two rows. The eslint selector and making vitest fail on skipped tests are out of scope, an owner
+decision, and I did not touch them.
+
+### The widened command
+
+It is still one `rg -nU` command over `web/src web/e2e docker infra`, and every earlier alternative is
+kept unchanged. The added alternatives:
+- `\.(skipIf|runIf)\b`;
+- `\b(it|test|describe|suite)\s*\[` for any computed member;
+- `['"\`](skip|todo)['"\`]\s*:` for a quoted option key;
+- `if (…) {` with one or more `//` comment lines before the `it(`;
+- `for`/`while (…)` followed directly by `it(`/`test(`/`describe(`, on the same or the next line, with or
+  without comment lines, but without a brace;
+- a `for (… of [])` header, and `while (false|0|null|undefined|''|"")`;
+- a template literal opened after `=`, `(` or `,` that holds a line starting with `it(`/`test(`/`describe(`;
+- `\.test\(\s*['"\`]` for a subtest with a string name;
+- an `it`/`test ... as <name>` inside a `node:test` import, on any line.
+
+### Decisions
+
+- **Braced loops are not flagged.** A braced `for (…) {` before an `it(` on the next line is not flagged.
+  On the clean tree that alternative hit 12 legitimate loops in `infra/scripts/*.test.ts` and
+  `web/src/features/projectsinfo/ProjectsInfo.test.tsx`, which use them on purpose. In `docker/`, a braced
+  loop over a non-empty list makes the counts differ, so the step goes red. Only the loops that can never
+  run are flagged.
+- **`it as …` is flagged only inside a `node:test` import.** As a bare pattern it hit English comments
+  ("tag it as …") in 4 places.
+- **`.test(` is flagged only with a string argument.** Plain `.test(` would hit every `RegExp.test`.
+
+### Probe (scratch files `docker/zz-plant-{a,b,c}.test.ts`, written, scanned, deleted)
+
+| Shape | Old command (#99 round 1) | New command |
+|---|---|---|
+| `it['todo'](…)` | missed | caught |
+| ``it[`skip`](…)`` | missed | caught |
+| `it["skip"](…)` | missed | caught |
+| `it['fixme'](…)` | missed | caught |
+| `it['skipIf'](true)(…)` | missed | caught |
+| `it.skipIf(true)(…)` | missed | caught |
+| `describe.runIf(false)(…)` | missed | caught |
+| `{ 'skip': true }` | missed | caught |
+| `for (const n of []) {` + `it(` | missed | caught (the header) |
+| `while (false) {` + `it(` | missed | caught (the header) |
+| `for (const n of [1]) it(…)` (one line) | missed | caught |
+| `if (…) {` + `// comment` + `it(` | missed | caught |
+| `` const s = ` `` + `it(` line + `` ` `` | missed | caught |
+| multi-line `import { after, describe, it as check, before } from 'node:test'` | missed | caught |
+| `await t.test('…', …)` subtest | missed | caught |
+| `it(` inside a never-called function | missed | **missed** |
+| `for (… of [].slice()) {` + `it(` | (not tried) | **missed** |
+| `while (0 > 1) {` + `it(` | (not tried) | **missed** |
+| ``String.raw` `` + `it(` line | (not tried) | **missed** |
+
+The reviewer's never-called-function route is still caught on its balancing half, the `t.test(` line. The
+misses, plus `[it][0](…)`, `Reflect.apply(it, …)` and a block comment opened after code on the same line
+(those three known by reading), are listed in review.md next to the command. review.md also restates that
+no pattern stops a deliberate balancing, so reading every test-file diff is still the control.
+
+### Final command on the clean tree
+
+It exits 0 with the same 5 benign hits as before and no new hit:
+- `web/src/app/router.tsx:6, 8, 10, 11`: `import { routes as … }`, the old ` as [a-z]+ \}` alternative;
+- `infra/vitest.config.ts:7`: the `allowOnly: false` comment.
+
+I extracted the command from review.md and ran it exactly as written: same output, and the text is
+byte-identical to the probed command (`cmp`).
+
+### Gates (this session; Node 24.22.3; unpiped)
+
+- I ran the CI step "Image reader tests (docker/image-fs.test.ts), every test run" verbatim under
+  `bash --noprofile --norc -eo pipefail`. It exited 0, with `# tests 73`, `# suites 12`, `# pass 73`,
+  `# fail 0`, `# cancelled 0`, `# skipped 0`, `# todo 0`.
+- web `pnpm lint`: exit 0, "All matched files use Prettier code style!". web `pnpm typecheck`: exit 0.
+- infra `pnpm verify` with the AWS files at `/dev/null`: exit 0, 301 tests (see the p5-infra entry).
+- The guard refusals of this round are quoted in the p5-infra worklog. There was none on this item; the
+  one on the worklog append is listed there too.

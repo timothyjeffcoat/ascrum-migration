@@ -2285,3 +2285,95 @@ heredoc append to the docker test file, is in the p5-image-host worklog.
   …/infra/cdk.out").
 - web `pnpm lint`: exit 0. web `pnpm typecheck`: exit 0.
 - No `aws` and no `cdk deploy/destroy/bootstrap` were run, and no AWS profile was used.
+
+## 2026-11-27, Phase 5 follow-ups 2, round 2 (worker): DEV-p5-infra-56..59
+
+The owner sent #99 back after its review and security review, with nothing blocking: "yes, send it back
+to the worker" (2026-11-27). The branch was already at the reviewer's `fe2ec2b`, so `git pull --ff-only`
+said "Already up to date". My worktree's index still held the older `spec/deviations.md`, staged as a
+reverse change. I reset that file to HEAD with `git restore --staged --worktree`, so it matches the
+reviewer's commit. I made no edit to it.
+
+### What was done
+
+- **-56, untested checks.** New cases:
+  - a single deployment that is ACTIVE rather than PRIMARY;
+  - a single PRIMARY deployment with `runningCount: 0`;
+  - an INACTIVE task definition;
+  - `readonlyRootFilesystem` omitted. ECS's default is false, so omitting it fails like `false`.
+  - a failure for the asked service while `services` still lists it. This shape is worth pinning, since
+    ECS answers per ARN and a failure means AWS does not vouch for the answer.
+  - an entry-point test whose failure reason carries ESC, a newline, `::error::forged` and a CR. Neither
+    the output nor the evidence file has a control character or a line that starts with `::error::forged`,
+    and the file's error text is printable ASCII only.
+- **-57, other containers.** `problems()` fails unless the containers are exactly `['api']`, and it names
+  them. It also fails on `privileged === true`, and the record keeps `privileged` (null when absent).
+  Tested with a root sidecar `{ user: '0', capabilities.add: ['SYS_PTRACE'] }` and with `privileged: true`
+  on `api`. `privileged: false` passes.
+- **-58, the image's registry.** I chose exact equality with `$REPOSITORY_URI:$IMAGE_TAG`. The step now
+  passes `"$REPOSITORY_URI"`, which is the registry stack's output, the URI the push step pushed to. The
+  ECR host pattern would admit any 12-digit account, so another account's ECR repository of the same name
+  would pass; equality pins the account as well as the region and the repository. To keep a bad argument
+  from producing a match, `expectedImage()` first requires the URI to match
+  `^[0-9]{12}\.dkr\.ecr\.<region>\.amazonaws\.com/ascrum-demo-api$`, with the region validated as
+  `[a-z0-9-]+`, and the tag to be a 40-hex commit SHA. The comparison runs on raw values, before any
+  redaction. Tested: another registry (`docker.io/attacker/ascrum-demo-api:<sha>`), another account's ECR,
+  another region, a digest in place of the tag, and seven bad URIs and four bad tags for `expectedImage`.
+  An entry-point test checks that a non-ECR `REPOSITORY_URI` stops the step before any AWS call.
+  `workflows.test.ts` pins that `REPOSITORY_URI` is the registry stack's output and is the push target.
+- **-59, the cluster argument.** `--cluster` is now the cluster's ARN, built by `leftovers.ts`'s own
+  `ecsResource()` from the service's ARN. I exported that function; its behaviour is unchanged. This is the
+  form the leftover check used live in run 10. The step also stops before DescribeServices when the
+  service ARN is not a service in `ascrum-demo` in the run's region; tested with another cluster, another
+  region, a task ARN and a non-ARN. The call test pins `--cluster arn:aws:ecs:<region>:<account>:cluster/ascrum-demo`.
+  `bootstrapStack.ts` and IAM are untouched.
+
+### Plants (each alone in `taskDefinition.ts`, restored with `git checkout`; run: taskDefinition, entrypoints and workflows tests, 97)
+
+| Plant | Before | Now |
+|---|---|---|
+| T04: deployment PRIMARY check removed | 81/81 green | 1 failed |
+| T06: deployment `runningCount` check removed | green | 1 failed |
+| T10: task definition ACTIVE check removed | green | 1 failed |
+| T28: `readonlyRootFilesystem === false` for `!== true` | green | 1 failed (field omitted) |
+| T19: `failures.length === 0` dropped | green | 1 failed |
+| T29: `printable()` dropped on the error path | green | 1 failed (the control-character test) |
+| -57a: containers-exactly-`['api']` check removed | (new) | 2 failed |
+| -57b: `privileged` check removed | (new) | 2 failed |
+| -58a: image check back to `endsWith('/ascrum-demo-api:<sha>')` | (new) | 3 failed (another registry, another account, another region) |
+| -58b: the URI's ECR pattern check removed | (new) | 2 failed |
+| -59: `--cluster` back to the name | (new) | 4 failed |
+
+### Not proven live
+
+These stay open until the owner's next deploy run:
+- that DescribeServices with the cluster ARN is allowed for this call, as it was for the leftover check;
+- that `$REPOSITORY_URI` equals the image string stored in the task definition. CDK builds the image
+  from the same repository and tag, so it should;
+- the real answer shapes.
+
+### Commands refused by the worktree guard (this round, word for word, path left out)
+
+1. "This agent is isolated in the worktree …, but this command names git in a form too complex to verify
+   that it stays inside the worktree. Refusing to run it — a worktree-isolated agent's git operations must
+   target its own worktree. Split it into plain, separate commands and run them from …". It refused a
+   command that ran a python edit of `entrypoints.test.ts`, then prettier over `scripts/` and
+   `../.github/workflows/deploy-demo.yml`, then the tests. None of it ran.
+2. "This agent is isolated in the worktree …, but this command is too complex to verify that it stays
+   inside the worktree. Refusing to run it — a worktree-isolated agent's git operations must target its own
+   worktree. Split it into plain, separate commands and run them from …". It refused the same python edit
+   of `entrypoints.test.ts` on its own, as a heredoc. It did not run.
+3. The same "too complex to verify" message refused one command that appended both of this round's
+   worklog entries with two heredocs. It did not run.
+
+After each refusal I did not retry the command. I made the four entrypoint edits and both worklog entries
+with the editor tool, and ran prettier and the tests as separate plain commands. The workflow YAML was not
+run through prettier; no gate formats it.
+
+### Gates (this session; Node 24.22.3 on PATH; AWS files at `/dev/null`; unpiped)
+
+- infra `AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null pnpm verify`: exit 0. It covered
+  "All matched files use Prettier code style!", typecheck, "Test Files  13 passed (13)" and "Tests  301
+  passed (301)" (285 before, plus 16). Synth: "Successfully synthesized to …/infra/cdk.out".
+- web `pnpm lint`: exit 0. web `pnpm typecheck`: exit 0.
+- I ran no `aws` command, no `cdk deploy/destroy/bootstrap`, and no AWS profile.
