@@ -762,4 +762,71 @@ describe('DEV-p5-image-host-17: installed packages (docker/image-fs.ts pnpm-stor
       `/${NM}: not a directory in the image`,
     )
   })
+
+  // DEV-p5-image-host-28 (sec-r4-01): which store directory an edge uses. Three store directories hold `b`:
+  // b@2.0.0 (a's dependency), b@1.0.0 (another version, @s/c's dependency) and b@2.0.0_@s+c@1.0.0 (a
+  // peer-suffix variant, the project's own dependency). All three are lockfile packages, so only the tree's
+  // edge decides which one a top-level link or a link beside a package may land on. The security review's
+  // scenario: a later edit lets a dependency link to an older, perhaps vulnerable, version that is also in
+  // the lockfile.
+  const PEER = 'b@2.0.0_@s+c@1.0.0'
+  const VERSIONS_TREE = [
+    {
+      name: 'ascrum-api',
+      dependencies: {
+        a: { path: P('a@1.0.0', 'a'), dependencies: { b: { path: P('b@2.0.0', 'b') } } },
+        '@s/c': { path: P('@s+c@1.0.0', '@s/c'), dependencies: { b: { path: P('b@1.0.0', 'b') } } },
+        b: { path: P(PEER, 'b') },
+      },
+    },
+  ]
+  const storeDir = (dir: string): TarEntry[] => [
+    d(`.pnpm/${dir}`),
+    d(`.pnpm/${dir}/node_modules`),
+    d(`.pnpm/${dir}/node_modules/b`),
+    f(`.pnpm/${dir}/node_modules/b/index.js`),
+  ]
+  // The three links to a `b`, each set to the directory its edge names unless a test retargets it.
+  const versions = (links: { top?: string; besideA?: string; besideC?: string } = {}) =>
+    store(
+      [
+        ...storeDir('b@1.0.0'),
+        ...storeDir(PEER),
+        l('b', links.top ?? `.pnpm/${PEER}/node_modules/b`),
+        l('.pnpm/a@1.0.0/node_modules/b', links.besideA ?? '../../b@2.0.0/node_modules/b'),
+        l('.pnpm/@s+c@1.0.0/node_modules/b', links.besideC ?? '../../b@1.0.0/node_modules/b'),
+      ],
+      under('.pnpm/a@1.0.0/node_modules/b'),
+      VERSIONS_TREE,
+    )
+  const notB = (path: string) => `/${NM}/${path}: a symlink that does not resolve to b's store directory`
+  it('DEV-p5-image-host-28: control: three store directories of b, each link on the one its edge names, exit 0', () => {
+    const result = versions()
+    assert.equal(result.code, 0, result.stdout + result.stderr)
+    assert.match(
+      result.stdout,
+      /5 store directories \(@s\+c@1\.0\.0 a@1\.0\.0 b@1\.0\.0 b@2\.0\.0 b@2\.0\.0_@s\+c@1\.0\.0\)/,
+    )
+  })
+  it('DEV-p5-image-host-28: control: an absolute target and a two-hop chain that land on the right directory pass', () => {
+    // The 639 plant (an absolute target resolved as a relative one) turns the absolute link into a finding.
+    const absolute = versions({ top: `/${NM}/.pnpm/${PEER}/node_modules/b` })
+    assert.equal(absolute.code, 0, absolute.stdout + absolute.stderr)
+    // a's b → the hoisted .pnpm/node_modules/b → b@2.0.0's own directory, the one a's edge names.
+    const chain = versions({ besideA: '../../node_modules/b' })
+    assert.equal(chain.code, 0, chain.stdout + chain.stderr)
+  })
+  it('DEV-p5-image-host-28: a top-level link to another version of the package is a finding', () => {
+    finding(versions({ top: '.pnpm/b@1.0.0/node_modules/b' }), notB('b'))
+  })
+  it('DEV-p5-image-host-28: a top-level link to another peer-suffix variant of the package is a finding', () => {
+    finding(versions({ top: '.pnpm/b@2.0.0/node_modules/b' }), notB('b'))
+  })
+  it('DEV-p5-image-host-28: a link beside a package to another version of its dependency is a finding', () => {
+    finding(versions({ besideA: '../../b@1.0.0/node_modules/b' }), notB('.pnpm/a@1.0.0/node_modules/b'))
+    finding(versions({ besideC: '../../b@2.0.0/node_modules/b' }), notB('.pnpm/@s+c@1.0.0/node_modules/b'))
+  })
+  it('DEV-p5-image-host-28: a link beside a package to another peer-suffix variant of its dependency is a finding', () => {
+    finding(versions({ besideA: `../../${PEER}/node_modules/b` }), notB('.pnpm/a@1.0.0/node_modules/b'))
+  })
 })

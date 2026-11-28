@@ -6,11 +6,13 @@
 #   deploy    AC-AWS-02: AWS credentials through GitHub OIDC only (no keys anywhere). Registry stack,
 #             API image built from this commit and pushed (ECR scan-on-push; spec §6 image-scan: a HIGH or
 #             CRITICAL finding stops the run), demo stack, web build to S3, then the AC-AWS-03 smoke test
-#             over HTTPS. Its evidence is kept whatever happens.
+#             over HTTPS, with AWS's copy of the running task definition checked and kept
+#             (infra/scripts/taskDefinition.ts). Its evidence is kept whatever happens.
 #   destroy   AC-AWS-04: always runs once the gate passed, also after a failure or a cancel, and deletes
 #             whatever exists (infra/scripts/destroy.ts); its last step fails if anything tagged for the
 #             demo remains (infra/scripts/leftovers.ts).
-#   evidence  AC-AWS-07: one artifact with the smoke output, the screenshot, the image scan, the destroy
+#   evidence  AC-AWS-07: one artifact with the smoke output, the screenshot, the image scan, the live task
+#             definition, the destroy
 #             and leftover reports, who ran it, and every step's timing.
 #
 # The deploy role trusts this file and destroy-demo.yml on `migration`, in the `aws-demo` environment, and
@@ -183,6 +185,15 @@ jobs:
           done
           echo "::error::$DEMO_URL did not answer 200 within 10 minutes."
           exit 1
+
+      # Live run 10's caveat: the evidence held only the code's copy of the API container's settings. This
+      # keeps AWS's own copy, from the task definition the running service uses (no environment, no secrets),
+      # and fails the run unless `api` is its only container and drops every capability, runs the init
+      # process and user 1000:1000, has a read-only root filesystem, is not privileged and runs exactly
+      # $REPOSITORY_URI:$IMAGE_TAG, the image pushed above (infra/scripts/taskDefinition.ts). The account-id
+      # step below scrubs the file as well.
+      - name: The live task definition drops every capability, runs init and user 1000:1000
+        run: node infra/scripts/taskDefinition.ts "$REPOSITORY_URI" "$IMAGE_TAG" "$EVIDENCE/task-definition.json"
 
       - name: Install Chromium
         working-directory: web

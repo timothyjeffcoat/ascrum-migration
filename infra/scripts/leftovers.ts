@@ -146,7 +146,7 @@ export function describeFailure(result: { code: number; stderr: string }): strin
 const ECS_BATCH = { service: 10, task: 100 } as const
 type EcsKind = keyof typeof ECS_BATCH
 
-function ecsResource(arn: string): { kind: EcsKind; region: string; cluster: string } | null {
+export function ecsResource(arn: string): { kind: EcsKind; region: string; cluster: string } | null {
   const [, partition = 'aws', service, region = '', account = '', resource = ''] = arn.split(':')
   const [kind, ...rest] = resource.split('/')
   if (service !== 'ecs' || (kind !== 'service' && kind !== 'task') || rest.length === 0) return null

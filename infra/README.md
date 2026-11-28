@@ -161,8 +161,10 @@ aws cloudformation describe-stacks --stack-name AscrumBootstrap \
 
 Actions → **Deploy demo (AWS)** → Run workflow → branch `migration`. It refuses unless every required
 check passed on the head of `migration`. The artifact `demo-evidence-<run>-<attempt>` holds the smoke
-output, the screenshot, the image scan, the destroy and leftover reports, who ran it, and every step's
-timing.
+output, the screenshot, the image scan, AWS's own copy of the API container's settings from the task
+definition the running service uses (`task-definition.json`: user, capabilities, init process, read-only
+root filesystem, image; never the environment or the secrets), the destroy and leftover reports, who ran
+it, and every step's timing.
 
 Actions → **Destroy demo (AWS)** deletes the demo stacks on its own (a second run is a no-op) and runs
 the same leftover check.
