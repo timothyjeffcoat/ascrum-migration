@@ -1554,7 +1554,7 @@ Counted, not estimated, against `migration` at `6f6afaf` (after #93) and read-on
   - The CI image-fs step, run verbatim: exit 0, `# tests 73`, skipped 0, todo 0.
   - The gate `rg`, run verbatim: exactly the 5 stated hits.
   - CI 12/12 green on `dc0c5c7`.
-- **Decision.** Pending: the owner chooses between a short round 3 for -60..-62, -31 and -32, and verifying now with them open.
+- **Decision.** No blocking findings. The owner approved it as verified (2026-11-27). -60, -61, -62, -31 and -32 stay open as follow-ups, and the lint and test-runner half of -29 is left as a separate decision. Not merged: the owner merges.
 
 **Moment (article candidate)**
 - "In the first version, the check that the cloud runs the right image accepted any registry, as long as the name and the tag matched. In the second, the image must be byte for byte the one the pipeline pushed a few minutes earlier. Meanwhile the search for skipped tests grew from 4 patterns to 23, and both reviewers still wrote the same sentence: a pattern catches accidents, and only reading the diff catches a deliberate one."
